@@ -18,71 +18,81 @@
 - **What:** AI-powered cross-border escrow, liquidity settlement, and RWA
   tokenization platform on Stellar.
 - **Track:** Production (real product for real users).
-- **Current phase:** Phase 0 — Foundations (**scaffold complete**; see §2).
-- **Repo state:** Full portion scaffold in place: `frontend/`, `backend/`,
-  `ai/`, `contracts/`, `shared/`, `infra/`. Backend + frontend build and test
-  green locally. Canonical docs remain at repo root.
+- **Current phase:** Phase 1 — Identity & Wallet (**application implementation
+  complete; production persistence/provider/KMS integration remains**; see §2).
+- **Repo state:** All six portions are present: `frontend/`, `backend/`, `ai/`,
+  `contracts/`, `shared/`, and `infra/`. Shared, backend, and frontend builds are
+  green locally; backend has 24 passing tests. Phase 1 runtime repositories are
+  intentionally in-memory behind interfaces, while migration `0003` defines
+  the production Postgres contract.
 
 ### Canonical docs
-- `docs/PRD.md` — product requirements, users, features.
-- `docs/Architecture.md` — architecture, flow, structure, stack, data model.
-- `docs/Rules.md` — engineering rules, libraries, error handling, AI guardrails.
-- `docs/Phases.md` — phased roadmap + acceptance criteria.
-- `docs/Design.md` — colors, fonts, typography, UI system.
-- `docs/Memory.md` — this file.
+- `PRD.md` — product requirements, users, features.
+- `Architecture.md` — architecture, flow, structure, stack, data model.
+- `Rules.md` — engineering rules, libraries, error handling, AI guardrails.
+- `Phases.md` — phased roadmap + acceptance criteria.
+- `DESIGN.md` — colors, fonts, typography, UI system.
+- `Memory.md` — this file.
 
 ---
 
 ## 2. Current Focus
 
-- **Currently working on:** Phase 0 — Foundations. **Scaffold complete.**
-- **What was built (Phase 0):**
-  - **Separated portions:** `frontend/` (Next.js), `backend/` (Express modular
-    monolith), `ai/` (FastAPI), `contracts/` (Soroban/Rust), `shared/`
-    (contracts of record — types/constants/validation/error codes), `infra/`
-    (docker + CI + migrations). `frontend` and `backend` each have their own
-    `package.json`/build/deploy.
-  - **Double-entry ledger:** enforced both in the backend
-    (`backend/src/modules/ledger/ledger.balance.ts`, BigInt, per-currency
-    debits==credits, both sides required) and at the **database** level
-    (`infra/supabase/migrations/0001_initial_schema.sql`, deferred constraint
-    trigger `assert_ledger_transaction_balanced`). Unbalanced writes are
-    rejected in both places.
-  - **Supabase schema:** users, businesses, kyc, wallets, orders, escrows,
-    disputes, dispute_evidence, ledger_accounts/transactions/entries, assets,
-    tokenizations, token_holdings, stellar_transactions, webhook_events
-    (replay-protected), append-only audit_log.
-  - **Stellar/Soroban:** SDK wrappers (`stellar.client.ts`) + **KMS/HSM signing
-    boundary** (`signer.ts`): `LocalStubSigner` (ephemeral in-memory key,
-    forbidden in staging/prod), `KmsSigner` placeholder. No secret keys in
-    repo/env.
-  - **Cross-cutting:** typed config (Zod), structured logging with PII/secret
-    redaction (pino), shared error taxonomy + boundary translation, idempotency
-    middleware, auth stub (no unauthenticated money endpoints).
-  - **AI service:** advisory-only `/kyc-score` + `/dispute-recommend`,
-    read-only w.r.t. funds/ledger, `requires_human_review` gate.
-  - **Contracts:** `escrow` (lock/release/refund/dispute) + `rwa_token`
-    (issuance/transfer/pro-rata payout) with unit tests.
-  - **CI:** `.github/workflows/ci.yml` — backend (lint/typecheck/test/build),
-    frontend (build), ai (ruff/pytest), contracts (cargo test), database
-    (migrations + ledger-balance smoke test).
+- **Currently working on:** Phase 1 — Identity & Wallet. The application-layer
+  implementation is complete and validated; production adapters and external
+  operational setup remain before this can be called production-ready.
+- **What was built (Phase 1):**
+  - **Shared contracts:** SEP-10 challenge/session, KYC/KYB application,
+    normalized provider checks, advisory risk, review queue, human decision,
+    and verified identity/business profile DTOs and Zod schemas.
+  - **Database contract:** forward-only migration
+    `infra/supabase/migrations/0003_phase1_identity_wallet.sql` for one-time
+    SEP-10 challenges, hashed sessions, profile verification state, normalized
+    KYC results, advisory snapshots, human review, audit indexes, and RLS. Raw
+    identity and face documents are deliberately excluded.
+  - **Wallet authentication:** standard SEP-10 challenge construction and
+    Stellar Wallets Kit signing. The server transaction is signed only through
+    the existing `Signer` KMS/HSM boundary; replay, expiry, and wrong-wallet
+    signatures are rejected. Opaque bearer tokens are stored server-side only
+    as SHA-256 hashes and compose with Supabase JWKS authentication.
+  - **KYC/KYB workflow:** deterministic sandbox provider behind `KycProvider`
+    exercises document/OCR/face/liveness/AML pass-review-fail scenarios without
+    storing raw provider payloads or PII. The provider remains swappable because
+    the production vendor is still an open decision.
+  - **Advisory and policy:** timeout/validated AI risk client, backend-owned
+    Approve/Review/Reject decision engine, AI-outage fallback, human compliance
+    queue, mandatory decision reasons, and append-only PII-safe audit events.
+    AI never makes the final policy decision or writes funds/ledger state.
+  - **Frontend:** Stellar Wallets Kit `2.5.0`, testnet SEP-10 sign-in,
+    `sessionStorage`-only sessions, individual/business onboarding at `/kyc`,
+    persisted profile/review status, explainable advisory output, and a
+    role-gated compliance queue at `/admin/kyc`.
+  - **Boundaries:** exact-origin CORS for the independently served frontend;
+    production KYC/auth repositories remain interfaces with in-memory runtime
+    implementations pending validated Postgres adapters.
 
 - **Verification status (this environment):**
-  - ✅ `backend`: lint + typecheck + build + 17 tests **pass** (includes the
-    empty end-to-end `/health` request, ledger balancing, idempotency, auth).
-  - ✅ `shared`: builds clean.
-  - ✅ `frontend`: `next build` (lint + typecheck + build) **passes**.
-  - ⚠️ `ai`: Python sources byte-compile; **pytest not run locally** — Python
-    3.14 has no `pydantic-core` wheel and the source build is blocked by an OS
-    Application Control policy. CI runs it on Python 3.12.
-  - ⚠️ `contracts`: authored with tests; **not compiled locally** — Rust/cargo
-    builds blocked by the same OS policy. CI runs `cargo test`.
-  - ⚠️ DB-level ledger trigger: authored + CI smoke test; **not run locally**
-    (no Postgres/psql/docker here). App-level balancing is verified.
+  - ✅ `shared`: `npm run build` passes.
+  - ✅ `backend`: lint + typecheck + build + **24 tests pass** across four test
+    files. Phase 1 acceptance coverage includes valid SEP-10 login, replay and
+    wrong-wallet rejection, passing KYC/KYB, queued borderline review, human
+    approval, verified profiles, and PII exclusion from audit metadata.
+  - ✅ `frontend`: typecheck + optimized production build pass; `/`, `/kyc`,
+    and `/admin/kyc` are generated successfully.
+  - ✅ `ai`: application and test sources byte-compile.
+  - ⚠️ `ai`: pytest is not runnable locally because Python 3.14 lacks the
+    pinned native dependency/test environment; CI uses Python 3.12.
+  - ⚠️ `contracts`: Rust/cargo remains blocked by Windows Application Control;
+    CI runs contract tests.
+  - ⚠️ `database`: migration `0003` is authored but cannot run locally because
+    Docker/psql are unavailable; database CI applies migrations.
+  - ⚠️ **Security action:** a Supabase server secret was previously exposed in
+    conversation and must be rotated. Never copy its value into this file,
+    source control, frontend variables, logs, or responses.
 
-- **Next up:** Resolve open questions (§5), then **Phase 1 — Identity & Wallet**
-  (SEP-10 auth replacing the auth stub, KYC provider sandbox, AI KYC risk
-  aggregation wired to the decision engine, wallet connect).
+- **Next up:** rotate the exposed Supabase secret; implement and validate the
+  Postgres repositories; select/integrate a production KYC vendor; configure a
+  real KMS/HSM signer; then begin Phase 2 — Orders & Smart Escrow.
 
 ---
 
@@ -109,6 +119,15 @@
 | D17 | 2026-07-18 | AI service targets **Python 3.12** in CI/Docker | pydantic-core has no 3.14 wheel; avoids source build |
 | D18 | 2026-07-18 | Idempotency + ledger repositories use in-memory impls behind interfaces for Phase 0 | Swap to Redis/Postgres in later phases without changing call sites |
 | D19 | 2026-07-18 | Supabase integration: **raw Postgres (`DATABASE_URL`)** for the ledger/system-of-record; **Supabase Auth JWT verification via JWKS** (`jose`) plugged into the `BearerVerifier` boundary; Supabase admin client (secret key) behind an adapter for Auth/Storage. Verifier factory uses JWKS in dev/prod, dev stub only in test. | Keep DB access as typed SQL; adopt real token auth early behind the existing seam without committing to Supabase-only APIs |
+| D20 | 2026-07-18 | Construct SEP-10 challenges without a raw server `Keypair`, then sign transaction XDR only through the existing `Signer` interface | Preserve the KMS/HSM boundary; `WebAuth.buildChallengeTx` requires direct key material |
+| D21 | 2026-07-18 | Issue opaque random auth session tokens and persist only SHA-256 token hashes | A database compromise must not reveal immediately reusable bearer tokens |
+| D22 | 2026-07-18 | Use a deterministic sandbox implementation behind `KycProvider` until the production vendor is selected | Deliver and test the workflow without coupling the domain to an undecided vendor |
+| D23 | 2026-07-18 | The backend decision engine owns final KYC policy; AI output is advisory only | Enforce legal/accountability boundaries and keep funds/ledger outside AI control |
+| D24 | 2026-07-18 | Provider failures/conflicts, AML hits, low confidence, borderline risk, and AI outages route to human review | Fail safely rather than approving or rejecting uncertain cases autonomously |
+| D25 | 2026-07-18 | Persist normalized KYC outcomes and opaque provider references only; never raw documents, face images, or provider payloads | Data minimization and PII protection |
+| D26 | 2026-07-18 | Phase 1 runtime auth/identity/KYC/audit repositories remain in-memory behind interfaces; migration `0003` is the production persistence contract | Avoid claiming or rushing unvalidated DB persistence when local Postgres is unavailable |
+| D27 | 2026-07-18 | Pin Stellar Wallets Kit to `2.5.0` and keep browser sessions in `sessionStorage`, never `localStorage` | Reproducible wallet integration with reduced bearer-token persistence |
+| D28 | 2026-07-18 | Allow one configured frontend origin with explicit CORS middleware | Support independent frontend/backend deployment without adding a broad CORS policy or dependency |
 
 ---
 
@@ -121,7 +140,11 @@
 | AI liability | Autonomous money decisions are risky | Advisory + human gate + audit log |
 | Reconciliation | Ledger ↔ chain drift | Scheduled reconciliation job; block on mismatch |
 | Licensing | Money-transmitter/MSB needed for real money | Track before mainnet go-live (Phase 6) |
-| Key management | Secret key handling | KMS/HSM; signer boundary |
+| Key management | Secret key handling | KMS/HSM; signer boundary. Local stub only; production provider still required |
+| Phase 1 persistence | Runtime identity/auth/KYC/review/audit repositories are in-memory | Interfaces and migration `0003` are ready; implement/test Postgres adapters before production |
+| KYC vendor | Production provider remains undecided | Keep sandbox adapter; select vendor and map it behind `KycProvider` |
+| Wallet dependency on Windows | A transitive Trezor/Stellar SDK postinstall expects `yarn setup` and the Unix `true` command | Installed published Wallets Kit artifacts with `npm install --ignore-scripts`; typecheck and production build pass; CI should verify normal clean install |
+| Supabase secret exposure | A server secret was pasted in conversation | Rotate it immediately; keep replacement only in gitignored local env/secret manager and never surface its value |
 | Path payment liquidity | Thin corridors → slippage | Fee/slippage constraints in routing |
 
 ---
@@ -146,9 +169,14 @@
   (Rust-backed) wheel builds are **blocked by an OS Application Control policy**
   (`os error 4551`). Consequences: `ai` pytest and `contracts` cargo test can't
   run locally — they run in CI instead (Python 3.12 / Rust toolchain).
-- No Docker/psql locally → DB-level migration + ledger trigger verified via CI,
+- No Docker/psql locally → DB-level migrations and trigger checks run in CI,
   not locally.
-- No secrets committed. KMS/HSM not yet configured (local stub signer only).
+- Wallets Kit's published JS/types build locally, but a transitive dependency has
+  a Unix-only postinstall. This Windows environment used
+  `npm install --ignore-scripts`; clean CI installs must remain authoritative.
+- No secrets are committed. A previously exposed Supabase server secret must be
+  rotated, and its replacement must stay in the gitignored local environment or
+  a secret manager. KMS/HSM is not yet configured (local stub signer only).
 
 ---
 
@@ -161,12 +189,13 @@
 | 2026-07-18 | Restructured to fully separate top-level folders per portion: `frontend/`, `backend/`, `ai/`, `contracts/`, `shared/`, `infra/`. `frontend` & `backend` are independent projects (own `package.json`/build/deploy). Updated Architecture, Rules, Phases, Design accordingly (D9). |
 | 2026-07-18 | **Phase 0 scaffold implemented.** Built all six portions + root README/.gitignore. `shared` contracts package; `backend` modular monolith (config, logging, error taxonomy, idempotency + auth middleware, double-entry ledger with balancing enforcement, Stellar wrappers, KMS signing boundary, `/health`); Supabase migrations incl. ledger tables + balancing trigger + seed; `ai` FastAPI advisory service; `contracts` Soroban escrow + rwa_token; `frontend` Next.js + Tailwind design tokens; `infra` Dockerfiles + docker-compose + CI. Verified locally: backend lint/typecheck/test(17)/build green, shared build green, frontend build green. Decisions D12–D18 recorded. |
 | 2026-07-18 | **Supabase wired in (D19).** Added `@supabase/supabase-js` + `jose`; config now recognizes `SUPABASE_URL/PUBLISHABLE_KEY/SECRET_KEY/JWKS_URL`. New `modules/auth`: Supabase admin client adapter, JWKS JWT verifier, and a verifier factory (JWKS in dev/prod, dev stub in test, stub refused in staging/prod). Ledger routes use the selected verifier. Local `backend/.env` created (gitignored) with the project's values. Runtime smoke confirmed: `/health` ok; ledger endpoint rejects no-token / dev-token / bogus-JWT with 401 while Supabase JWKS verification is active. Backend lint/typecheck/test(17)/build still green. DB still uses raw `DATABASE_URL` (needs the project DB password to point at Supabase Postgres). |
+| 2026-07-18 | **Phase 1 Identity & Wallet application implementation completed (D20–D28).** Added shared contracts and migration `0003`; KMS-boundary SEP-10 challenges, signature/replay checks, hashed opaque sessions, and Supabase/dev verifier composition; sandbox KYC/KYB provider; timeout-safe advisory AI integration; backend-owned policy, human review, verified profiles, and PII-safe audit; Wallets Kit sign-in; `/kyc` onboarding/status and `/admin/kyc` compliance UI; exact-origin CORS and environment template. Verified locally: shared build; backend lint/typecheck/24 tests/build; frontend typecheck/production build; AI byte-compilation. AI pytest, contract tests, and DB migrations remain CI-only on this machine. Runtime Phase 1 repositories are still in-memory pending Postgres adapters. Supabase server secret rotation remains required. |
 
 ---
 
 ## 8. How To Use This File (for AI agents & contributors)
 
-1. **On session start:** read this file + `docs/Rules.md` before acting.
+1. **On session start:** read this file + `Rules.md` before acting.
 2. **Before coding:** confirm current phase + focus here.
 3. **After any change:** update Section 2 (Current Focus), add to Changelog,
    record new decisions (Section 3) and complications (Section 4).

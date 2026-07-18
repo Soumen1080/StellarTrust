@@ -2,6 +2,7 @@
 
 import {
   ApplicantType,
+  type AuthSessionResponse,
   type IdentityProfileResponse,
   type KycApplicationResponse,
 } from "@stellartrust/shared";
@@ -13,6 +14,8 @@ import { loadSession } from "@/lib/wallet-auth";
 type SandboxScenario = "pass" | "review" | "fail" | "aml-hit";
 
 export function KycOnboarding() {
+  const [session, setSession] = useState<AuthSessionResponse | null>(null);
+  const [sessionChecked, setSessionChecked] = useState(false);
   const [profile, setProfile] = useState<IdentityProfileResponse | null>(null);
   const [result, setResult] = useState<KycApplicationResponse | null>(null);
   const [applicantType, setApplicantType] = useState<"individual" | "business">(
@@ -23,11 +26,16 @@ export function KycOnboarding() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const session = loadSession();
-    if (!session) return;
+    const currentSession = loadSession();
+    setSession(currentSession);
+    setSessionChecked(true);
+    if (!currentSession) return;
     void api
-      .getIdentity(session.accessToken)
-      .then(setProfile)
+      .getIdentity(currentSession.accessToken)
+      .then((identity) => {
+        setProfile(identity);
+        setResult(identity.latestVerification);
+      })
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : "Could not load profile"),
       );
@@ -35,7 +43,6 @@ export function KycOnboarding() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const session = loadSession();
     if (!session) {
       setError("Connect and sign in with your Stellar wallet first.");
       return;
@@ -54,7 +61,7 @@ export function KycOnboarding() {
           applicantType,
           email: String(form.get("email")),
           legalName: String(form.get("legalName")),
-          country: String(form.get("country")),
+          country: String(form.get("country")).toUpperCase(),
           dateOfBirth:
             applicantType === ApplicantType.Individual
               ? String(form.get("dateOfBirth"))
@@ -69,7 +76,7 @@ export function KycOnboarding() {
               : undefined,
           document: {
             kind: "passport",
-            issuingCountry: String(form.get("country")),
+            issuingCountry: String(form.get("country")).toUpperCase(),
             number: isAmlHit
               ? `AML-HIT-${String(form.get("documentNumber"))}`
               : String(form.get("documentNumber")),
@@ -88,7 +95,11 @@ export function KycOnboarding() {
     }
   }
 
-  if (!loadSession()) {
+  if (!sessionChecked) {
+    return <p className="text-sm text-muted">Loading wallet session…</p>;
+  }
+
+  if (!session) {
     return (
       <section className="rounded-xl border border-hairline-light bg-white p-xl">
         <h1 className="text-2xl font-semibold">Identity verification</h1>
