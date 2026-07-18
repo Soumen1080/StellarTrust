@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@stellartrust/shared": "file:../shared",
+    "@supabase/server": "^1.4.0",
     "@tanstack/react-query": "5.62.7",
     "next": "15.5.20",
     "react": "19.0.0",

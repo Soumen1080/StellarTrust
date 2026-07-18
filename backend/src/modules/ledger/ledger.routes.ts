@@ -4,7 +4,7 @@
  */
 import { Router } from "express";
 import type { RequestWithId } from "../../middleware/requestId.js";
-import { requireAuth } from "../../middleware/auth.js";
+import { requireAuth, type BearerVerifier } from "../../middleware/auth.js";
 import {
   idempotency,
   InMemoryIdempotencyStore,
@@ -14,6 +14,7 @@ import { LedgerService } from "./ledger.service.js";
 
 export function createLedgerRouter(
   service: LedgerService = new LedgerService(new InMemoryLedgerRepository()),
+  verifier?: BearerVerifier,
 ): Router {
   const router = Router();
   const idempotencyStore = new InMemoryIdempotencyStore();
@@ -21,7 +22,7 @@ export function createLedgerRouter(
   // Record a balanced double-entry transaction.
   router.post(
     "/transactions",
-    requireAuth(),
+    requireAuth(verifier),
     idempotency(idempotencyStore),
     async (req, res, next) => {
       try {
@@ -34,22 +35,26 @@ export function createLedgerRouter(
   );
 
   // Look up a transaction by its money-movement reference id.
-  router.get("/transactions/:referenceId", requireAuth(), async (req, res, next) => {
-    try {
-      const referenceId = (req.params as { referenceId: string }).referenceId;
-      const tx = await service.getByReference(referenceId);
-      if (!tx) {
-        const requestId = (req as RequestWithId).requestId;
-        res
-          .status(404)
-          .json({ error: { code: "NOT_FOUND", message: "Not found", requestId } });
-        return;
+  router.get(
+    "/transactions/:referenceId",
+    requireAuth(verifier),
+    async (req, res, next) => {
+      try {
+        const referenceId = (req.params as { referenceId: string }).referenceId;
+        const tx = await service.getByReference(referenceId);
+        if (!tx) {
+          const requestId = (req as RequestWithId).requestId;
+          res.status(404).json({
+            error: { code: "NOT_FOUND", message: "Not found", requestId },
+          });
+          return;
+        }
+        res.json(tx);
+      } catch (err) {
+        next(err);
       }
-      res.json(tx);
-    } catch (err) {
-      next(err);
-    }
-  });
+    },
+  );
 
   return router;
 }

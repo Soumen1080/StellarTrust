@@ -22,7 +22,7 @@ export interface AuthedRequest extends Request {
 export type BearerVerifier = (token: string) => Promise<AuthContext | null>;
 
 /** Local dev stub verifier: accepts the configured dev bearer only. */
-const devStubVerifier: BearerVerifier = async (token) => {
+export const devStubVerifier: BearerVerifier = async (token) => {
   if (token === config.AUTH_DEV_BEARER) {
     return { userId: "dev-user" };
   }

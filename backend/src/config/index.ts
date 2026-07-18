@@ -27,6 +27,13 @@ const envSchema = z.object({
   DATABASE_URL: z.string().optional(),
   REDIS_URL: z.string().optional(),
 
+  // Supabase project (Auth / Storage / API). Optional in Phase 0.
+  // SUPABASE_SECRET_KEY is a server-only secret — never sent to the client.
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_PUBLISHABLE_KEY: z.string().optional(),
+  SUPABASE_SECRET_KEY: z.string().optional(),
+  SUPABASE_JWKS_URL: z.string().url().optional(),
+
   STELLAR_NETWORK: z.enum(["testnet", "public"]).default("testnet"),
   HORIZON_URL: z.string().url().default("https://horizon-testnet.stellar.org"),
   SOROBAN_RPC_URL: z
