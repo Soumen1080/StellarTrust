@@ -133,6 +133,8 @@ impl RwaTokenContract {
             .get(&DataKey::Meta)
             .ok_or(Error::NotInitialized)
     }
+
+    fn balances(env: &Env) -> Result<Map<Address, i128>, Error> {
         env.storage()
             .instance()
             .get(&DataKey::Balances)
