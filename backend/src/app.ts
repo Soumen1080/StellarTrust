@@ -13,6 +13,7 @@ import { config } from "./config/index.js";
 import { logger } from "./lib/logger.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
 import { requestId, type RequestWithId } from "./middleware/requestId.js";
+import { getBearerVerifier } from "./modules/auth/verifier.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
 
 export function createApp(): Express {
@@ -52,7 +53,8 @@ export function createApp(): Express {
   });
 
   // ── Module routers ────────────────────────────────────────────────────────
-  app.use("/api/ledger", createLedgerRouter());
+  const bearerVerifier = getBearerVerifier();
+  app.use("/api/ledger", createLedgerRouter(undefined, bearerVerifier));
 
   // ── Error boundary ──────────────────────────────────────────────────────
   app.use(notFoundHandler);
