@@ -26,7 +26,15 @@ export function createSupabaseJwtVerifier(jwksUrl: string): BearerVerifier {
       const { payload } = await jwtVerify(token, jwks);
       const userId = typeof payload.sub === "string" ? payload.sub : undefined;
       if (!userId) return null;
-      return { userId };
+      const appMetadata = payload.app_metadata;
+      const metadataRoles =
+        appMetadata && typeof appMetadata === "object" && "roles" in appMetadata
+          ? (appMetadata as { roles?: unknown }).roles
+          : undefined;
+      const roles = Array.isArray(metadataRoles)
+        ? metadataRoles.filter((role): role is string => typeof role === "string")
+        : ["user"];
+      return { userId, roles };
     } catch (err) {
       // Invalid/expired token or JWKS fetch failure → unauthenticated.
       logger.debug({ err: (err as Error).message }, "supabase jwt verification failed");

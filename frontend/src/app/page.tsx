@@ -1,5 +1,6 @@
 import { EscrowState, KycStatus } from "@stellartrust/shared";
 import { StatusPill } from "@/components/StatusPill";
+import { WalletConnect } from "@/features/wallet/WalletConnect";
 
 export default function Home() {
   return (
@@ -18,13 +19,8 @@ export default function Home() {
         time, protected by a double-entry ledger.
       </p>
 
-      <div className="mt-lg flex gap-sm">
-        <button className="rounded-md bg-primary px-lg py-sm text-sm font-semibold text-on-primary">
-          Get Started
-        </button>
-        <button className="rounded-md bg-surface-card-dark px-lg py-sm text-sm font-semibold text-on-dark">
-          Docs
-        </button>
+      <div className="mt-lg">
+        <WalletConnect />
       </div>
 
       <section className="mt-section grid gap-lg sm:grid-cols-3">

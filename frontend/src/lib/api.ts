@@ -1,9 +1,15 @@
-/**
- * Typed API client for the StellarTrust backend.
- * Uses shared contracts (@stellartrust/shared) so the frontend and backend agree
- * on request/response shapes.
- */
-import type { ApiError, HealthResponse } from "@stellartrust/shared";
+/** Typed API client using @stellartrust/shared contracts of record. */
+import type {
+  ApiError,
+  AuthSessionResponse,
+  HealthResponse,
+  IdentityProfileResponse,
+  KycApplicationInput,
+  KycApplicationResponse,
+  KycReviewDecisionInput,
+  KycReviewItem,
+  Sep10ChallengeResponse,
+} from "@stellartrust/shared";
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
@@ -18,10 +24,21 @@ export class ApiClientError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+interface ApiRequestInit extends RequestInit {
+  accessToken?: string;
+}
+
+async function request<T>(
+  path: string,
+  { accessToken, ...init }: ApiRequestInit = {},
+): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: { "content-type": "application/json", ...init?.headers },
+    headers: {
+      "content-type": "application/json",
+      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      ...init.headers,
+    },
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => undefined)) as
@@ -34,4 +51,46 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   health: () => request<HealthResponse>("/health"),
+  createSep10Challenge: (account: string) =>
+    request<Sep10ChallengeResponse>("/api/auth/sep10/challenge", {
+      method: "POST",
+      body: JSON.stringify({ account }),
+    }),
+  verifySep10Challenge: (
+    challengeId: string,
+    signedTransactionXdr: string,
+  ) =>
+    request<AuthSessionResponse>("/api/auth/sep10/verify", {
+      method: "POST",
+      body: JSON.stringify({ challengeId, signedTransactionXdr }),
+    }),
+  getIdentity: (accessToken: string) =>
+    request<IdentityProfileResponse>("/api/auth/me", { accessToken }),
+  submitKyc: (
+    accessToken: string,
+    idempotencyKey: string,
+    input: KycApplicationInput,
+  ) =>
+    request<KycApplicationResponse>("/api/kyc/applications", {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  listKycReviews: (accessToken: string) =>
+    request<{ reviews: KycReviewItem[] }>("/api/kyc/reviews", {
+      accessToken,
+    }),
+  resolveKycReview: (
+    accessToken: string,
+    reviewId: string,
+    idempotencyKey: string,
+    input: KycReviewDecisionInput,
+  ) =>
+    request<KycReviewItem>(`/api/kyc/reviews/${reviewId}/decision`, {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
 };

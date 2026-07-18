@@ -12,6 +12,8 @@ import { AuthError } from "../lib/errors.js";
 
 export interface AuthContext {
   userId: string;
+  walletId?: string;
+  roles: string[];
 }
 
 export interface AuthedRequest extends Request {
@@ -24,7 +26,7 @@ export type BearerVerifier = (token: string) => Promise<AuthContext | null>;
 /** Local dev stub verifier: accepts the configured dev bearer only. */
 export const devStubVerifier: BearerVerifier = async (token) => {
   if (token === config.AUTH_DEV_BEARER) {
-    return { userId: "dev-user" };
+    return { userId: "dev-user", roles: ["user", "compliance"] };
   }
   return null;
 };
