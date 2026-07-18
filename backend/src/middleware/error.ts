@@ -22,7 +22,8 @@ export function notFoundHandler(req: Request, res: Response): void {
   res.status(404).json(body);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
+// Express identifies error handlers by their 4-arg arity; `_next` is required
+// to keep that signature even though it is unused.
 export function errorHandler(
   err: unknown,
   req: Request,

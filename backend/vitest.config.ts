@@ -6,5 +6,9 @@ export default defineConfig({
     include: ["src/**/*.test.ts", "tests/**/*.test.ts"],
     globals: false,
     reporters: "default",
+    env: {
+      NODE_ENV: "test",
+      LOG_LEVEL: "silent",
+    },
   },
 });
