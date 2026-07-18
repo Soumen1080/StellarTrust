@@ -1,0 +1,144 @@
+# StellarTrust — Delivery Phases
+
+> **Status:** Living document. Update as phases progress or scope changes.
+> **Last updated:** 2026-07-18
+> **Track:** Production.
+
+Each phase lists **deliverables** and **acceptance criteria** (done = criteria
+met + build/tests pass + Memory.md updated).
+
+---
+
+## Phase 0 — Foundations (before any feature)
+
+**Goal:** A safe skeleton that enforces the golden rules from day one.
+
+**Deliverables**
+- Repo scaffold with **separate top-level folders per portion**
+  (`frontend`, `backend`, `ai`, `contracts`, `shared`, `infra`) — `frontend` and
+  `backend` each have their own `package.json`/build/deploy.
+- CI pipeline (lint, typecheck, test, build).
+- Supabase project + initial schema **including the double-entry ledger**.
+- Stellar testnet setup + SDK wrappers; Soroban toolchain.
+- KMS/HSM signing boundary (stub allowed locally, real in staging/prod).
+- Shared error taxonomy, logging, config, idempotency middleware.
+
+**Acceptance criteria**
+- Ledger can record a balanced entry pair; unbalanced writes are rejected.
+- CI green on an empty end-to-end request.
+- No secret keys anywhere in repo/env; signing goes through the boundary.
+
+---
+
+## Phase 1 — Identity & Wallet
+
+**Goal:** Verified users with connected Stellar wallets.
+
+**Deliverables**
+- SEP-10 wallet authentication.
+- Wallet connect via Stellar Wallets Kit (Freighter/xBull).
+- KYC provider integration (sandbox): ID + OCR + face + liveness + AML.
+- AI KYC **risk aggregation** endpoint (advisory) + decision engine
+  (Approve/Review/Reject) with human review queue.
+- Verified user + business profile creation.
+
+**Acceptance criteria**
+- A user can register, pass sandbox KYC, and connect a wallet.
+- Borderline KYC routes to human review; decisions are audit-logged.
+- No PII leaks in logs.
+
+---
+
+## Phase 2 — Core Payment + Escrow (heart of MVP)
+
+**Goal:** Buyer→seller escrow happy path, fully ledgered.
+
+**Deliverables**
+- Soroban **escrow contract** (lock/release/refund) + tests on testnet.
+- Order lifecycle: create → accept → deposit → lock → confirm → release.
+- Double-entry ledger wired into every step.
+- Idempotent payment/escrow endpoints; reconciliation job (ledger ↔ chain).
+
+**Acceptance criteria**
+- Funds lock in the contract and release only on authorized confirmation.
+- Every step produces balanced ledger entries + a chain tx record.
+- Reconciliation reports zero unresolved mismatches for the happy path.
+
+---
+
+## Phase 3 — Cross-Border Settlement
+
+**Goal:** Multi-currency settlement with a real fiat ramp.
+
+**Deliverables**
+- Path payments for cross-currency conversion.
+- AMM liquidity pool integration.
+- **Anchor integration** (SEP-31/24/6) — start with a controlled/sandbox anchor
+  per corridor; SEP-12 KYC exchange.
+- Routing service: best rate + lowest fee + fastest path, with slippage/fee
+  constraints.
+
+**Acceptance criteria**
+- USD→X and X→USD test corridor settles end-to-end via anchor + path payment.
+- Routing picks the best available path and respects fee/slippage limits.
+- Deposits/withdrawals reconcile against the ledger.
+
+---
+
+## Phase 4 — Disputes + AI (advisory)
+
+**Goal:** Fair, auditable dispute resolution with human oversight.
+
+**Deliverables**
+- Evidence upload (invoice, tracking, OTP, courier, images) + 24h window.
+- AI Risk Engine: recommendation + confidence + explanation + signals.
+- Human approval gate above thresholds; auto-resolve only below amount /
+  above confidence thresholds (configurable).
+- Reputation + fraud-signal inputs; full decision audit log.
+
+**Acceptance criteria**
+- A dispute produces an explainable AI recommendation.
+- High-value/low-confidence disputes require human sign-off.
+- Every decision (AI + human) is audit-logged and reproducible.
+
+---
+
+## Phase 5 — RWA Tokenization (opt-in module)
+
+**Goal:** Sellers unlock working capital; investors get transparent ownership.
+
+**Deliverables**
+- Soroban `rwa_token` contract (issuance + payout distribution).
+- Tokenize invoice/commodity/real estate; fractional ownership.
+- Investor purchase flow; payout to holders when buyer pays through escrow.
+- Ownership/transfer transparency + compliance controls.
+
+**Acceptance criteria**
+- An invoice can be tokenized, sold fractionally, and pays holders on buyer
+  payment — all reconciled in the ledger.
+- Tokenization is fully separate from the escrow happy path.
+
+---
+
+## Phase 6 — Hardening & Mainnet Vision
+
+**Goal:** Production readiness and scale.
+
+**Deliverables**
+- Full reconciliation, monitoring, alerting, tracing.
+- Security audit of Soroban contracts.
+- Real anchor partnerships; multi-currency + stablecoin pools.
+- Compliance/licensing (money-transmitter/MSB) completed for launch corridors.
+- Mainnet deployment; bank/payment-provider integrations.
+
+**Acceptance criteria**
+- Independent security audit passed on contracts.
+- Licensing in place for real-money go-live in target corridors.
+- SLOs met (availability, settlement time, reconciliation = 0 unresolved).
+
+---
+
+## Cross-Phase Definition of Done
+- Build + relevant tests pass.
+- Golden rules (Rules.md) upheld.
+- `docs/Memory.md` updated (status + decisions + changelog).
