@@ -1,0 +1,30 @@
+{
+  "name": "@stellartrust/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "StellarTrust shared contracts of record: cross-portion types, constants, validation schemas, and error codes. No runtime logic. No secrets.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "rimraf": "5.0.10",
+    "typescript": "5.5.4"
+  }
+}

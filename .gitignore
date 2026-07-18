@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+**/node_modules/
+.pnp
+.pnp.js
+
+# Builds
+dist/
+build/
+.next/
+out/
+target/
+
+# Env / secrets — NEVER commit real secrets (Rules.md #2)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.keystore
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.tsbuildinfo
+
+# Test / coverage
+coverage/
+.nyc_output/
