@@ -1,0 +1,77 @@
+# Local development stack (Rules.md §8: local = testnet + sandboxes).
+# Usage (from repo root):
+#   docker compose -f infra/docker-compose.yml up --build
+#
+# NOTE: no real secrets here. The signer uses the local stub; production uses
+# KMS/HSM. Postgres credentials below are LOCAL DEV ONLY.
+name: stellartrust
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: stellartrust
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Migrations applied on first boot (alphabetical order).
+      - ./supabase/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d stellartrust"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ..
+      dockerfile: infra/docker/backend.Dockerfile
+    environment:
+      NODE_ENV: development
+      PORT: "8080"
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/stellartrust
+      REDIS_URL: redis://redis:6379
+      STELLAR_NETWORK: testnet
+      SIGNER_PROVIDER: local-stub
+      AI_SERVICE_URL: http://ai:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ai:
+    build:
+      context: ../ai
+      dockerfile: ../infra/docker/ai.Dockerfile
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: infra/docker/frontend.Dockerfile
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
