@@ -144,3 +144,105 @@ export interface HealthResponse {
   version: string;
   time: string;
 }
+
+
+// ── Phase 1: Identity & Wallet ────────────────────────────────────────────────
+
+export interface Sep10ChallengeRequest {
+  account: string;
+  memo?: string;
+}
+
+export interface Sep10ChallengeResponse {
+  challengeId: string;
+  transactionXdr: string;
+  networkPassphrase: string;
+  expiresAt: string;
+}
+
+export interface Sep10VerifyRequest {
+  challengeId: string;
+  signedTransactionXdr: string;
+}
+
+export interface AuthSessionResponse {
+  accessToken: string;
+  tokenType: "Bearer";
+  expiresAt: string;
+  user: UserProfile;
+  wallet: WalletRef;
+}
+
+export interface KycDocumentInput {
+  kind: "passport" | "national_id" | "drivers_license";
+  issuingCountry: string;
+  /** Sandbox-only test value. Never log this field. */
+  number: string;
+  expiryDate: string;
+  frontImageRef: string;
+  backImageRef?: string;
+}
+
+export interface KycApplicationInput {
+  applicantType: import("../constants/index.js").ApplicantType;
+  email: string;
+  legalName: string;
+  country: string;
+  dateOfBirth?: string;
+  registrationNumber?: string;
+  document: KycDocumentInput;
+  faceImageRef: string;
+  businessName?: string;
+}
+
+export interface KycProviderChecks {
+  document: import("../constants/index.js").ProviderCheckStatus;
+  ocr: import("../constants/index.js").ProviderCheckStatus;
+  faceMatch: import("../constants/index.js").ProviderCheckStatus;
+  liveness: import("../constants/index.js").ProviderCheckStatus;
+  aml: import("../constants/index.js").ProviderCheckStatus;
+}
+
+export interface KycRiskAdvisory {
+  riskScore: number;
+  decision: KycDecision;
+  confidence: number;
+  explanation: string;
+  signals: string[];
+}
+
+export interface KycApplicationResponse {
+  verificationId: string;
+  providerReference: string;
+  status: KycStatus;
+  checks: KycProviderChecks;
+  advisory: KycRiskAdvisory;
+  reviewId: string | null;
+  submittedAt: string;
+}
+
+export interface KycReviewItem {
+  id: string;
+  verificationId: string;
+  userId: string;
+  status: import("../constants/index.js").ReviewStatus;
+  advisory: KycRiskAdvisory;
+  providerChecks: KycProviderChecks;
+  resolvedBy: string | null;
+  resolution: import("../constants/index.js").HumanKycDecision | null;
+  resolutionReason: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export interface KycReviewDecisionInput {
+  decision: import("../constants/index.js").HumanKycDecision;
+  reason: string;
+}
+
+export interface IdentityProfileResponse {
+  user: UserProfile;
+  business: BusinessProfile | null;
+  wallets: WalletRef[];
+  latestVerification: KycApplicationResponse | null;
+}

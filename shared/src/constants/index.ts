@@ -119,3 +119,39 @@ export const StellarNetwork = {
 } as const;
 export type StellarNetwork =
   (typeof StellarNetwork)[keyof typeof StellarNetwork];
+
+
+// ── Phase 1: Identity & Wallet ────────────────────────────────────────────────
+
+/** KYC applicant/profile kind. */
+export const ApplicantType = {
+  Individual: "individual",
+  Business: "business",
+} as const;
+export type ApplicantType =
+  (typeof ApplicantType)[keyof typeof ApplicantType];
+
+/** Normalized sandbox/provider check outcomes. */
+export const ProviderCheckStatus = {
+  Pass: "pass",
+  Review: "review",
+  Fail: "fail",
+} as const;
+export type ProviderCheckStatus =
+  (typeof ProviderCheckStatus)[keyof typeof ProviderCheckStatus];
+
+/** Human-review queue lifecycle. */
+export const ReviewStatus = {
+  Queued: "queued",
+  Resolved: "resolved",
+} as const;
+export type ReviewStatus =
+  (typeof ReviewStatus)[keyof typeof ReviewStatus];
+
+/** Allowed final decisions a human compliance reviewer may make. */
+export const HumanKycDecision = {
+  Approve: "approve",
+  Reject: "reject",
+} as const;
+export type HumanKycDecision =
+  (typeof HumanKycDecision)[keyof typeof HumanKycDecision];

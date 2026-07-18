@@ -6,8 +6,10 @@
 import { z } from "zod";
 import {
   AiRecommendation,
+  ApplicantType,
   CurrencyCode,
   EntryDirection,
+  HumanKycDecision,
   SUPPORTED_CURRENCIES,
 } from "../constants/index.js";
 
@@ -58,6 +60,103 @@ export const idempotencyKeySchema = z
   .min(8, "idempotency key too short")
   .max(200);
 
+// ── Phase 1: Identity & Wallet ────────────────────────────────────────────────
+
+/** Stellar ed25519 public account (G...). */
+export const stellarAccountSchema = z
+  .string()
+  .regex(/^G[A-Z2-7]{55}$/, "invalid Stellar public account");
+
+export const sep10ChallengeRequestSchema = z.object({
+  account: stellarAccountSchema,
+  memo: z.string().max(64).optional(),
+});
+
+export const sep10VerifyRequestSchema = z.object({
+  challengeId: z.string().uuid(),
+  signedTransactionXdr: z.string().min(32).max(100_000),
+});
+
+const imageReferenceSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .refine(
+    (value) =>
+      value.startsWith("sandbox://") ||
+      value.startsWith("storage://") ||
+      value.startsWith("https://"),
+    "image must be an opaque sandbox/storage reference or HTTPS URL",
+  );
+
+export const kycDocumentInputSchema = z.object({
+  kind: z.enum(["passport", "national_id", "drivers_license"]),
+  issuingCountry: z.string().length(2).transform((value) => value.toUpperCase()),
+  number: z.string().min(4).max(64),
+  expiryDate: z.string().date(),
+  frontImageRef: imageReferenceSchema,
+  backImageRef: imageReferenceSchema.optional(),
+});
+
+export const kycApplicationInputSchema = z
+  .object({
+    applicantType: z.enum([
+      ApplicantType.Individual,
+      ApplicantType.Business,
+    ]),
+    email: z.string().email().max(320),
+    legalName: z.string().min(2).max(200),
+    country: z.string().length(2).transform((value) => value.toUpperCase()),
+    dateOfBirth: z.string().date().optional(),
+    registrationNumber: z.string().min(2).max(100).optional(),
+    document: kycDocumentInputSchema,
+    faceImageRef: imageReferenceSchema,
+    businessName: z.string().min(2).max(200).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.applicantType === ApplicantType.Individual && !value.dateOfBirth) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["dateOfBirth"],
+        message: "dateOfBirth is required for an individual",
+      });
+    }
+    if (value.applicantType === ApplicantType.Business) {
+      if (!value.businessName) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["businessName"],
+          message: "businessName is required for a business",
+        });
+      }
+      if (!value.registrationNumber) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["registrationNumber"],
+          message: "registrationNumber is required for a business",
+        });
+      }
+    }
+  });
+
+export const kycReviewDecisionInputSchema = z.object({
+  decision: z.enum([
+    HumanKycDecision.Approve,
+    HumanKycDecision.Reject,
+  ]),
+  reason: z.string().min(5).max(1_000),
+});
+
 export type LedgerTransactionInputParsed = z.infer<
   typeof ledgerTransactionInputSchema
+>;
+export type Sep10ChallengeRequestParsed = z.infer<
+  typeof sep10ChallengeRequestSchema
+>;
+export type Sep10VerifyRequestParsed = z.infer<typeof sep10VerifyRequestSchema>;
+export type KycApplicationInputParsed = z.infer<
+  typeof kycApplicationInputSchema
+>;
+export type KycReviewDecisionInputParsed = z.infer<
+  typeof kycReviewDecisionInputSchema
 >;
