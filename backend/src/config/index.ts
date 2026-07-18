@@ -3,10 +3,17 @@
  * No secret keys are stored here — only non-secret config and *references*
  * to secrets that are resolved at runtime by the signing boundary / DB client.
  */
-import { config as loadDotenv } from "dotenv";
+import { createRequire } from "node:module";
 import { z } from "zod";
 
-loadDotenv();
+// Load .env via CJS require — robust under both Node ESM and Vitest's Vite SSR
+// transform (which mishandles the dotenv CJS interop on a bare import).
+try {
+  const require = createRequire(import.meta.url);
+  (require("dotenv") as { config: () => void }).config();
+} catch {
+  // dotenv is optional at runtime; env may be provided by the platform.
+}
 
 const envSchema = z.object({
   NODE_ENV: z

@@ -6,7 +6,8 @@
 import express, { type Express } from "express";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
-import pinoHttp from "pino-http";
+import { pinoHttp } from "pino-http";
+import type { IncomingMessage } from "node:http";
 import type { HealthResponse } from "@stellartrust/shared";
 import { config } from "./config/index.js";
 import { logger } from "./lib/logger.js";
@@ -24,7 +25,8 @@ export function createApp(): Express {
   app.use(
     pinoHttp({
       logger,
-      genReqId: (req) => (req as RequestWithId).requestId,
+      genReqId: (req: IncomingMessage) =>
+        (req as unknown as RequestWithId).requestId,
     }),
   );
 
