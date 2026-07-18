@@ -2,16 +2,15 @@
 import { randomUUID } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 
-declare global {
-  // eslint-disable-next-line no-var
-  var __unused_requestId__: never | undefined;
-}
-
 export interface RequestWithId extends Request {
   requestId: string;
 }
 
-export function requestId(req: Request, res: Response, next: NextFunction): void {
+export function requestId(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
   const incoming = req.header("x-request-id");
   const id = incoming && incoming.length <= 200 ? incoming : randomUUID();
   (req as RequestWithId).requestId = id;
