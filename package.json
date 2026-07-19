@@ -5,7 +5,7 @@
   "type": "module",
   "description": "StellarTrust monorepo deployment workspace.",
   "engines": {
-    "node": "22.x"
+    "node": "24.x"
   },
   "workspaces": [
     "shared",

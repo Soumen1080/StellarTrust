@@ -7,7 +7,7 @@ import type { IncomingMessage } from "node:http";
 import type { HealthResponse } from "@stellartrust/shared";
 import express, { type Express } from "express";
 import { rateLimit } from "express-rate-limit";
-import helmet from "helmet";
+import * as helmetModule from "helmet";
 import { pinoHttp } from "pino-http";
 import { config } from "./config/index.js";
 import { logger } from "./lib/logger.js";
@@ -37,7 +37,7 @@ export function createApp(): Express {
   const app = express();
 
   app.disable("x-powered-by");
-  app.use(helmet());
+  app.use(helmetModule.default());
   // Single-origin CORS for the separately deployed frontend. Credentials are
   // not used because SEP-10 bearer sessions are sent explicitly.
   app.use((req, res, next) => {
