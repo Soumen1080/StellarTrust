@@ -5,9 +5,9 @@
  */
 import type { IncomingMessage } from "node:http";
 import type { HealthResponse } from "@stellartrust/shared";
-import express, { type Express } from "express";
+import express, { type Express, type RequestHandler } from "express";
 import { rateLimit } from "express-rate-limit";
-import * as helmetModule from "helmet";
+import helmetImport from "helmet";
 import { pinoHttp } from "pino-http";
 import { config } from "./config/index.js";
 import { logger } from "./lib/logger.js";
@@ -33,11 +33,16 @@ import { createKycProvider } from "./modules/kyc/providers/provider.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
 import { createSigner } from "./modules/stellar/signer.js";
 
+// Vercel's function compiler can resolve Helmet's dual ESM/CJS default export
+// as a module namespace. Keep the runtime import while defining its callable
+// boundary explicitly.
+const helmet = helmetImport as unknown as () => RequestHandler;
+
 export function createApp(): Express {
   const app = express();
 
   app.disable("x-powered-by");
-  app.use(helmetModule.default());
+  app.use(helmet());
   // Single-origin CORS for the separately deployed frontend. Credentials are
   // not used because SEP-10 bearer sessions are sent explicitly.
   app.use((req, res, next) => {
