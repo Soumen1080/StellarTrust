@@ -12,6 +12,7 @@
  */
 import { Keypair } from "@stellar/stellar-sdk";
 import { config } from "../../config/index.js";
+import { ExternalServiceError } from "../../lib/errors.js";
 import { logger } from "../../lib/logger.js";
 
 export interface Signer {
@@ -70,13 +71,29 @@ export class KmsSigner implements Signer {
   }
 }
 
-/** Factory: pick the signer from config, refusing the stub in real environments. */
+/** Fail-closed signer used when production signing is not configured. */
+class UnavailableSigner implements Signer {
+  private unavailable(): never {
+    throw new ExternalServiceError("Wallet signing service is unavailable");
+  }
+
+  async getPublicKey(): Promise<string> {
+    return this.unavailable();
+  }
+
+  async signTransactionXdr(): Promise<string> {
+    return this.unavailable();
+  }
+}
+
+/** Factory: pick the signer without allowing the local stub in real environments. */
 export function createSigner(): Signer {
   if (config.SIGNER_PROVIDER === "local-stub") {
     if (config.NODE_ENV === "staging" || config.NODE_ENV === "production") {
-      throw new Error(
-        "SIGNER_PROVIDER=local-stub is forbidden in staging/production. Use a KMS/HSM provider.",
+      logger.error(
+        "wallet signing disabled: configure a KMS/HSM signer for staging/production",
       );
+      return new UnavailableSigner();
     }
     return new LocalStubSigner();
   }

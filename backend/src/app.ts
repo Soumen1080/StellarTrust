@@ -33,10 +33,20 @@ import { createKycProvider } from "./modules/kyc/providers/provider.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
 import { createSigner } from "./modules/stellar/signer.js";
 
-// Vercel's function compiler can resolve Helmet's dual ESM/CJS default export
-// as a module namespace. Keep the runtime import while defining its callable
-// boundary explicitly.
-const helmet = helmetImport as unknown as () => RequestHandler;
+type HelmetFactory = () => RequestHandler;
+
+function resolveHelmetFactory(imported: unknown): HelmetFactory {
+  if (typeof imported === "function") return imported as HelmetFactory;
+  if (imported && typeof imported === "object" && "default" in imported) {
+    const defaultExport = (imported as { default: unknown }).default;
+    if (typeof defaultExport === "function") {
+      return defaultExport as HelmetFactory;
+    }
+  }
+  throw new TypeError("Helmet did not expose a callable middleware factory");
+}
+
+const helmet = resolveHelmetFactory(helmetImport);
 
 export function createApp(): Express {
   const app = express();

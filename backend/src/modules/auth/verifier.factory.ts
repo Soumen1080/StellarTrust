@@ -9,6 +9,7 @@
  * back to a shared bearer (Rules.md #5).
  */
 import { config } from "../../config/index.js";
+import { ExternalServiceError } from "../../lib/errors.js";
 import { logger } from "../../lib/logger.js";
 import { devStubVerifier, type BearerVerifier } from "../../middleware/auth.js";
 import { createSupabaseJwtVerifier } from "./jwt.verifier.js";
@@ -24,9 +25,12 @@ export function getBearerVerifier(): BearerVerifier {
   }
 
   if (config.isProduction || config.NODE_ENV === "staging") {
-    throw new Error(
-      "No real auth verifier configured. Set SUPABASE_JWKS_URL (or wire SEP-10) before staging/production.",
+    logger.error(
+      "auth disabled: configure SUPABASE_JWKS_URL for staging/production",
     );
+    return async () => {
+      throw new ExternalServiceError("Authentication service is unavailable");
+    };
   }
 
   logger.warn("auth: using DEV STUB bearer verifier — local development only");
