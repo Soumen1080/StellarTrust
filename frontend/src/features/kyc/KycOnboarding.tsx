@@ -7,6 +7,7 @@ import {
   type KycApplicationResponse,
 } from "@stellartrust/shared";
 import { type FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import { StatusPill } from "@/components/StatusPill";
 import { api } from "@/lib/api";
 import { loadSession } from "@/lib/wallet-auth";
@@ -107,12 +108,12 @@ export function KycOnboarding() {
           Connect and sign a SEP-10 challenge from the home page before starting
           KYC/KYB.
         </p>
-        <a
+        <Link
           href="/"
           className="mt-lg inline-block rounded-md bg-primary px-lg py-sm text-sm font-semibold text-on-primary"
         >
           Connect wallet
-        </a>
+        </Link>
       </section>
     );
   }

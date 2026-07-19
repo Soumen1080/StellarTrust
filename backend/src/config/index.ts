@@ -21,6 +21,7 @@ const envSchema = z.object({
     .default("development"),
   PORT: z.coerce.number().int().positive().default(8080),
   FRONTEND_ORIGIN: z.string().url().default("http://localhost:3000"),
+  TEMP_KYC_APPROVAL_PASSWORD: z.string().min(8).optional(),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
     .default("info"),

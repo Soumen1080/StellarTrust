@@ -26,17 +26,25 @@ export class ApiClientError extends Error {
 
 interface ApiRequestInit extends RequestInit {
   accessToken?: string;
+  devApprovalPassword?: string;
 }
 
 async function request<T>(
   path: string,
-  { accessToken, ...init }: ApiRequestInit = {},
+  {
+    accessToken,
+    devApprovalPassword,
+    ...init
+  }: ApiRequestInit = {},
 ): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       "content-type": "application/json",
       ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      ...(devApprovalPassword
+        ? { "x-dev-approval-password": devApprovalPassword }
+        : {}),
       ...init.headers,
     },
   });
@@ -92,5 +100,21 @@ export const api = {
       accessToken,
       headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify(input),
+    }),
+  listDevKycReviews: (password: string) =>
+    request<{ reviews: KycReviewItem[] }>("/api/kyc/dev/reviews", {
+      devApprovalPassword: password,
+    }),
+  approveDevKycReview: (
+    password: string,
+    reviewId: string,
+    idempotencyKey: string,
+    reason: string,
+  ) =>
+    request<KycReviewItem>(`/api/kyc/dev/reviews/${reviewId}/approve`, {
+      method: "POST",
+      devApprovalPassword: password,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify({ reason }),
     }),
 };

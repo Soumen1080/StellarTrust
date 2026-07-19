@@ -61,6 +61,16 @@ def recommend_dispute(req: DisputeRecommendRequest) -> DisputeRecommendResponse:
     The backend — not this service — enforces the human-gate thresholds and moves
     money. This function is read-only advisory support (Rules.md §6).
     """
+    if not req.evidence:
+        return DisputeRecommendResponse(
+            dispute_ref=req.dispute_ref,
+            recommendation=Recommendation.MANUAL_REVIEW,
+            confidence=0.0,
+            explanation="No evidence submitted; cannot form an advisory view.",
+            signals=[],
+            requires_human_review=True,
+        )
+
     release_weight = sum(e.weight for e in req.evidence if e.supports == Recommendation.RELEASE)
     refund_weight = sum(e.weight for e in req.evidence if e.supports == Recommendation.REFUND)
 

@@ -45,7 +45,7 @@ export function createApp(): Express {
       res.setHeader("access-control-allow-origin", config.FRONTEND_ORIGIN);
       res.setHeader(
         "access-control-allow-headers",
-        "authorization,content-type,idempotency-key,x-request-id",
+        "authorization,content-type,idempotency-key,x-request-id,x-dev-approval-password",
       );
       res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
       res.setHeader("vary", "Origin");

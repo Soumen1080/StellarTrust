@@ -9,9 +9,7 @@
 //! Full issuance/transfer-rule richness (SEP-8 style compliance controls) is
 //! deferred to Phase 5; this skeleton establishes the storage model + core ops.
 
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Env, Map,
-};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Map};
 
 #[contracttype]
 #[derive(Clone)]

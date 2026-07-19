@@ -37,6 +37,6 @@ fn payout_share_is_pro_rata() {
     let (client, issuer) = setup(&env);
     let investor = Address::generate(&env);
     client.transfer(&issuer, &investor, &250); // 25% of 1000 units
-    // 25% of a 4_000 payout = 1_000.
+                                               // 25% of a 4_000 payout = 1_000.
     assert_eq!(client.payout_share(&investor, &4_000), 1_000);
 }

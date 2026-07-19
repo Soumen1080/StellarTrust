@@ -10,9 +10,7 @@
 //! against. State transitions here mirror `EscrowState` in @stellartrust/shared:
 //! Locked -> Released | Refunded | Disputed.
 
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, Address, Env,
-};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env};
 
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
