@@ -12,7 +12,7 @@
     "backend"
   ],
   "scripts": {
-    "build": "npm run build --workspace @stellartrust/shared && npm run build --workspace @stellartrust/backend",
+    "build": "npm run build --workspace @stellartrust/shared && npm run build:backend --workspace @stellartrust/backend",
     "typecheck": "npm run typecheck --workspace @stellartrust/shared && npm run typecheck --workspace @stellartrust/backend",
     "test": "npm test --workspace @stellartrust/backend"
   }

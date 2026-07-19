@@ -6,10 +6,12 @@
   "type": "module",
   "main": "dist/index.js",
   "engines": {
-    "node": ">=20"
+    "node": "22.x"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:shared && npm run build:backend",
+    "build:shared": "npm install --prefix ../shared --include=dev --no-audit --no-fund && npm run build --prefix ../shared",
+    "build:backend": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
