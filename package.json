@@ -1,0 +1,19 @@
+{
+  "name": "stellartrust",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "StellarTrust monorepo deployment workspace.",
+  "engines": {
+    "node": "22.x"
+  },
+  "workspaces": [
+    "shared",
+    "backend"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @stellartrust/shared && npm run build --workspace @stellartrust/backend",
+    "typecheck": "npm run typecheck --workspace @stellartrust/shared && npm run typecheck --workspace @stellartrust/backend",
+    "test": "npm test --workspace @stellartrust/backend"
+  }
+}
