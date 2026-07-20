@@ -128,3 +128,5 @@ jobs:
           done
       - name: Ledger balance smoke test
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/supabase/tests/ledger_balance_test.sql
+      - name: Phase 2 financial transition smoke test
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/supabase/tests/phase2_transition_test.sql

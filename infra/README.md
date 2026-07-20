@@ -42,8 +42,8 @@ and fail-closed order blocking.
 - **frontend** — build (Next runs lint + typecheck)
 - **ai** — ruff · pytest (Python 3.12)
 - **contracts** — `cargo test` (Rust + wasm target)
-- **database** — apply migrations through `0004`, then run the ledger-balance
-  smoke test proving unbalanced writes are rejected at the DB level
+- **database** — apply migrations through `0004`, then run ledger-balance and
+  Phase 2 linked-transition/blocking smoke tests
 
 ## Manual infrastructure prerequisites
 

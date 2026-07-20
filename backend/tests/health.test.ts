@@ -95,3 +95,42 @@ describe("ledger route auth + idempotency + balancing", () => {
     expect(res.body.error.code).toBe("LEDGER");
   });
 });
+
+
+
+describe("Phase 2 payment route auth + idempotency", () => {
+  const input = {
+    sellerId: "seller-e2e",
+    amount: { amount: "2500", currency: "USDC" },
+  };
+
+  it("protects order creation and replays the same mutation once", async () => {
+    const unauthenticated = await request(app)
+      .post("/api/payments/orders")
+      .set("Idempotency-Key", "phase2-unauth-key")
+      .send(input);
+    expect(unauthenticated.status).toBe(401);
+
+    const key = "phase2-order-create-key";
+    const first = await request(app)
+      .post("/api/payments/orders")
+      .set("Authorization", "Bearer dev-local-token")
+      .set("Idempotency-Key", key)
+      .send(input);
+    expect(first.status).toBe(201);
+    expect(first.body.order.status).toBe("created");
+    expect(first.body.transition.ledgerTransaction.entries).toHaveLength(2);
+    expect(first.body.transition.stellarTransaction.ledgerTransactionId).toBe(
+      first.body.transition.ledgerTransaction.id,
+    );
+
+    const replay = await request(app)
+      .post("/api/payments/orders")
+      .set("Authorization", "Bearer dev-local-token")
+      .set("Idempotency-Key", key)
+      .send(input);
+    expect(replay.status).toBe(201);
+    expect(replay.body.order.id).toBe(first.body.order.id);
+    expect(replay.body.transition.id).toBe(first.body.transition.id);
+  });
+});

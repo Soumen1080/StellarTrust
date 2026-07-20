@@ -66,13 +66,16 @@ create index reconciliation_open_order_idx
 insert into ledger_accounts (type, currency, owner_ref, name)
 select account_type::ledger_account_type, currency, 'system', account_name
 from (values
-  ('asset', 'NGN', 'cash_clearing'),
-  ('asset', 'XLM', 'cash_clearing'),
-  ('asset', 'USDC', 'cash_clearing'),
-  ('liability', 'NGN', 'escrow_holding'),
-  ('liability', 'XLM', 'escrow_holding'),
-  ('liability', 'USDC', 'escrow_holding')
-) as accounts(account_type, currency, account_name)
+  ('asset', 'commitment_asset'),
+  ('liability', 'commitment_liability'),
+  ('asset', 'cash_clearing'),
+  ('liability', 'escrow_holding'),
+  ('asset', 'contract_custody'),
+  ('asset', 'delivery_confirmation_asset'),
+  ('liability', 'delivery_confirmation_liability')
+) as account_kinds(account_type, account_name)
+cross join (values ('USD'),('EUR'),('INR'),('NGN'),('XLM'),('USDC'))
+  as currencies(currency)
 on conflict (owner_ref, currency, name) do nothing;
 
 -- Deferred cross-table invariant: a payment transition's chain record must
@@ -88,9 +91,9 @@ begin
   from stellar_transactions
   where id = new.stellar_transaction_id;
 
-  if chain_record.ledger_transaction_id <> new.ledger_transaction_id
-     or chain_record.order_id <> new.order_id
-     or chain_record.transition <> new.transition then
+  if chain_record.ledger_transaction_id is distinct from new.ledger_transaction_id
+     or chain_record.order_id is distinct from new.order_id
+     or chain_record.transition is distinct from new.transition then
     raise exception 'Payment transition % is not linked to matching ledger/chain records', new.id
       using errcode = 'check_violation';
   end if;
@@ -121,6 +124,29 @@ $$;
 create trigger orders_reconciliation_block
   before update of status on orders
   for each row execute function block_unreconciled_order_transition();
+
+create or replace function sync_order_reconciliation_block()
+returns trigger
+language plpgsql
+as $$
+begin
+  if tg_op = 'INSERT' and new.status = 'open' then
+    update orders set reconciliation_blocked = true where id = new.order_id;
+  elsif tg_op = 'UPDATE' and new.status = 'resolved' then
+    update orders
+    set reconciliation_blocked = exists (
+      select 1 from reconciliation_mismatches
+      where order_id = new.order_id and status = 'open' and id <> new.id
+    )
+    where id = new.order_id;
+  end if;
+  return new;
+end;
+$$;
+
+create trigger reconciliation_block_sync
+  after insert or update of status on reconciliation_mismatches
+  for each row execute function sync_order_reconciliation_block();
 
 alter table orders enable row level security;
 alter table escrows enable row level security;

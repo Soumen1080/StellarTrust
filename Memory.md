@@ -22,7 +22,7 @@
   implementation complete; public-testnet and production-adapter verification
   remain**; see §2).
 - **Repo state:** All six portions are present. Shared/backend/frontend checks
-  are green locally; backend has 28 passing tests. Phase 2 uses interfaces with
+  are green locally; backend has 29 passing tests. Phase 2 uses interfaces with
   in-memory repositories and a deterministic Soroban adapter locally, while
   migration `0004` defines the production financial-transition and
   reconciliation persistence contract.
@@ -94,7 +94,7 @@
 
 - **Verification status (this environment):**
   - ✅ `shared`: TypeScript build passes.
-  - ✅ `backend`: lint + typecheck + **28 tests pass** across five test files.
+  - ✅ `backend`: lint + typecheck + **29 tests pass** across five test files.
     Phase 2 coverage proves state order/authorization, balanced+linked records,
     confirmation-gated release, arbiter-only refund, and zero unresolved
     happy-path reconciliation mismatches.
@@ -197,10 +197,10 @@
 
 - OS: Windows (dev machine).
 - Verified present: Node v24.18.0, npm 11.16.0, Python 3.14.6, git 2.55.0.
-- **Not usable on this dev machine:** Rust/cargo builds and Python native
-  (Rust-backed) wheel builds are **blocked by an OS Application Control policy**
-  (`os error 4551`). Consequences: `ai` pytest and `contracts` cargo test can't
-  run locally — they run in CI instead (Python 3.12 / Rust toolchain).
+- **Not fully usable on this dev machine:** Python native (Rust-backed) wheel
+  builds remain blocked by OS policy. `cargo test` now starts and compiles many
+  dependencies but fails inside Soroban environment macro dependencies before
+  project source; Linux CI remains authoritative for contracts.
 - No Docker/psql locally → DB-level migrations and trigger checks run in CI,
   not locally.
 - Wallets Kit's published JS/types build locally, but a transitive dependency has
@@ -222,7 +222,7 @@
 | 2026-07-18 | **Phase 0 scaffold implemented.** Built all six portions + root README/.gitignore. `shared` contracts package; `backend` modular monolith (config, logging, error taxonomy, idempotency + auth middleware, double-entry ledger with balancing enforcement, Stellar wrappers, KMS signing boundary, `/health`); Supabase migrations incl. ledger tables + balancing trigger + seed; `ai` FastAPI advisory service; `contracts` Soroban escrow + rwa_token; `frontend` Next.js + Tailwind design tokens; `infra` Dockerfiles + docker-compose + CI. Verified locally: backend lint/typecheck/test(17)/build green, shared build green, frontend build green. Decisions D12–D18 recorded. |
 | 2026-07-18 | **Supabase wired in (D19).** Added `@supabase/supabase-js` + `jose`; config now recognizes `SUPABASE_URL/PUBLISHABLE_KEY/SECRET_KEY/JWKS_URL`. New `modules/auth`: Supabase admin client adapter, JWKS JWT verifier, and a verifier factory (JWKS in dev/prod, dev stub in test, stub refused in staging/prod). Ledger routes use the selected verifier. Local `backend/.env` created (gitignored) with the project's values. Runtime smoke confirmed: `/health` ok; ledger endpoint rejects no-token / dev-token / bogus-JWT with 401 while Supabase JWKS verification is active. Backend lint/typecheck/test(17)/build still green. DB still uses raw `DATABASE_URL` (needs the project DB password to point at Supabase Postgres). |
 | 2026-07-18 | **Phase 1 Identity & Wallet application implementation completed (D20–D28).** Added shared contracts and migration `0003`; KMS-boundary SEP-10 challenges, signature/replay checks, hashed opaque sessions, and Supabase/dev verifier composition; sandbox KYC/KYB provider; timeout-safe advisory AI integration; backend-owned policy, human review, verified profiles, and PII-safe audit; Wallets Kit sign-in; `/kyc` onboarding/status and `/admin/kyc` compliance UI; exact-origin CORS and environment template. Verified locally: shared build; backend lint/typecheck/24 tests/build; frontend typecheck/production build; AI byte-compilation. AI pytest, contract tests, and DB migrations remain CI-only on this machine. Runtime Phase 1 repositories are still in-memory pending Postgres adapters. Supabase server secret rotation remains required. |
-| 2026-07-20 | **Phase 2 application implementation completed (D29–D34).** Added shared payment/reconciliation contracts; strict authenticated/idempotent order lifecycle and arbiter refund; atomic balanced ledger + linked chain + audit transition records; deterministic local Soroban boundary; scheduled reconciliation, alert/report, and blocking; migration `0004`; buyer-confirmed contract release and tests; `/escrow` UI; testnet deploy helper; and gitignored `infra/.env`. Validated shared build, backend lint/typecheck/28 tests, frontend production build, and diff checks. Public testnet, production adapters, DB migration execution, and contract CI remain unchecked/manual prerequisites. |
+| 2026-07-20 | **Phase 2 application implementation completed (D29–D34).** Added shared payment/reconciliation contracts; strict authenticated/idempotent order lifecycle and arbiter refund; atomic balanced ledger + linked chain + audit transition records; deterministic local Soroban boundary; scheduled reconciliation, alert/report, and blocking; migration `0004`; buyer-confirmed contract release and tests; `/escrow` UI; testnet deploy helper; and gitignored `infra/.env`. Validated shared build, backend lint/typecheck/29 tests, frontend production build, and diff checks. Public testnet, production adapters, DB migration execution, and contract CI remain unchecked/manual prerequisites. |
 
 ---
 
