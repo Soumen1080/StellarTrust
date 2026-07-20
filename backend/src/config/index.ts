@@ -21,6 +21,18 @@ const envSchema = z.object({
     .default("development"),
   PORT: z.coerce.number().int().positive().default(8080),
   FRONTEND_ORIGIN: z.string().url().default("http://localhost:3000"),
+  FRONTEND_ORIGINS: z
+    .string()
+    .default(
+      "https://stellar-trust-frontend-git-main-soumen1080s-projects.vercel.app",
+    )
+    .transform((value) =>
+      value
+        .split(",")
+        .map((origin) => origin.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.array(z.string().url()).min(1)),
   TEMP_KYC_APPROVAL_PASSWORD: z.string().min(8).optional(),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])

@@ -15,8 +15,13 @@ import type {
   Sep10ChallengeResponse,
 } from "@stellartrust/shared";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8080";
+const DEFAULT_API_BASE =
+  process.env.NODE_ENV === "production"
+    ? "https://stellar-trust-backend.vercel.app"
+    : "http://localhost:8080";
+const API_BASE = (
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE
+).replace(/\/+$/, "");
 
 export class ApiClientError extends Error {
   constructor(

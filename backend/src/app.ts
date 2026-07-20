@@ -58,11 +58,16 @@ export function createApp(): Express {
 
   app.disable("x-powered-by");
   app.use(helmet());
-  // Single-origin CORS for the separately deployed frontend. Credentials are
-  // not used because SEP-10 bearer sessions are sent explicitly.
+  // Allow the primary origin plus explicitly configured deployment origins.
+  // Credentials are not used because SEP-10 bearer sessions are sent explicitly.
   app.use((req, res, next) => {
-    if (req.header("origin") === config.FRONTEND_ORIGIN) {
-      res.setHeader("access-control-allow-origin", config.FRONTEND_ORIGIN);
+    const origin = req.header("origin");
+    if (
+      origin &&
+      (origin === config.FRONTEND_ORIGIN ||
+        config.FRONTEND_ORIGINS.includes(origin))
+    ) {
+      res.setHeader("access-control-allow-origin", origin);
       res.setHeader(
         "access-control-allow-headers",
         "authorization,content-type,idempotency-key,x-request-id,x-dev-approval-password",
