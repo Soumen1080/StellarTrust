@@ -2,20 +2,33 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  color-scheme: dark;
-}
-
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
 body {
-  background-color: #0b0e11; /* canvas-dark */
-  color: #eaecef; /* body */
-  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    sans-serif;
+  margin: 0;
+  background-color: #0b0e11;
+  color: #eaecef;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  text-rendering: optimizeLegibility;
 }
+button, input, select, textarea { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+::selection { background: #fcd535; color: #181a20; }
 
+@layer base {
+  :focus-visible { @apply outline-none ring-2 ring-info/70 ring-offset-2 ring-offset-canvas-dark; }
+}
 
 @layer components {
-  .input {
-    @apply w-full rounded-md border border-border-strong bg-canvas-light px-sm py-xs text-sm text-ink outline-none placeholder:text-muted focus:border-primary-active focus:ring-1 focus:ring-primary-active;
-  }
+  .input { @apply min-h-11 w-full rounded-md border border-border-strong bg-canvas-light px-sm py-xs text-sm text-ink outline-none transition placeholder:text-muted focus:border-info focus:ring-2 focus:ring-info/20; }
+  .input-dark { @apply min-h-11 w-full rounded-md border border-hairline-dark bg-canvas-dark px-sm py-xs text-sm text-body outline-none transition placeholder:text-muted focus:border-info focus:ring-2 focus:ring-info/20; }
+  .btn-primary { @apply inline-flex min-h-10 items-center justify-center gap-xs rounded-md bg-primary px-lg py-sm text-sm font-semibold text-on-primary transition hover:bg-primary-active active:translate-y-px disabled:cursor-not-allowed disabled:bg-primary-disabled disabled:text-muted; }
+  .btn-secondary-dark { @apply inline-flex min-h-10 items-center justify-center gap-xs rounded-md border border-hairline-dark bg-surface-card-dark px-lg py-sm text-sm font-semibold text-body transition hover:border-muted hover:text-on-dark; }
+  .btn-secondary-light { @apply inline-flex min-h-10 items-center justify-center gap-xs rounded-md border border-border-strong bg-white px-lg py-sm text-sm font-semibold text-ink transition hover:bg-surface-strong-light; }
+  .eyebrow { @apply text-xs font-semibold uppercase tracking-[0.16em] text-muted-strong; }
+  .panel-dark { @apply rounded-xl border border-hairline-dark bg-surface-card-dark; }
+  .panel-light { @apply rounded-xl border border-hairline-light bg-white; }
+  .skip-link { @apply fixed left-md top-md z-[100] -translate-y-24 rounded-md bg-primary px-md py-sm font-semibold text-ink transition focus:translate-y-0; }
+  .skeleton { @apply animate-pulse rounded-md bg-surface-elevated-dark; }
 }
