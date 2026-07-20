@@ -17,14 +17,21 @@ infra/
 
 ## Local stack
 
-```bash
-docker compose -f infra/docker-compose.yml up --build
+`infra/.env` is the gitignored runtime file and `infra/.env.example` is its safe
+template. It contains local Postgres/Redis URLs, public testnet endpoints, auth
+and KYC sandbox settings, and the reconciliation cadence. Optional Supabase
+values remain commented until manually supplied.
+
+```powershell
+docker compose --env-file infra/.env -f infra/docker-compose.yml up --build
 # backend  → http://localhost:8080/health
 # ai       → http://localhost:8000/health
 # frontend → http://localhost:3000
 ```
 
-Postgres applies `supabase/migrations/*.sql` on first boot.
+Postgres applies `supabase/migrations/*.sql` on first boot. Migration `0004`
+adds Phase 2 payment transitions, linked chain metadata, mismatch persistence,
+and fail-closed order blocking.
 
 ## CI
 
@@ -35,8 +42,17 @@ Postgres applies `supabase/migrations/*.sql` on first boot.
 - **frontend** — build (Next runs lint + typecheck)
 - **ai** — ruff · pytest (Python 3.12)
 - **contracts** — `cargo test` (Rust + wasm target)
-- **database** — apply migrations to Postgres, then run the ledger-balance smoke
-  test proving unbalanced writes are rejected at the DB level
+- **database** — apply migrations through `0004`, then run the ledger-balance
+  smoke test proving unbalanced writes are rejected at the DB level
+
+## Manual infrastructure prerequisites
+
+- Install Docker Desktop (or Postgres 16 + Redis 7 separately) to run the stack.
+- Rotate and manually supply Supabase server credentials; never commit them.
+- Configure a funded Stellar testnet CLI identity and deploy the escrow contract.
+- Configure AWS/GCP KMS or another HSM-backed signer before staging/production.
+- Replace in-memory payment/idempotency stores with Postgres/Redis adapters and
+  validate migration `0004` against the target Supabase project.
 
 ## Secrets
 

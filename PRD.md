@@ -2,7 +2,7 @@
 
 > **Status:** Living document. Update on any scope, feature, or user change.
 > **Track:** Production (real product for real users).
-> **Last updated:** 2026-07-18
+> **Last updated:** 2026-07-20
 
 ---
 
@@ -133,6 +133,13 @@ working capital.
 - States: `Locked → Released | Refunded | Disputed`.
 - Delivery evidence upload by seller.
 - Buyer confirms delivery → release. Or opens dispute.
+
+**Implementation status (2026-07-20):** The Phase 2 application happy path,
+idempotent APIs, balanced transition ledgering, linked chain records,
+reconciliation/blocking, escrow dashboard, and contract confirmation gate are
+implemented and locally tested. Public-testnet deployment and production
+Postgres/Redis/KMS/Soroban adapters require manual infrastructure setup before
+this can process real funds.
 
 ### 6.4 Dispute Resolution
 - 24-hour evidence window for both parties.

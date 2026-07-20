@@ -1,7 +1,7 @@
 # StellarTrust — Engineering Rules & Guardrails
 
 > **Status:** Living document. All contributors (human and AI) must follow this.
-> **Last updated:** 2026-07-18
+> **Last updated:** 2026-07-20
 
 These rules exist because StellarTrust moves real money for real users. When in
 doubt, choose the safer, more auditable, more reversible option.
@@ -37,13 +37,18 @@ doubt, choose the safer, more auditable, more reversible option.
 - Wrap all external systems (KYC provider, anchor, Stellar, AI service) behind
   **adapters/interfaces** so implementations can be swapped (sandbox → live).
 - Validate all input at the boundary with a schema (Zod on TS, Pydantic on Py).
+- Reconciliation adapters must compare immutable transition identity, chain
+  status, and balanced ledger entries. Open mismatches block the affected order.
+- Deterministic/in-memory chain and persistence adapters are local/test-only;
+  staging/production must use Soroban RPC, Postgres, Redis, and KMS/HSM-backed
+  implementations.
 - Use database **transactions** for multi-step financial writes.
 - Write tests for escrow state transitions, ledger balancing, and dispute
   decision gating.
 - Use feature flags/config for thresholds (auto-resolve amount, confidence).
 - Prefer pure functions and explicit dependencies for testability.
 - Keep migrations forward-only and reviewed.
-- Document any new decision in `docs/Memory.md` (Decision Log).
+- Document any new decision in `Memory.md` (Decision Log).
 
 ## 3. What To Avoid
 
@@ -182,4 +187,4 @@ decision support**, not an autonomous actor.
 - [ ] AI outputs advisory + logged + human-gated where required.
 - [ ] Tests for state transitions/ledger/dispute gating pass.
 - [ ] Build passes.
-- [ ] `docs/Memory.md` updated (status, decisions, changelog).
+- [ ] `Memory.md` updated (status, decisions, changelog).

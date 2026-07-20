@@ -1,7 +1,7 @@
 # StellarTrust — Architecture
 
 > **Status:** Living document. Update on any structural, stack, or data-model change.
-> **Last updated:** 2026-07-18
+> **Last updated:** 2026-07-20
 
 ---
 
@@ -107,6 +107,11 @@ RWA (opt-in, separate module)
 **Key principles**
 - The blockchain is **not** the accounting system. The **double-entry ledger** in
   Postgres is the system of record; a reconciliation job asserts ledger ↔ chain.
+- Phase 2 models each lifecycle mutation as one financial transition linking the
+  order state, balanced ledger transaction, Stellar transaction record, actor,
+  and audit event. Reconciliation mismatches block subsequent order mutations.
+- Local/test uses `DeterministicEscrowGateway`; staging/production must inject a
+  KMS/HSM-backed Soroban RPC adapter and persistent Postgres/Redis repositories.
 - AI is **advisory**; humans gate money movement above thresholds.
 - All secret keys live in **KMS/HSM**, never in DB or env.
 - RWA is a peer module, not part of the escrow happy path.
@@ -239,6 +244,9 @@ no secrets. `ai/` and `contracts/` use their own language toolchains
   transaction sum to zero
 - `assets`, `tokenizations`, `token_holdings` — RWA
 - `stellar_transactions` (hash, type, status) — reconciliation
+- `payment_transitions` — immutable link between order step, actor, ledger tx,
+  and chain tx
+- `reconciliation_mismatches` — open/resolved drift; open drift blocks the order
 - `webhook_events` — idempotency + signature-verified
 
 **Rule:** every money movement writes balanced ledger entries **and** a Stellar

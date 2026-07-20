@@ -1,6 +1,6 @@
 import { PaymentTransition } from "@stellartrust/shared";
 import { Router } from "express";
-import { ValidationError } from "../../lib/errors.js";
+import { ForbiddenError, ValidationError } from "../../lib/errors.js";
 import {
   type AuthedRequest,
   type BearerVerifier,
@@ -88,7 +88,7 @@ export function createPaymentRouter(
       try {
         const actor = requireActor(req as AuthedRequest);
         if (!actor.roles.includes("compliance")) {
-          throw new ValidationError("Reconciliation requires compliance access");
+          throw new ForbiddenError("Reconciliation requires compliance access");
         }
         res.json(await reconciliation.run());
       } catch (err) {

@@ -32,7 +32,7 @@ import {
 import { KycService } from "./modules/kyc/kyc.service.js";
 import { createKycProvider } from "./modules/kyc/providers/provider.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
-import { DeterministicEscrowGateway } from "./modules/escrow/escrow.gateway.js";
+import { createEscrowGateway } from "./modules/escrow/escrow.gateway.js";
 import { InMemoryPaymentRepository } from "./modules/payments/payment.repository.js";
 import { createPaymentRouter } from "./modules/payments/payment.routes.js";
 import { PaymentService } from "./modules/payments/payment.service.js";
@@ -128,7 +128,7 @@ export function createApp(): Express {
     audit,
   );
   const paymentRepository = new InMemoryPaymentRepository();
-  const escrowGateway = new DeterministicEscrowGateway();
+  const escrowGateway = createEscrowGateway();
   const payments = new PaymentService(paymentRepository, escrowGateway, audit);
   const reconciliation = new ReconciliationJob(
     paymentRepository,

@@ -10,9 +10,9 @@ if (-not (Get-Command stellar -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "Building escrow contract..."
-stellar contract build --package stellartrust-escrow
+stellar contract build --package escrow
 
-$wasm = Join-Path $PSScriptRoot "..\target\wasm32-unknown-unknown\release\stellartrust_escrow.wasm"
+$wasm = Join-Path $PSScriptRoot "..\target\wasm32-unknown-unknown\release\escrow.wasm"
 if (-not (Test-Path $wasm)) {
   throw "Escrow WASM was not produced at $wasm"
 }

@@ -46,17 +46,48 @@ and it holds **contracts only** — no runtime logic, no secrets.
 
 ---
 
-## Phase 0 — Foundations (current)
+## Current status — Phase 2 application complete
 
-A safe skeleton that enforces the golden rules from day one:
+Phase 0 foundations and the Phase 1 identity/wallet application are present.
+Phase 2 now includes:
 
-- Separated portion folders (above).
-- Backend: config, structured logging, error taxonomy, idempotency middleware,
-  **double-entry ledger** (balanced-pair enforced), Stellar SDK wrappers, KMS
-  signing boundary (local stub).
-- Supabase initial schema including the double-entry ledger
-  (`infra/supabase/migrations`).
-- CI pipeline (lint, typecheck, test, build).
+- Authenticated/idempotent `create → accept → deposit → lock → confirm → release`
+  APIs under `/api/payments/orders` plus an arbiter-only refund path.
+- Balanced ledger postings, linked chain records, and append-only audit metadata
+  for each transition.
+- A scheduled ledger↔chain reconciliation job that reports mismatches and blocks
+  dependent operations.
+- Soroban escrow buyer confirmation + lock/release/refund authorization tests.
+- Postgres migration `0004_phase2_core_payment_escrow.sql` and `/escrow` UI.
+
+The default runtime still uses in-memory repositories and a deterministic local
+Soroban boundary. Public-testnet deployment, production Postgres/Redis adapters,
+and KMS/HSM signing are intentionally not claimed as complete; see `Phases.md`.
+
+### Local environment
+
+`infra/.env` is the gitignored local stack configuration. Safe defaults are
+already present. To recreate it, copy `infra/.env.example` and keep real values
+out of source control. Start the full stack with:
+
+```powershell
+docker compose --env-file infra/.env -f infra/docker-compose.yml up --build
+```
+
+Docker is required for this command. Without Docker, run each portion directly
+using its own environment file.
+
+### Phase 2 API
+
+All mutations require `Authorization: Bearer …` and `Idempotency-Key` headers.
+
+```text
+POST /api/payments/orders
+GET  /api/payments/orders
+GET  /api/payments/orders/:orderId
+POST /api/payments/orders/:orderId/{accept|deposit|lock|confirm|release|refund}
+POST /api/payments/reconciliation/run   # compliance role
+```
 
 ### Quick start (backend)
 

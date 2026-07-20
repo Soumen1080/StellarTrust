@@ -82,6 +82,7 @@ const envSchema = z.object({
     .int()
     .min(1_000)
     .default(60_000),
+  ESCROW_GATEWAY: z.enum(["deterministic", "soroban-rpc"]).default("deterministic"),
 
   AUTO_RESOLVE_MAX_AMOUNT: z.coerce.number().nonnegative().default(50000),
   AUTO_RESOLVE_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),

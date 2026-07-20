@@ -22,8 +22,13 @@ import type { AuditRepository } from "../audit/audit.repository.js";
 import type { EscrowGateway } from "../escrow/escrow.gateway.js";
 import type { PaymentRepository } from "./payment.repository.js";
 
-const CLEARING_ACCOUNT = "10000000-0000-4000-8000-000000000001";
-const ESCROW_ACCOUNT = "20000000-0000-4000-8000-000000000002";
+const COMMITMENT_ASSET = "10000000-0000-4000-8000-000000000001";
+const COMMITMENT_LIABILITY = "20000000-0000-4000-8000-000000000002";
+const CASH_CLEARING = "30000000-0000-4000-8000-000000000003";
+const ESCROW_HOLDING = "40000000-0000-4000-8000-000000000004";
+const CONTRACT_CUSTODY = "50000000-0000-4000-8000-000000000005";
+const DELIVERY_ASSET = "60000000-0000-4000-8000-000000000006";
+const DELIVERY_LIABILITY = "70000000-0000-4000-8000-000000000007";
 
 const EXPECTED_STATUS: Record<PaymentTransition, OrderStatus | readonly OrderStatus[]> = {
   [PaymentTransition.Create]: OrderStatus.Created,
@@ -197,23 +202,59 @@ export class PaymentService {
     order: OrderDTO,
     transition: PaymentTransition,
   ): LedgerTransactionInput {
+    const amount = order.amount.amount;
+    const currency = order.amount.currency;
+    const entry = (
+      accountId: string,
+      direction: typeof EntryDirection.Debit | typeof EntryDirection.Credit,
+    ) => ({ accountId, direction, amount, currency });
+
+    const entries = (() => {
+      switch (transition) {
+        case PaymentTransition.Create:
+          return [
+            entry(COMMITMENT_ASSET, EntryDirection.Debit),
+            entry(COMMITMENT_LIABILITY, EntryDirection.Credit),
+          ];
+        case PaymentTransition.Accept:
+          return [
+            entry(COMMITMENT_LIABILITY, EntryDirection.Debit),
+            entry(COMMITMENT_ASSET, EntryDirection.Credit),
+          ];
+        case PaymentTransition.Deposit:
+          return [
+            entry(CASH_CLEARING, EntryDirection.Debit),
+            entry(ESCROW_HOLDING, EntryDirection.Credit),
+          ];
+        case PaymentTransition.Lock:
+          return [
+            entry(CONTRACT_CUSTODY, EntryDirection.Debit),
+            entry(CASH_CLEARING, EntryDirection.Credit),
+          ];
+        case PaymentTransition.Confirm:
+          return [
+            entry(DELIVERY_ASSET, EntryDirection.Debit),
+            entry(DELIVERY_LIABILITY, EntryDirection.Credit),
+          ];
+        case PaymentTransition.Release:
+          return [
+            entry(ESCROW_HOLDING, EntryDirection.Debit),
+            entry(CONTRACT_CUSTODY, EntryDirection.Credit),
+            entry(DELIVERY_LIABILITY, EntryDirection.Debit),
+            entry(DELIVERY_ASSET, EntryDirection.Credit),
+          ];
+        case PaymentTransition.Refund:
+          return [
+            entry(ESCROW_HOLDING, EntryDirection.Debit),
+            entry(CONTRACT_CUSTODY, EntryDirection.Credit),
+          ];
+      }
+    })();
+
     return {
       referenceId: `order:${order.id}:${transition}`,
       description: `Order ${transition} (${order.id})`,
-      entries: [
-        {
-          accountId: CLEARING_ACCOUNT,
-          direction: EntryDirection.Debit,
-          amount: order.amount.amount,
-          currency: order.amount.currency,
-        },
-        {
-          accountId: ESCROW_ACCOUNT,
-          direction: EntryDirection.Credit,
-          amount: order.amount.amount,
-          currency: order.amount.currency,
-        },
-      ],
+      entries,
     };
   }
 
@@ -225,13 +266,14 @@ export class PaymentService {
     if (transition === PaymentTransition.Accept && actor.userId !== order.sellerId) {
       throw new ForbiddenError("Only the seller may accept this order");
     }
+    const buyerTransitions: readonly PaymentTransition[] = [
+      PaymentTransition.Deposit,
+      PaymentTransition.Lock,
+      PaymentTransition.Confirm,
+      PaymentTransition.Release,
+    ];
     if (
-      [
-        PaymentTransition.Deposit,
-        PaymentTransition.Lock,
-        PaymentTransition.Confirm,
-        PaymentTransition.Release,
-      ].includes(transition) &&
+      buyerTransitions.includes(transition) &&
       actor.userId !== order.buyerId
     ) {
       throw new ForbiddenError("Only the buyer may advance this payment");

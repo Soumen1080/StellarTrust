@@ -8,7 +8,7 @@
 > **Update policy:** Every change to the codebase or docs should update the
 > relevant section here (Current Focus, Decision Log, Changelog, Complications).
 
-**Last updated:** 2026-07-18
+**Last updated:** 2026-07-20
 
 ---
 
@@ -18,13 +18,14 @@
 - **What:** AI-powered cross-border escrow, liquidity settlement, and RWA
   tokenization platform on Stellar.
 - **Track:** Production (real product for real users).
-- **Current phase:** Phase 1 — Identity & Wallet (**application implementation
-  complete; production persistence/provider/KMS integration remains**; see §2).
-- **Repo state:** All six portions are present: `frontend/`, `backend/`, `ai/`,
-  `contracts/`, `shared/`, and `infra/`. Shared, backend, and frontend builds are
-  green locally; backend has 24 passing tests. Phase 1 runtime repositories are
-  intentionally in-memory behind interfaces, while migration `0003` defines
-  the production Postgres contract.
+- **Current phase:** Phase 2 — Core Payment + Escrow (**application
+  implementation complete; public-testnet and production-adapter verification
+  remain**; see §2).
+- **Repo state:** All six portions are present. Shared/backend/frontend checks
+  are green locally; backend has 28 passing tests. Phase 2 uses interfaces with
+  in-memory repositories and a deterministic Soroban adapter locally, while
+  migration `0004` defines the production financial-transition and
+  reconciliation persistence contract.
 
 ### Canonical docs
 - `PRD.md` — product requirements, users, features.
@@ -38,9 +39,29 @@
 
 ## 2. Current Focus
 
-- **Currently working on:** Phase 1 — Identity & Wallet. The application-layer
-  implementation is complete and validated; production adapters and external
-  operational setup remain before this can be called production-ready.
+- **Currently working on:** Phase 2 application code is complete and validated.
+  The remaining work is operational: rotate exposed credentials, deploy/smoke
+  test the contract on public testnet, and implement production Postgres, Redis,
+  Soroban RPC, and KMS/HSM adapters.
+- **What was built (Phase 2):**
+  - Shared payment-transition, order mutation/detail, and reconciliation DTOs +
+    Zod create-order validation.
+  - Strict create → accept → deposit → lock → confirm → release state machine,
+    party/role authorization, arbiter-only refund, and authenticated idempotent
+    REST routes under `/api/payments`.
+  - Atomic local financial commit boundary linking order/escrow state, balanced
+    ledger entries, chain record, actor, and append-only audit event.
+  - Deterministic local Soroban gateway mirroring lock/confirm/release/refund,
+    plus a scheduled reconciliation worker that reports mismatches and blocks
+    dependent operations.
+  - Soroban contract buyer-confirmation gate, contract unit cases, and a
+    credential-free PowerShell public-testnet deployment helper.
+  - Forward-only migration `0004` for payment transitions, chain metadata,
+    reconciliation mismatch persistence, RLS, and database-level fail-closed
+    blocking.
+  - Buyer/seller `/escrow` dashboard and typed API client.
+  - Gitignored `infra/.env` with safe local defaults; manual external-service
+    placeholders remain commented.
 - **What was built (Phase 1):**
   - **Shared contracts:** SEP-10 challenge/session, KYC/KYB application,
     normalized provider checks, advisory risk, review queue, human decision,
@@ -72,27 +93,28 @@
     implementations pending validated Postgres adapters.
 
 - **Verification status (this environment):**
-  - ✅ `shared`: `npm run build` passes.
-  - ✅ `backend`: lint + typecheck + build + **24 tests pass** across four test
-    files. Phase 1 acceptance coverage includes valid SEP-10 login, replay and
-    wrong-wallet rejection, passing KYC/KYB, queued borderline review, human
-    approval, verified profiles, and PII exclusion from audit metadata.
-  - ✅ `frontend`: typecheck + optimized production build pass; `/`, `/kyc`,
-    and `/admin/kyc` are generated successfully.
-  - ✅ `ai`: application and test sources byte-compile.
-  - ⚠️ `ai`: pytest is not runnable locally because Python 3.14 lacks the
-    pinned native dependency/test environment; CI uses Python 3.12.
-  - ⚠️ `contracts`: Rust/cargo remains blocked by Windows Application Control;
-    CI runs contract tests.
-  - ⚠️ `database`: migration `0003` is authored but cannot run locally because
-    Docker/psql are unavailable; database CI applies migrations.
-  - ⚠️ **Security action:** a Supabase server secret was previously exposed in
-    conversation and must be rotated. Never copy its value into this file,
-    source control, frontend variables, logs, or responses.
+  - ✅ `shared`: TypeScript build passes.
+  - ✅ `backend`: lint + typecheck + **28 tests pass** across five test files.
+    Phase 2 coverage proves state order/authorization, balanced+linked records,
+    confirmation-gated release, arbiter-only refund, and zero unresolved
+    happy-path reconciliation mismatches.
+  - ✅ `frontend`: optimized production build passes and `/escrow` is generated.
+  - ✅ `git diff --check`: no whitespace errors.
+  - ⚠️ `contracts`: `cargo test` was attempted; Windows compiled many crates but
+    failed inside `soroban-env-common`/macro dependencies before project source.
+    CI/Linux is authoritative for contract tests.
+  - ⚠️ `database` and Compose: Docker/psql are not installed locally, so
+    migration `0004` and `docker compose config` cannot be executed here; CI
+    remains authoritative for migrations.
+  - ⚠️ Public Stellar testnet deploy/smoke was not run because a funded manual
+    identity and functioning Stellar CLI are required.
+  - ⚠️ **Security action:** the previously exposed Supabase server secret must
+    be rotated before any external integration is enabled.
 
-- **Next up:** rotate the exposed Supabase secret; implement and validate the
-  Postgres repositories; select/integrate a production KYC vendor; configure a
-  real KMS/HSM signer; then begin Phase 2 — Orders & Smart Escrow.
+- **Next up:** rotate the exposed Supabase secret; install Docker/Postgres/Redis;
+  validate migration `0004`; create/fund a Stellar testnet deployer and run the
+  contract smoke flow; implement Postgres/Redis/Soroban RPC/KMS adapters; then
+  check off the remaining operational Phase 2 criteria before Phase 3.
 
 ---
 
@@ -128,6 +150,12 @@
 | D26 | 2026-07-18 | Phase 1 runtime auth/identity/KYC/audit repositories remain in-memory behind interfaces; migration `0003` is the production persistence contract | Avoid claiming or rushing unvalidated DB persistence when local Postgres is unavailable |
 | D27 | 2026-07-18 | Pin Stellar Wallets Kit to `2.5.0` and keep browser sessions in `sessionStorage`, never `localStorage` | Reproducible wallet integration with reduced bearer-token persistence |
 | D28 | 2026-07-18 | Allow one configured frontend origin with explicit CORS middleware | Support independent frontend/backend deployment without adding a broad CORS policy or dependency |
+| D29 | 2026-07-20 | Model each Phase 2 lifecycle step as an immutable financial transition linking order state, balanced ledger transaction, chain record, actor, and audit metadata | Prevent partial accounting records and make every step independently reconcilable |
+| D30 | 2026-07-20 | Require buyer-authenticated on-chain delivery confirmation before happy-path contract release; retain arbiter authorization for the actual movement | A backend arbiter cannot release normal escrow before the buyer confirms delivery |
+| D31 | 2026-07-20 | Block order mutations whenever reconciliation has an unresolved mismatch | Golden Rule #7 requires fail-closed dependent operations |
+| D32 | 2026-07-20 | Use a deterministic Soroban adapter only for local/test; require KMS-backed RPC submission in staging/production | Enable reproducible tests without pretending synthetic receipts are live chain settlement |
+| D33 | 2026-07-20 | Keep Phase 2 runtime persistence in-memory until migration `0004` can be validated with production Postgres/Redis adapters | Preserve explicit interfaces and avoid claiming untested financial persistence |
+| D34 | 2026-07-20 | Store safe local stack defaults in gitignored `infra/.env`; leave external credentials commented/manual | Make local setup reproducible without committing API keys or secrets |
 
 ---
 
@@ -146,6 +174,10 @@
 | Wallet dependency on Windows | A transitive Trezor/Stellar SDK postinstall expects `yarn setup` and the Unix `true` command | Installed published Wallets Kit artifacts with `npm install --ignore-scripts`; typecheck and production build pass; CI should verify normal clean install |
 | Supabase secret exposure | A server secret was pasted in conversation | Rotate it immediately; keep replacement only in gitignored local env/secret manager and never surface its value |
 | Path payment liquidity | Thin corridors → slippage | Fee/slippage constraints in routing |
+| Phase 2 chain adapter | Local deterministic receipts are not public-testnet settlement | Deploy contract and implement a KMS-backed Soroban RPC adapter before staging |
+| Phase 2 persistence | Runtime payment/idempotency/reconciliation stores are in-memory | Migration `0004` defines the contract; implement and transaction-test Postgres/Redis adapters |
+| Local database tooling | Docker and psql are unavailable on this machine | Validate migrations in CI or after installing Docker Desktop/Postgres client |
+| Contract toolchain | Windows cargo fails inside Soroban dependency macro compilation | Run `cargo test` in Linux CI; use a working Stellar CLI for testnet deployment |
 
 ---
 
@@ -190,6 +222,7 @@
 | 2026-07-18 | **Phase 0 scaffold implemented.** Built all six portions + root README/.gitignore. `shared` contracts package; `backend` modular monolith (config, logging, error taxonomy, idempotency + auth middleware, double-entry ledger with balancing enforcement, Stellar wrappers, KMS signing boundary, `/health`); Supabase migrations incl. ledger tables + balancing trigger + seed; `ai` FastAPI advisory service; `contracts` Soroban escrow + rwa_token; `frontend` Next.js + Tailwind design tokens; `infra` Dockerfiles + docker-compose + CI. Verified locally: backend lint/typecheck/test(17)/build green, shared build green, frontend build green. Decisions D12–D18 recorded. |
 | 2026-07-18 | **Supabase wired in (D19).** Added `@supabase/supabase-js` + `jose`; config now recognizes `SUPABASE_URL/PUBLISHABLE_KEY/SECRET_KEY/JWKS_URL`. New `modules/auth`: Supabase admin client adapter, JWKS JWT verifier, and a verifier factory (JWKS in dev/prod, dev stub in test, stub refused in staging/prod). Ledger routes use the selected verifier. Local `backend/.env` created (gitignored) with the project's values. Runtime smoke confirmed: `/health` ok; ledger endpoint rejects no-token / dev-token / bogus-JWT with 401 while Supabase JWKS verification is active. Backend lint/typecheck/test(17)/build still green. DB still uses raw `DATABASE_URL` (needs the project DB password to point at Supabase Postgres). |
 | 2026-07-18 | **Phase 1 Identity & Wallet application implementation completed (D20–D28).** Added shared contracts and migration `0003`; KMS-boundary SEP-10 challenges, signature/replay checks, hashed opaque sessions, and Supabase/dev verifier composition; sandbox KYC/KYB provider; timeout-safe advisory AI integration; backend-owned policy, human review, verified profiles, and PII-safe audit; Wallets Kit sign-in; `/kyc` onboarding/status and `/admin/kyc` compliance UI; exact-origin CORS and environment template. Verified locally: shared build; backend lint/typecheck/24 tests/build; frontend typecheck/production build; AI byte-compilation. AI pytest, contract tests, and DB migrations remain CI-only on this machine. Runtime Phase 1 repositories are still in-memory pending Postgres adapters. Supabase server secret rotation remains required. |
+| 2026-07-20 | **Phase 2 application implementation completed (D29–D34).** Added shared payment/reconciliation contracts; strict authenticated/idempotent order lifecycle and arbiter refund; atomic balanced ledger + linked chain + audit transition records; deterministic local Soroban boundary; scheduled reconciliation, alert/report, and blocking; migration `0004`; buyer-confirmed contract release and tests; `/escrow` UI; testnet deploy helper; and gitignored `infra/.env`. Validated shared build, backend lint/typecheck/28 tests, frontend production build, and diff checks. Public testnet, production adapters, DB migration execution, and contract CI remain unchecked/manual prerequisites. |
 
 ---
 

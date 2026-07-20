@@ -6,6 +6,7 @@ import {
   type CurrencyCode,
 } from "@stellartrust/shared";
 import { ChainError } from "../../lib/errors.js";
+import { config } from "../../config/index.js";
 
 export interface ChainTransitionInput {
   orderId: string;
@@ -122,4 +123,21 @@ export class DeterministicEscrowGateway implements EscrowGateway {
   async getEscrowState(contractId: string): Promise<EscrowState | undefined> {
     return this.contracts.get(contractId)?.state;
   }
+}
+
+
+
+/** Fail closed rather than running a synthetic chain adapter outside local/test. */
+export function createEscrowGateway(): EscrowGateway {
+  if (config.ESCROW_GATEWAY === "deterministic") {
+    if (config.NODE_ENV === "staging" || config.NODE_ENV === "production") {
+      throw new Error(
+        "ESCROW_GATEWAY=deterministic is forbidden outside development/test",
+      );
+    }
+    return new DeterministicEscrowGateway();
+  }
+  throw new Error(
+    "ESCROW_GATEWAY=soroban-rpc requires the KMS-backed production adapter",
+  );
 }

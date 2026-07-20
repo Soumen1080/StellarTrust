@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { EscrowState, KycStatus } from "@stellartrust/shared";
 import { StatusPill } from "@/components/StatusPill";
 import { WalletConnect } from "@/features/wallet/WalletConnect";
@@ -21,12 +22,12 @@ export default function Home() {
 
       <div className="mt-lg flex flex-wrap gap-sm">
         <WalletConnect />
-        <a
+        <Link
           href="/escrow"
           className="rounded-md bg-surface-card-dark px-lg py-sm text-sm font-semibold text-body"
         >
           Open escrow dashboard
-        </a>
+        </Link>
       </div>
 
       <section className="mt-section grid gap-lg sm:grid-cols-3">

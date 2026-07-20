@@ -14,8 +14,9 @@ Trustless on-chain logic (Rust → WASM):
 
 ## Toolchain
 
-These contracts are **not** built by the Node/Python CI jobs. They require the
-Rust + Soroban toolchain:
+These contracts require Rust + the Stellar CLI. The Windows machine used for
+this update cannot compile Soroban dependencies reliably, so CI/Linux remains
+the authoritative contract test environment.
 
 ```bash
 # 1. Rust
@@ -30,17 +31,28 @@ cargo test                 # runs unit tests (soroban-sdk testutils)
 stellar contract build     # produces optimized WASM in target/
 ```
 
-## Testnet deploy (Phase 2 wires these into the backend)
+## Testnet deploy (manual Phase 2 operation)
 
-```bash
-stellar keys generate deployer --network testnet
-stellar contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/escrow.wasm \
-  --source deployer --network testnet
+The contract code and unit tests are implemented. A real public-testnet deploy
+requires a manually created/funded Stellar CLI identity; no secret seed belongs
+in this repository.
+
+```powershell
+stellar keys generate stellartrust-deployer --network testnet
+stellar keys fund stellartrust-deployer --network testnet
+.\contracts\scripts\deploy-testnet.ps1 -Source stellartrust-deployer
 ```
+
+Save the returned **public contract ID** in deployment configuration. Then run
+initialize/confirm/release against testnet using buyer, seller, token, and
+arbiter test identities before checking off the operational criteria in
+`Phases.md`.
 
 ## Status
 
-Phase 0 skeletons with unit tests. **Not compiled/tested in this environment**
-(Rust toolchain unavailable / blocked here). Build + `cargo test` must run in a
-Rust-enabled environment or a dedicated CI job before Phase 2 integration.
+Phase 2 contract logic is implemented with lock, buyer-authenticated delivery
+confirmation, arbiter-authorized release/refund, dispute handling, and unit
+coverage including rejection of release without confirmation. The application
+uses a deterministic contract adapter locally. Public-testnet deployment and
+smoke verification remain manual because they require funded identities and a
+working Stellar CLI/toolchain.

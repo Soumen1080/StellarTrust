@@ -460,6 +460,15 @@ verdict.
   top-of-page actions.
 - Spacing on a 4-multiple scale; major bands at `{spacing.section}` (80px).
 
+## Phase 2 implementation note
+
+The `/escrow` dashboard now implements `{component.order-card}` and
+`{component.escrow-status-card}` behavior for create, accept, deposit, lock,
+confirm, and release. Every state uses the icon+label+color status pill, money
+and IDs use the mono type role, and blocked reconciliation is shown as an amber
+operational warning. The create-order form uses the light transactional surface
+while order progress remains on the dark dashboard surface.
+
 ## Colors
 
 ### Brand & Accent

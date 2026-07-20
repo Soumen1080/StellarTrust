@@ -1,7 +1,7 @@
 # StellarTrust — Delivery Phases
 
 > **Status:** Living document. Update as phases progress or scope changes.
-> **Last updated:** 2026-07-18
+> **Last updated:** 2026-07-20
 > **Track:** Production.
 
 Each phase lists **deliverables** and **acceptance criteria** (done = criteria
@@ -51,18 +51,41 @@ met + build/tests pass + Memory.md updated).
 
 ## Phase 2 — Core Payment + Escrow (heart of MVP)
 
+**Status:** Application implementation complete; production adapters and live
+Stellar testnet deployment remain manual/operational prerequisites.
+
 **Goal:** Buyer→seller escrow happy path, fully ledgered.
 
 **Deliverables**
-- Soroban **escrow contract** (lock/release/refund) + tests on testnet.
-- Order lifecycle: create → accept → deposit → lock → confirm → release.
-- Double-entry ledger wired into every step.
-- Idempotent payment/escrow endpoints; reconciliation job (ledger ↔ chain).
+- [x] Soroban **escrow contract** implements lock/release/refund, buyer-authenticated
+  delivery confirmation, arbiter authorization, and unit tests.
+- [ ] Deploy the contract and run the smoke flow on public Stellar testnet
+  (requires a manually funded testnet identity and Stellar CLI; use
+  `contracts/scripts/deploy-testnet.ps1`).
+- [x] Order lifecycle: create → accept → deposit → lock → confirm → release,
+  with party/role authorization and an arbiter-only refund path.
+- [x] Double-entry ledger wired into every lifecycle step through one atomic
+  financial-transition commit boundary.
+- [x] Authenticated, idempotent payment/escrow endpoints.
+- [x] Scheduled reconciliation job (ledger ↔ chain), unresolved-mismatch report,
+  alert logging, and fail-closed order blocking.
+- [x] Buyer/seller escrow dashboard at `/escrow`.
+- [x] Forward-only Phase 2 Postgres schema contract in migration `0004`.
+- [ ] Replace local in-memory/deterministic adapters with validated Postgres,
+  Redis, KMS/HSM, and Soroban RPC adapters for staging/production.
 
 **Acceptance criteria**
-- Funds lock in the contract and release only on authorized confirmation.
-- Every step produces balanced ledger entries + a chain tx record.
-- Reconciliation reports zero unresolved mismatches for the happy path.
+- [x] Contract code requires buyer confirmation before happy-path release and
+  requires arbiter authorization for release/refund; automated unit coverage is
+  present.
+- [ ] Verify real funds lock and release against the deployed public testnet
+  contract (manual credentials/funding required).
+- [x] Every local/application transition produces balanced ledger entries and a
+  linked chain transaction record.
+- [x] Automated happy-path reconciliation reports zero unresolved mismatches
+  (six lifecycle records checked).
+- [ ] Verify the same zero-mismatch result against testnet + production-style
+  Postgres/Redis adapters.
 
 ---
 
@@ -141,4 +164,4 @@ met + build/tests pass + Memory.md updated).
 ## Cross-Phase Definition of Done
 - Build + relevant tests pass.
 - Golden rules (Rules.md) upheld.
-- `docs/Memory.md` updated (status + decisions + changelog).
+- `Memory.md` updated (status + decisions + changelog).
