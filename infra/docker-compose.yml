@@ -39,13 +39,13 @@ services:
     build:
       context: ..
       dockerfile: infra/docker/backend.Dockerfile
+    env_file:
+      - .env
     environment:
       NODE_ENV: development
       PORT: "8080"
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/stellartrust
       REDIS_URL: redis://redis:6379
-      STELLAR_NETWORK: testnet
-      SIGNER_PROVIDER: local-stub
       AI_SERVICE_URL: http://ai:8000
     ports:
       - "8080:8080"
@@ -66,6 +66,8 @@ services:
     build:
       context: ..
       dockerfile: infra/docker/frontend.Dockerfile
+    env_file:
+      - .env
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
     ports:

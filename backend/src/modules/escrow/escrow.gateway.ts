@@ -37,6 +37,7 @@ export interface EscrowGateway {
 interface ContractSnapshot {
   state: EscrowState;
   orderId: string;
+  deliveryConfirmed: boolean;
 }
 
 /**
@@ -58,6 +59,7 @@ export class DeterministicEscrowGateway implements EscrowGateway {
       this.contracts.set(contractId, {
         orderId: input.orderId,
         state: EscrowState.Locked,
+        deliveryConfirmed: false,
       });
     }
 
@@ -71,9 +73,20 @@ export class DeterministicEscrowGateway implements EscrowGateway {
       if (!contract || contract.orderId !== input.orderId) {
         throw new ChainError("Escrow contract could not be verified");
       }
+      if (input.transition === PaymentTransition.Confirm) {
+        if (contract.state !== EscrowState.Locked || contract.deliveryConfirmed) {
+          throw new ChainError("Only locked escrow can be confirmed once");
+        }
+        contract.deliveryConfirmed = true;
+      }
       if (input.transition === PaymentTransition.Release) {
-        if (contract.state !== EscrowState.Locked) {
-          throw new ChainError("Only locked escrow can be released");
+        if (
+          contract.state !== EscrowState.Locked ||
+          !contract.deliveryConfirmed
+        ) {
+          throw new ChainError(
+            "Release requires locked escrow and buyer confirmation",
+          );
         }
         contract.state = EscrowState.Released;
       }

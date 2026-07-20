@@ -50,9 +50,10 @@ fn initialize_locks_funds() {
 }
 
 #[test]
-fn release_pays_seller() {
+fn release_pays_seller_after_buyer_confirmation() {
     let env = Env::default();
     let (client, _buyer, seller, _arbiter, token) = setup(&env);
+    client.confirm_delivery();
     client.release();
     assert_eq!(client.state(), State::Released);
     assert_eq!(token.balance(&seller), 500);
@@ -82,7 +83,17 @@ fn dispute_then_release() {
 fn double_release_fails() {
     let env = Env::default();
     let (client, _buyer, _seller, _arbiter, _token) = setup(&env);
+    client.confirm_delivery();
     client.release();
     // Second release must fail (state is no longer Locked/Disputed).
+    client.release();
+}
+
+
+#[test]
+#[should_panic]
+fn release_without_buyer_confirmation_fails() {
+    let env = Env::default();
+    let (client, _buyer, _seller, _arbiter, _token) = setup(&env);
     client.release();
 }

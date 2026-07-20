@@ -37,6 +37,8 @@ pub struct Escrow {
     pub token: Address,
     pub amount: i128,
     pub state: State,
+    /// Buyer-authenticated delivery confirmation required for happy-path release.
+    pub delivery_confirmed: bool,
 }
 
 #[contracterror]
@@ -83,15 +85,32 @@ impl EscrowContract {
             token: token_id,
             amount,
             state: State::Locked,
+            delivery_confirmed: false,
         };
         env.storage().instance().set(&DataKey::Escrow, &escrow);
         Ok(())
     }
 
-    /// Release locked funds to the seller. Only the arbiter may authorize.
+    /// Record buyer-authenticated delivery confirmation on-chain.
+    pub fn confirm_delivery(env: Env) -> Result<(), Error> {
+        let mut escrow = Self::load(&env)?;
+        if escrow.state != State::Locked || escrow.delivery_confirmed {
+            return Err(Error::InvalidState);
+        }
+        escrow.buyer.require_auth();
+        escrow.delivery_confirmed = true;
+        env.storage().instance().set(&DataKey::Escrow, &escrow);
+        Ok(())
+    }
+
+    /// Release funds to the seller. The arbiter signs the movement, but a
+    /// happy-path release also requires the buyer's prior on-chain confirmation.
+    /// A disputed escrow follows the separately audited arbiter resolution path.
     pub fn release(env: Env) -> Result<(), Error> {
         let mut escrow = Self::load(&env)?;
-        if escrow.state != State::Locked && escrow.state != State::Disputed {
+        if escrow.state != State::Disputed
+            && (escrow.state != State::Locked || !escrow.delivery_confirmed)
+        {
             return Err(Error::InvalidState);
         }
         escrow.arbiter.require_auth();
