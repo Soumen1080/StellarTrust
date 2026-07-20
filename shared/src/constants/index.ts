@@ -44,6 +44,27 @@ export const EscrowState = {
 } as const;
 export type EscrowState = (typeof EscrowState)[keyof typeof EscrowState];
 
+/** Financially recorded Phase 2 order transitions. */
+export const PaymentTransition = {
+  Create: "create",
+  Accept: "accept",
+  Deposit: "deposit",
+  Lock: "lock",
+  Confirm: "confirm",
+  Release: "release",
+  Refund: "refund",
+} as const;
+export type PaymentTransition =
+  (typeof PaymentTransition)[keyof typeof PaymentTransition];
+
+/** Ledger-to-chain reconciliation outcome. */
+export const ReconciliationStatus = {
+  Matched: "matched",
+  Mismatch: "mismatch",
+} as const;
+export type ReconciliationStatus =
+  (typeof ReconciliationStatus)[keyof typeof ReconciliationStatus];
+
 /** Dispute lifecycle. */
 export const DisputeStatus = {
   Open: "open",

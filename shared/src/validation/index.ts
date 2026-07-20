@@ -10,6 +10,7 @@ import {
   CurrencyCode,
   EntryDirection,
   HumanKycDecision,
+  PaymentTransition,
   SUPPORTED_CURRENCIES,
 } from "../constants/index.js";
 
@@ -59,6 +60,27 @@ export const idempotencyKeySchema = z
   .string()
   .min(8, "idempotency key too short")
   .max(200);
+
+// ── Phase 2: Core Payment + Escrow ───────────────────────────────────────────
+
+export const createOrderInputSchema = z.object({
+  sellerId: z.string().min(1).max(128),
+  amount: moneySchema.extend({
+    amount: minorUnitAmountSchema.refine((value) => value !== "0", {
+      message: "order amount must be greater than zero",
+    }),
+  }),
+});
+
+export const paymentTransitionSchema = z.enum([
+  PaymentTransition.Create,
+  PaymentTransition.Accept,
+  PaymentTransition.Deposit,
+  PaymentTransition.Lock,
+  PaymentTransition.Confirm,
+  PaymentTransition.Release,
+  PaymentTransition.Refund,
+]);
 
 // ── Phase 1: Identity & Wallet ────────────────────────────────────────────────
 
@@ -150,6 +172,7 @@ export const kycReviewDecisionInputSchema = z.object({
 export type LedgerTransactionInputParsed = z.infer<
   typeof ledgerTransactionInputSchema
 >;
+export type CreateOrderInputParsed = z.infer<typeof createOrderInputSchema>;
 export type Sep10ChallengeRequestParsed = z.infer<
   typeof sep10ChallengeRequestSchema
 >;

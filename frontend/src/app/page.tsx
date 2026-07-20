@@ -19,8 +19,14 @@ export default function Home() {
         time, protected by a double-entry ledger.
       </p>
 
-      <div className="mt-lg">
+      <div className="mt-lg flex flex-wrap gap-sm">
         <WalletConnect />
+        <a
+          href="/escrow"
+          className="rounded-md bg-surface-card-dark px-lg py-sm text-sm font-semibold text-body"
+        >
+          Open escrow dashboard
+        </a>
       </div>
 
       <section className="mt-section grid gap-lg sm:grid-cols-3">

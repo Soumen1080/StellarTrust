@@ -3,9 +3,9 @@
  * Fixed color mapping; always label + color (icon added later). Never uses brand
  * yellow for status.
  */
-import type { EscrowState, KycStatus } from "@stellartrust/shared";
+import type { EscrowState, KycStatus, OrderStatus } from "@stellartrust/shared";
 
-type Status = EscrowState | KycStatus;
+type Status = EscrowState | KycStatus | OrderStatus;
 
 const STATUS_CLASS: Record<string, string> = {
   locked: "text-status-locked",
@@ -16,6 +16,11 @@ const STATUS_CLASS: Record<string, string> = {
   rejected: "text-status-rejected",
   under_review: "text-status-review",
   pending: "text-muted",
+  created: "text-muted",
+  accepted: "text-info",
+  deposited: "text-info",
+  confirmed: "text-status-verified",
+  cancelled: "text-status-refunded",
 };
 
 export function StatusPill({ status }: { status: Status }) {
@@ -24,6 +29,7 @@ export function StatusPill({ status }: { status: Status }) {
     <span
       className={`inline-flex items-center rounded-pill border border-hairline-dark px-sm py-xxs text-xs font-medium ${cls}`}
     >
+      <span aria-hidden="true" className="mr-xs">●</span>
       {status.replace(/_/g, " ")}
     </span>
   );

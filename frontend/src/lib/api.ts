@@ -8,6 +8,10 @@ import type {
   KycApplicationResponse,
   KycReviewDecisionInput,
   KycReviewItem,
+  CreateOrderInput,
+  OrderDetailsResponse,
+  OrderMutationResponse,
+  ReconciliationReportDTO,
   Sep10ChallengeResponse,
 } from "@stellartrust/shared";
 
@@ -116,5 +120,42 @@ export const api = {
       devApprovalPassword: password,
       headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify({ reason }),
+    }),
+  createOrder: (
+    accessToken: string,
+    idempotencyKey: string,
+    input: CreateOrderInput,
+  ) =>
+    request<OrderMutationResponse>("/api/payments/orders", {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  listOrders: (accessToken: string) =>
+    request<{ orders: OrderDetailsResponse[] }>("/api/payments/orders", {
+      accessToken,
+    }),
+  transitionOrder: (
+    accessToken: string,
+    orderId: string,
+    action: "accept" | "deposit" | "lock" | "confirm" | "release" | "refund",
+    idempotencyKey: string,
+  ) =>
+    request<OrderMutationResponse>(
+      `/api/payments/orders/${orderId}/${action}`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    ),
+  runReconciliation: (accessToken: string, idempotencyKey: string) =>
+    request<ReconciliationReportDTO>("/api/payments/reconciliation/run", {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
     }),
 };

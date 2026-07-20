@@ -13,6 +13,8 @@ import type {
   KycStatus,
   LedgerAccountType,
   OrderStatus,
+  PaymentTransition,
+  ReconciliationStatus,
 } from "../constants/index.js";
 
 /** Monetary amount as a fixed-precision minor-unit string to avoid float drift. */
@@ -96,6 +98,7 @@ export interface OrderDTO {
   amount: Money;
   status: OrderStatus;
   createdAt: string;
+  updatedAt: string;
 }
 
 export interface EscrowDTO {
@@ -104,6 +107,53 @@ export interface EscrowDTO {
   contractId: string | null;
   state: EscrowState;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateOrderInput {
+  sellerId: string;
+  amount: Money;
+}
+
+export interface PaymentTransitionDTO {
+  id: string;
+  orderId: string;
+  transition: PaymentTransition;
+  actorId: string;
+  ledgerTransaction: LedgerTransactionDTO;
+  stellarTransaction: StellarTxRecord;
+  createdAt: string;
+}
+
+export interface OrderMutationResponse {
+  order: OrderDTO;
+  escrow: EscrowDTO | null;
+  transition: PaymentTransitionDTO;
+}
+
+export interface OrderDetailsResponse {
+  order: OrderDTO;
+  escrow: EscrowDTO | null;
+  transitions: PaymentTransitionDTO[];
+  blockedByReconciliation: boolean;
+}
+
+export interface ReconciliationMismatchDTO {
+  id: string;
+  orderId: string;
+  transitionId: string;
+  reason: string;
+  resolvedAt: string | null;
+  createdAt: string;
+}
+
+export interface ReconciliationReportDTO {
+  status: ReconciliationStatus;
+  checked: number;
+  matched: number;
+  unresolved: number;
+  mismatches: ReconciliationMismatchDTO[];
+  ranAt: string;
 }
 
 // ── Disputes / AI (advisory) ──────────────────────────────────────────────────

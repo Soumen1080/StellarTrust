@@ -10,6 +10,7 @@ import { rateLimit } from "express-rate-limit";
 import helmetImport from "helmet";
 import { pinoHttp } from "pino-http";
 import { config } from "./config/index.js";
+import { ReconciliationJob } from "./jobs/reconciliation.job.js";
 import { logger } from "./lib/logger.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
 import { requestId, type RequestWithId } from "./middleware/requestId.js";
@@ -31,6 +32,10 @@ import {
 import { KycService } from "./modules/kyc/kyc.service.js";
 import { createKycProvider } from "./modules/kyc/providers/provider.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
+import { DeterministicEscrowGateway } from "./modules/escrow/escrow.gateway.js";
+import { InMemoryPaymentRepository } from "./modules/payments/payment.repository.js";
+import { createPaymentRouter } from "./modules/payments/payment.routes.js";
+import { PaymentService } from "./modules/payments/payment.service.js";
 import { createSigner } from "./modules/stellar/signer.js";
 
 type HelmetFactory = () => RequestHandler;
@@ -112,6 +117,7 @@ export function createApp(): Express {
     sep10.sessionVerifier,
     externalVerifier,
   );
+  const audit = new InMemoryAuditRepository();
   const kyc = new KycService(
     createKycProvider(),
     config.isTest
@@ -119,13 +125,26 @@ export function createApp(): Express {
       : new HttpKycRiskClient(),
     new InMemoryKycRepository(),
     identities,
-    new InMemoryAuditRepository(),
+    audit,
   );
+  const paymentRepository = new InMemoryPaymentRepository();
+  const escrowGateway = new DeterministicEscrowGateway();
+  const payments = new PaymentService(paymentRepository, escrowGateway, audit);
+  const reconciliation = new ReconciliationJob(
+    paymentRepository,
+    escrowGateway,
+    config.RECONCILIATION_INTERVAL_MS,
+  );
+  app.locals.reconciliationJob = reconciliation;
 
   // ── Module routers ────────────────────────────────────────────────────────
   app.use("/api/auth", createAuthRouter(sep10, identities, bearerVerifier));
   app.use("/api/kyc", createKycRouter(kyc, bearerVerifier));
   app.use("/api/ledger", createLedgerRouter(undefined, bearerVerifier));
+  app.use(
+    "/api/payments",
+    createPaymentRouter(payments, reconciliation, bearerVerifier),
+  );
 
   // ── Error boundary ──────────────────────────────────────────────────────
   app.use(notFoundHandler);

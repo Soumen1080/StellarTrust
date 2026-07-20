@@ -5,6 +5,11 @@ import { closePool } from "./db/index.js";
 import { logger } from "./lib/logger.js";
 
 const app = createApp();
+const reconciliationJob = app.locals.reconciliationJob as {
+  start(): void;
+  stop(): void;
+};
+reconciliationJob.start();
 
 const server = app.listen(config.PORT, () => {
   logger.info(
@@ -15,6 +20,7 @@ const server = app.listen(config.PORT, () => {
 
 async function shutdown(signal: string): Promise<void> {
   logger.info({ signal }, "shutting down");
+  reconciliationJob.stop();
   server.close(() => {
     void closePool().finally(() => process.exit(0));
   });
