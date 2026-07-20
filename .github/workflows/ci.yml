@@ -26,10 +26,10 @@ jobs:
           node-version: "24"
       - name: Build shared contracts
         working-directory: shared
-        run: npm install --no-audit --no-fund && npm run build
+        run: npm ci --workspaces=false --no-audit --no-fund && npm run build
       - name: Install backend
         working-directory: backend
-        run: npm install --no-audit --no-fund
+        run: npm ci --workspaces=false --no-audit --no-fund
       - name: Lint
         working-directory: backend
         run: npm run lint
