@@ -2,22 +2,48 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
 
 const links = [
   { href: "/", label: "Overview" },
   { href: "/escrow", label: "Escrow" },
   { href: "/kyc", label: "Verification" },
-  { href: "/admin/kyc", label: "Compliance" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileNavRef = useRef<HTMLElement>(null);
+  const firstMobileLinkRef = useRef<HTMLAnchorElement>(null);
   const light = pathname === "/kyc";
 
   useEffect(() => setOpen(false), [pathname]);
+  useEffect(() => {
+    if (!open) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    firstMobileLinkRef.current?.focus();
+    const handleMenuKeydown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+        menuButtonRef.current?.focus();
+        return;
+      }
+      if (event.key !== "Tab" || !mobileNavRef.current) return;
+      const focusable = Array.from(mobileNavRef.current.querySelectorAll<HTMLElement>("a[href], button:not([disabled])"));
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    window.addEventListener("keydown", handleMenuKeydown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleMenuKeydown);
+    };
+  }, [open]);
 
   return (
     <div className={light ? "min-h-screen bg-surface-soft-light text-ink" : "min-h-screen bg-canvas-dark text-body"}>
@@ -41,15 +67,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Link href="/escrow" className="btn-primary">Launch app <Icon name="arrow-right" className="h-4 w-4" /></Link>
           </div>
 
-          <button type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-controls="mobile-navigation" aria-label={open ? "Close navigation" : "Open navigation"} className={`grid h-10 w-10 place-items-center rounded-md border md:hidden ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
+          <button ref={menuButtonRef} type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-controls="mobile-navigation" aria-label={open ? "Close navigation" : "Open navigation"} className={`grid h-10 w-10 place-items-center rounded-md border md:hidden ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
             <Icon name={open ? "x" : "menu"} />
           </button>
         </div>
         {open ? (
-          <nav id="mobile-navigation" className={`border-t px-md py-md md:hidden ${light ? "border-hairline-light bg-white" : "border-hairline-dark bg-canvas-dark"}`} aria-label="Mobile navigation">
-            <div className="mx-auto grid max-w-[1440px] gap-xs">
-              {links.map((link) => <Link key={link.href} href={link.href} className={`rounded-md px-md py-sm font-medium ${pathname === link.href ? "bg-primary text-ink" : light ? "text-ink" : "text-body"}`}>{link.label}</Link>)}
-              <Link href="/escrow" className="btn-primary mt-sm justify-center">Launch app <Icon name="arrow-right" className="h-4 w-4" /></Link>
+          <nav ref={mobileNavRef} id="mobile-navigation" className={`fixed inset-x-0 bottom-0 top-16 z-50 flex flex-col border-t px-md py-lg md:hidden ${light ? "border-hairline-light bg-white" : "border-hairline-dark bg-canvas-dark"}`} aria-label="Mobile navigation">
+            <div className="grid gap-xs">
+              {links.map((link, index) => <Link ref={index === 0 ? firstMobileLinkRef : undefined} key={link.href} href={link.href} aria-current={pathname === link.href ? "page" : undefined} className={`rounded-md px-md py-md text-lg font-semibold ${pathname === link.href ? "bg-primary text-ink" : light ? "text-ink" : "text-body"}`}>{link.label}</Link>)}
+            </div>
+            <div className={`mt-auto border-t pt-lg ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
+              <p className={`mb-md text-sm ${light ? "text-muted" : "text-muted-strong"}`}>Secure escrow and identity verification on Stellar testnet.</p>
+              <Link href="/escrow" className="btn-primary w-full justify-center">Launch app <Icon name="arrow-right" className="h-4 w-4" /></Link>
             </div>
           </nav>
         ) : null}
@@ -65,7 +94,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="grid grid-cols-2 gap-lg sm:grid-cols-4">
             {[
               ["Product", ["Escrow", "Verification"]],
-              ["Operations", ["Compliance", "System status"]],
+              ["Operations", ["Role-gated compliance", "System status"]],
               ["Security", ["SEP-10 auth", "Double-entry ledger"]],
               ["Resources", ["Architecture", "Developer API"]],
             ].map(([title, items]) => <div key={title as string}><p className="text-sm font-semibold">{title}</p><ul className="mt-sm space-y-xs text-sm text-muted">{(items as string[]).map((item) => <li key={item}>{item}</li>)}</ul></div>)}
