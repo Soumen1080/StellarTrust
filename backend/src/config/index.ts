@@ -21,18 +21,18 @@ const envSchema = z.object({
     .default("development"),
   PORT: z.coerce.number().int().positive().default(8080),
   FRONTEND_ORIGIN: z.string().url().default("http://localhost:3000"),
+  // Additional allowed browser origins (comma-separated). Env-driven; no
+  // deployment URLs hardcoded in source. Falls back to FRONTEND_ORIGIN alone.
   FRONTEND_ORIGINS: z
     .string()
-    .default(
-      "https://stellar-trust-frontend-git-main-soumen1080s-projects.vercel.app",
-    )
+    .default("")
     .transform((value) =>
       value
         .split(",")
         .map((origin) => origin.trim())
         .filter(Boolean),
     )
-    .pipe(z.array(z.string().url()).min(1)),
+    .pipe(z.array(z.string().url())),
   TEMP_KYC_APPROVAL_PASSWORD: z.string().min(8).optional(),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
@@ -59,6 +59,31 @@ const envSchema = z.object({
     .enum(["local-stub", "aws-kms", "gcp-kms"])
     .default("local-stub"),
   SIGNER_KEY_REF: z.string().default("local-stub-key-ref"),
+
+  // ── Development / demo shortcuts (see devlopement.md §6/§7) ──────────────
+  // DEMO_MODE unlocks a stable testnet-only signer loaded from the environment
+  // so deployed demos work without KMS. Forbidden on the public network.
+  DEMO_MODE: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true" || value === "1"),
+  // Stellar Ed25519 secret seed used ONLY by the demo signer on testnet.
+  // Provide via the host secret manager, never commit it.
+  DEMO_SIGNER_SECRET: z
+    .string()
+    .regex(/^S[A-Z2-7]{55}$/, "Must be a Stellar Ed25519 secret seed")
+    .optional(),
+  // Temporary KYC auto-approval for smooth development. Ignored in production.
+  KYC_AUTO_APPROVE: z
+    .string()
+    .default("false")
+    .transform((value) => value === "true" || value === "1"),
+  KYC_AUTO_APPROVE_DELAY_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(600_000)
+    .default(10_000),
 
   AI_SERVICE_URL: z.string().url().default("http://localhost:8000"),
 

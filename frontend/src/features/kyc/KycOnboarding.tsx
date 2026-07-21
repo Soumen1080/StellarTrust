@@ -41,6 +41,33 @@ export function KycOnboarding() {
     if (!identityLoading && isVerified) router.replace("/dashboard");
   }, [identityLoading, isVerified, router]);
 
+  // Development auto-approval: when a submission is pending auto-verify, poll the
+  // status endpoint (which resolves the timer server-side) until Verified.
+  useEffect(() => {
+    if (!session) return;
+    if (!result?.autoApproveAt) return;
+    if (result.status !== KycStatus.UnderReview) return;
+    let active = true;
+    const timer = setInterval(async () => {
+      try {
+        const snapshot = await api.kycStatus(session.accessToken);
+        if (!active) return;
+        if (snapshot.verification) setResult(snapshot.verification);
+        if (snapshot.status === KycStatus.Verified) {
+          clearInterval(timer);
+          await refreshProfile();
+          router.replace("/dashboard");
+        }
+      } catch {
+        // Transient failure — keep polling until verified or unmounted.
+      }
+    }, 2000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [result, session, refreshProfile, router]);
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!session) { setError("Connect and sign in with your Stellar wallet first."); return; }
@@ -94,7 +121,7 @@ export function KycOnboarding() {
     <aside className="space-y-lg lg:sticky lg:top-24">
       <section className="panel-light p-lg"><div className="flex items-center justify-between"><p className="text-sm font-semibold">Profile status</p>{profile ? <StatusPill status={profile.user.kycStatus} /> : <span className="text-xs text-muted">Loading…</span>}</div>{profile?.wallets[0] ? <div className="mt-md rounded-lg bg-surface-strong-light p-sm"><p className="text-[10px] uppercase tracking-wider text-muted">Connected wallet</p><p className="mt-xs truncate font-mono text-xs" title={profile.wallets[0].stellarPublicKey}>{profile.wallets[0].stellarPublicKey}</p></div> : null}{profile?.business ? <p className="mt-md text-sm font-medium">{profile.business.legalName}</p> : null}</section>
       <section className="panel-light p-lg"><p className="text-sm font-semibold">Checks included</p><ul className="mt-md space-y-md">{checks.map(([title, copy]) => <li key={title} className="flex gap-sm"><span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md bg-surface-strong-light text-muted"><Icon name="check" className="h-4 w-4" /></span><div><p className="text-sm font-medium">{title}</p><p className="mt-xxs text-xs text-muted">{copy}</p></div></li>)}</ul></section>
-      {result ? <section aria-live="polite" className="rounded-xl border border-hairline-dark bg-surface-card-dark p-lg text-body"><div className="flex items-center justify-between gap-sm"><span className="inline-flex items-center gap-xs rounded-pill border border-status-review/30 bg-status-review/10 px-sm py-xs text-xs font-semibold text-status-review"><Icon name="sparkles" className="h-3.5 w-3.5" />AI advisory</span><StatusPill status={result.status} /></div><div className="mt-lg flex items-end justify-between"><div><p className="text-xs text-muted">Confidence</p><p className="mt-xs font-mono text-2xl font-semibold text-on-dark">{(result.advisory.confidence * 100).toFixed(0)}%</p></div></div><p className="mt-md text-sm leading-6 text-muted-strong">{result.advisory.explanation}</p><ul className="mt-md space-y-xs border-t border-hairline-dark pt-md text-xs text-muted">{result.advisory.signals.map((signal) => <li key={signal} className="flex gap-xs"><span>•</span>{signal}</li>)}</ul>{result.reviewId ? <p className="mt-md rounded-md bg-status-review/10 px-sm py-xs font-mono text-xs text-status-review">Review queued · {result.reviewId}</p> : null}</section> : null}
+      {result ? <section aria-live="polite" className="rounded-xl border border-hairline-dark bg-surface-card-dark p-lg text-body"><div className="flex items-center justify-between gap-sm"><span className="inline-flex items-center gap-xs rounded-pill border border-status-review/30 bg-status-review/10 px-sm py-xs text-xs font-semibold text-status-review"><Icon name="sparkles" className="h-3.5 w-3.5" />AI advisory</span><StatusPill status={result.status} /></div><div className="mt-lg flex items-end justify-between"><div><p className="text-xs text-muted">Confidence</p><p className="mt-xs font-mono text-2xl font-semibold text-on-dark">{(result.advisory.confidence * 100).toFixed(0)}%</p></div></div><p className="mt-md text-sm leading-6 text-muted-strong">{result.advisory.explanation}</p><ul className="mt-md space-y-xs border-t border-hairline-dark pt-md text-xs text-muted">{result.advisory.signals.map((signal) => <li key={signal} className="flex gap-xs"><span>•</span>{signal}</li>)}</ul>{result.reviewId ? <p className="mt-md rounded-md bg-status-review/10 px-sm py-xs font-mono text-xs text-status-review">Review queued · {result.reviewId}</p> : null}{result.autoApproveAt && result.status === KycStatus.UnderReview ? <p className="mt-md flex items-center gap-xs rounded-md bg-status-review/10 px-sm py-xs text-xs text-status-review"><Icon name="clock" className="h-3.5 w-3.5" />Verifying automatically… redirecting when complete</p> : null}</section> : null}
     </aside>
   </div>;
 }

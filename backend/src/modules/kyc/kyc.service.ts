@@ -11,6 +11,7 @@ import {
   type KycReviewDecisionInput,
   type KycReviewItem,
   type KycRiskAdvisory,
+  type KycStatusResponse,
 } from "@stellartrust/shared";
 import { ConflictError, NotFoundError } from "../../lib/errors.js";
 import { logger } from "../../lib/logger.js";
@@ -27,6 +28,17 @@ function statusForDecision(decision: KycDecision): KycStatus {
   return KycStatus.UnderReview;
 }
 
+/**
+ * Development-only auto-approval options (see devlopement.md §6). When enabled,
+ * a submitted verification transitions to `verified` after `delayMs`, resolved
+ * lazily on read so it survives process/instance restarts. Never enabled in
+ * production (guarded at wiring time in app.ts).
+ */
+export interface KycServiceOptions {
+  autoApprove?: boolean;
+  autoApproveDelayMs?: number;
+}
+
 export class KycService {
   constructor(
     private readonly provider: KycProvider,
@@ -34,7 +46,16 @@ export class KycService {
     private readonly kycRepo: KycRepository,
     private readonly identities: IdentityRepository,
     private readonly audit: AuditRepository,
+    private readonly options: KycServiceOptions = {},
   ) {}
+
+  private get autoApproveEnabled(): boolean {
+    return Boolean(this.options.autoApprove);
+  }
+
+  private get autoApproveDelayMs(): number {
+    return this.options.autoApproveDelayMs ?? 10_000;
+  }
 
   async submit(
     userId: string,
@@ -42,35 +63,61 @@ export class KycService {
   ): Promise<KycApplicationResponse> {
     const verificationId = randomUUID();
     const providerResult = await this.provider.submit(input);
+    const submittedAt = new Date().toISOString();
 
     let aiAvailable = true;
     let advisory: KycRiskAdvisory;
-    try {
-      advisory = await this.riskClient.score({
-        subjectRef: verificationId,
-        signals: providerResult.riskSignals,
-        sanctionsHit: providerResult.sanctionsHit,
-        newParty: true,
-      });
-    } catch (err) {
+    let status: KycStatus;
+    let reviewId: string | null = null;
+    let autoApproveAt: string | null = null;
+    let auditReasons: string[];
+    let auditDecision: KycDecision;
+
+    if (this.autoApproveEnabled) {
+      // Development shortcut: skip the AI call entirely and schedule automatic
+      // verification. The real provider/AI/human path is preserved below.
       aiAvailable = false;
-      logger.warn(
-        { verificationId, errorType: (err as Error).name },
-        "KYC AI unavailable; routing to human review",
-      );
       advisory = {
-        riskScore: 0.5,
-        decision: KycDecision.Review,
-        confidence: 0,
-        explanation: "AI advisory unavailable; human review required.",
+        riskScore: 0,
+        decision: KycDecision.Approve,
+        confidence: 1,
+        explanation:
+          "Development auto-approval enabled; verification completes automatically.",
         signals: providerResult.riskSignals.map((signal) => signal.name),
       };
+      status = KycStatus.UnderReview;
+      autoApproveAt = new Date(Date.now() + this.autoApproveDelayMs).toISOString();
+      auditReasons = ["development_auto_approval"];
+      auditDecision = KycDecision.Review;
+    } else {
+      try {
+        advisory = await this.riskClient.score({
+          subjectRef: verificationId,
+          signals: providerResult.riskSignals,
+          sanctionsHit: providerResult.sanctionsHit,
+          newParty: true,
+        });
+      } catch (err) {
+        aiAvailable = false;
+        logger.warn(
+          { verificationId, errorType: (err as Error).name },
+          "KYC AI unavailable; routing to human review",
+        );
+        advisory = {
+          riskScore: 0.5,
+          decision: KycDecision.Review,
+          confidence: 0,
+          explanation: "AI advisory unavailable; human review required.",
+          signals: providerResult.riskSignals.map((signal) => signal.name),
+        };
+      }
+      const policy = decideKyc(providerResult.checks, advisory, { aiAvailable });
+      status = statusForDecision(policy.decision);
+      reviewId = policy.decision === KycDecision.Review ? randomUUID() : null;
+      auditReasons = policy.reasons;
+      auditDecision = policy.decision;
     }
 
-    const policy = decideKyc(providerResult.checks, advisory, { aiAvailable });
-    const status = statusForDecision(policy.decision);
-    const reviewId =
-      policy.decision === KycDecision.Review ? randomUUID() : null;
     const response: KycApplicationResponse = {
       verificationId,
       providerReference: providerResult.providerReference,
@@ -78,7 +125,8 @@ export class KycService {
       checks: providerResult.checks,
       advisory,
       reviewId,
-      submittedAt: new Date().toISOString(),
+      submittedAt,
+      autoApproveAt,
     };
 
     await this.kycRepo.saveVerification({ userId, response });
@@ -125,20 +173,64 @@ export class KycService {
       },
     });
     await this.audit.append({
-      actor: "system:kyc-decision-engine",
-      action: `kyc.${policy.decision}`,
+      actor: this.autoApproveEnabled
+        ? "system:kyc-auto-approve"
+        : "system:kyc-decision-engine",
+      action: `kyc.${auditDecision}`,
       entity: "kyc_verification",
       entityId: verificationId,
       metadata: {
         riskScore: advisory.riskScore,
         confidence: advisory.confidence,
-        reasons: policy.reasons,
+        reasons: auditReasons,
         aiAvailable,
         reviewId,
+        autoApproveAt,
       },
     });
 
     return response;
+  }
+
+  /**
+   * Returns the caller's current KYC status, first resolving any pending
+   * development auto-approval whose timer has elapsed. Stateless — safe across
+   * instance/process restarts (no in-memory timers).
+   */
+  async getStatus(userId: string): Promise<KycStatusResponse> {
+    await this.maybeAutoApprove(userId);
+    const profile = await this.identities.getProfile(userId);
+    return {
+      status: profile?.user.kycStatus ?? KycStatus.Pending,
+      verification: profile?.latestVerification ?? null,
+    };
+  }
+
+  private async maybeAutoApprove(userId: string): Promise<void> {
+    if (!this.autoApproveEnabled) return;
+    const profile = await this.identities.getProfile(userId);
+    const verification = profile?.latestVerification;
+    if (!verification?.autoApproveAt) return;
+    if (verification.status !== KycStatus.UnderReview) return;
+    if (verification.autoApproveAt > new Date().toISOString()) return;
+
+    const updatedResponse: KycApplicationResponse = {
+      ...verification,
+      status: KycStatus.Verified,
+    };
+    await this.kycRepo.updateVerification(
+      verification.verificationId,
+      updatedResponse,
+    );
+    await this.identities.setUserKycStatus(userId, KycStatus.Verified);
+    await this.identities.setLatestVerification(userId, updatedResponse);
+    await this.audit.append({
+      actor: "system:kyc-auto-approve",
+      action: "kyc.auto_verified",
+      entity: "kyc_verification",
+      entityId: verification.verificationId,
+      metadata: { development: true, scheduledFor: verification.autoApproveAt },
+    });
   }
 
   async listReviews(): Promise<KycReviewItem[]> {

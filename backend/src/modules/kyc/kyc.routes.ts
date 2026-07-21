@@ -57,6 +57,20 @@ export function createKycRouter(
   const router = Router();
   const idempotencyStore = new InMemoryIdempotencyStore();
 
+  router.get(
+    "/status",
+    requireAuth(bearerVerifier),
+    async (req, res, next) => {
+      try {
+        const userId = (req as AuthedRequest).auth?.userId;
+        if (!userId) throw new ValidationError("Authenticated user is missing");
+        res.json(await service.getStatus(userId));
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
   router.post(
     "/applications",
     requireAuth(bearerVerifier),

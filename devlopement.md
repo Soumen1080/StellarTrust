@@ -371,3 +371,150 @@ decision engine → human review) is already implemented and takes over.
 | Date | Change |
 |---|---|
 | 2026-07-22 | Created development log. Full codebase audit: catalogued 25+ issues across deployment, security, persistence, contracts, AI, frontend, and repo hygiene. Root-caused the "demo doesn't work" (auth signer + in-memory state + undeployed chain/AI). Recorded current strategy (frontend+backend first; stub contract+AI; 10s KYC auto-verify) and a 5-stage plan to production. Folded in and marked for deletion the `awsedrfgyhuji.md` scratch notes. |
+
+
+---
+
+## 10. Implementation Log — Stage 1, batch 1 (2026-07-22)
+
+This batch delivers the **code-only** parts of Stage 1 that unblock the
+frontend + backend flow and are testable without provisioning infrastructure:
+the **testnet demo signer**, the **10-second KYC auto-verify**, and **config
+hygiene**. The persistence swap (Postgres/Redis) and host migration are the next
+batch and require you to provision those services.
+
+### 10.1 What changed (file by file)
+
+**Shared contracts (`shared/`)**
+- `src/types/index.ts`
+  - Added optional `autoApproveAt?: string | null` to `KycApplicationResponse`
+    (the ISO time at which a development submission auto-verifies).
+  - Added new `KycStatusResponse { status, verification }` DTO for the polling
+    endpoint.
+
+**Backend config (`backend/src/config/index.ts`)**
+- Added dev/demo flags, all env-driven and validated:
+  - `DEMO_MODE` (bool) — unlocks the stable testnet demo signer.
+  - `DEMO_SIGNER_SECRET` (Stellar `S…` seed, optional, testnet only) — provided
+    via the host secret manager, never committed.
+  - `KYC_AUTO_APPROVE` (bool) — enables the 10s auto-verify shortcut.
+  - `KYC_AUTO_APPROVE_DELAY_MS` (default `10000`).
+- Removed the hardcoded personal Vercel URL from the `FRONTEND_ORIGINS`
+  default; it is now purely env-driven and defaults to empty (issue A5).
+
+**Signer boundary (`backend/src/modules/stellar/signer.ts`)**
+- Added `DemoEnvSigner`: loads a Stellar secret seed from the environment so the
+  server's SEP-10 signing key is **stable across serverless instances /
+  restarts** (the old `LocalStubSigner` generates a new random key per process,
+  which breaks SEP-10 when the challenge and verify calls hit different
+  instances). Fixes the immediate cause behind A1 for deployed **testnet demos**.
+- `createSigner()` now returns `DemoEnvSigner` when `DEMO_MODE=true`,
+  `DEMO_SIGNER_SECRET` is set, and `STELLAR_NETWORK=testnet` — even in
+  staging/production `NODE_ENV`. On the public network it refuses (returns
+  `UnavailableSigner`). Local dev still uses `LocalStubSigner`; real production
+  still requires `KmsSigner` (unchanged).
+
+**KYC service (`backend/src/modules/kyc/kyc.service.ts`)**
+- Added `KycServiceOptions { autoApprove, autoApproveDelayMs }` (constructor arg,
+  optional/defaulted so existing tests are unaffected).
+- `submit()`: when auto-approve is on, it **skips the external AI call** entirely
+  (no 3s timeout wait, no dependency on a deployed AI service), sets status to
+  `under_review`, and stamps `autoApproveAt = now + delay`. The real
+  provider → AI → decision-engine → human-review path is fully preserved in the
+  `else` branch and audit logging is unchanged in meaning (audit action still
+  reflects the **policy** decision, not the advisory).
+- Added `getStatus(userId)` and a private `maybeAutoApprove(userId)` that
+  **resolves the timer lazily on read** — no `setTimeout`, so it survives
+  process/instance restarts. When the stamped time has passed it flips the
+  verification + profile to `verified` and writes a `kyc.auto_verified` audit
+  event tagged development-only.
+
+**KYC routes (`backend/src/modules/kyc/kyc.routes.ts`)**
+- Added `GET /api/kyc/status` (authenticated) → returns `KycStatusResponse` and
+  triggers `maybeAutoApprove`. This is what the frontend polls.
+
+**App wiring (`backend/src/app.ts`)**
+- Passes `{ autoApprove: config.KYC_AUTO_APPROVE && !config.isProduction,
+  autoApproveDelayMs: config.KYC_AUTO_APPROVE_DELAY_MS }` into `KycService`.
+  **Auto-approve can never be active in production**, regardless of the flag.
+
+**Frontend API client (`frontend/src/lib/api.ts`)**
+- Added `api.kycStatus(accessToken)` → `GET /api/kyc/status`.
+
+**Frontend onboarding (`frontend/src/features/kyc/KycOnboarding.tsx`)**
+- After a submission that is pending auto-verify, it polls `api.kycStatus` every
+  2s; when `verified` it refreshes the identity and routes to `/dashboard`.
+- Added a "Verifying automatically… redirecting when complete" indicator on the
+  result panel while the timer is pending.
+
+**Env template (`backend/.env.example`)**
+- Documented `DEMO_MODE`, `DEMO_SIGNER_SECRET`, `KYC_AUTO_APPROVE`,
+  `KYC_AUTO_APPROVE_DELAY_MS`, and the now-empty `FRONTEND_ORIGINS` default.
+
+**Repo hygiene**
+- Deleted the scratch file `awsedrfgyhuji.md` (content preserved in §3).
+
+### 10.2 Verification performed
+
+- `shared`: `tsc` build passes.
+- `backend`: `typecheck` passes; `vitest run` → **29/29 tests pass** (fixed a
+  transient failure where the decision audit action had to keep reflecting the
+  policy decision, not the advisory decision).
+- `frontend`: `tsc --noEmit` passes against the rebuilt shared types.
+- Runtime boot: backend starts with `KYC_AUTO_APPROVE=true`; `/health` → 200.
+- Auto-verify end-to-end (in-memory smoke, then removed): `submit` →
+  `under_review` with `autoApproveAt`; immediate read stays `under_review`;
+  after the delay a read returns `verified`. **SMOKE PASS.**
+
+### 10.3 How to run the smooth dev flow now
+
+Backend (`backend/.env` or `.env.local`):
+```
+NODE_ENV=development
+KYC_AUTO_APPROVE=true
+KYC_AUTO_APPROVE_DELAY_MS=10000
+```
+Then connect a testnet wallet on the frontend, sign in (works locally via the
+stub signer), submit KYC → it shows "Verifying…" and lands on `/dashboard`
+after ~10s. No AI service or contract deployment required.
+
+For a **deployed testnet demo** (single persistent instance recommended):
+```
+DEMO_MODE=true
+STELLAR_NETWORK=testnet
+DEMO_SIGNER_SECRET=<testnet S… seed, funded, from the host secret manager>
+KYC_AUTO_APPROVE=true
+```
+> Caveat still open: with in-memory stores, a multi-instance deployment can lose
+> the SEP-10 challenge / session / order between requests. This batch does not
+> fix persistence — that is the next batch (Postgres/Redis + real repositories),
+> which needs you to provision the databases. Until then, run the deployed demo
+> on a **single** persistent instance.
+
+### 10.4 Updated shortcut status (from §7)
+
+| # | Shortcut | Status after this batch |
+|---|---|---|
+| S3 | KYC auto-verify after 10s | ✅ implemented (flag-gated, prod-safe, stateless) |
+| S4 | Testnet demo signer instead of KMS | ✅ implemented (`DEMO_MODE`, testnet-guarded) |
+| S1 | Deterministic escrow gateway | unchanged (still the dev path) |
+| S2 | AI call skipped | ✅ now explicitly bypassed when auto-approve is on |
+| S5 | In-memory stores | ⏳ next batch (needs Postgres/Redis provisioning) |
+
+### 10.5 Next batch (blocked on your input)
+
+1. **Provision Postgres + Redis** (or confirm Supabase + rotate the exposed
+   secret). Then I implement the real repositories to replace all `InMemory*`
+   and validate migrations `0001`–`0004`.
+2. **Confirm the backend host** (Railway / Render / Fly.io recommended — the
+   reconciliation scheduler needs a persistent process; Vercel serverless does
+   not fit). Frontend stays on Vercel.
+3. Resolve the duplicate serverless entrypoint (`api/index.ts` vs
+   `backend/api/index.ts`) once the host is chosen, to avoid breaking your
+   current deploy.
+
+### 10.6 Changelog
+
+| Date | Change |
+|---|---|
+| 2026-07-22 | Stage 1 batch 1 implemented: testnet `DemoEnvSigner` (DEMO_MODE), 10s KYC auto-verify (config-gated, stateless resolve-on-read, `GET /api/kyc/status`, frontend polling), shared `autoApproveAt` + `KycStatusResponse`, config hygiene (removed hardcoded origin). Backend 29/29 tests, frontend typecheck, and an auto-verify smoke all pass. Deleted `awsedrfgyhuji.md`. |

@@ -270,6 +270,18 @@ export interface KycApplicationResponse {
   advisory: KycRiskAdvisory;
   reviewId: string | null;
   submittedAt: string;
+  /**
+   * When set (development auto-approval only), the verification will
+   * automatically transition to `verified` at or after this ISO timestamp.
+   * Never set in production. See devlopement.md §6.
+   */
+  autoApproveAt?: string | null;
+}
+
+/** Current KYC status snapshot (used for auto-approval polling). */
+export interface KycStatusResponse {
+  status: KycStatus;
+  verification: KycApplicationResponse | null;
 }
 
 export interface KycReviewItem {

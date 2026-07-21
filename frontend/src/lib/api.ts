@@ -8,6 +8,7 @@ import type {
   KycApplicationResponse,
   KycReviewDecisionInput,
   KycReviewItem,
+  KycStatusResponse,
   CreateOrderInput,
   OrderDetailsResponse,
   OrderMutationResponse,
@@ -94,6 +95,8 @@ export const api = {
       headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify(input),
     }),
+  kycStatus: (accessToken: string) =>
+    request<KycStatusResponse>("/api/kyc/status", { accessToken }),
   listKycReviews: (accessToken: string) =>
     request<{ reviews: KycReviewItem[] }>("/api/kyc/reviews", {
       accessToken,

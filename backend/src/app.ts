@@ -143,6 +143,11 @@ export function createApp(): Express {
     new InMemoryKycRepository(),
     identities,
     audit,
+    {
+      // Development shortcut only — never auto-approve in production.
+      autoApprove: config.KYC_AUTO_APPROVE && !config.isProduction,
+      autoApproveDelayMs: config.KYC_AUTO_APPROVE_DELAY_MS,
+    },
   );
   const paymentRepository = new InMemoryPaymentRepository();
   const escrowGateway = createEscrowGateway();
