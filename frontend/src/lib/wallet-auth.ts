@@ -3,7 +3,12 @@ import type { AuthSessionResponse } from "@stellartrust/shared";
 import { api } from "./api";
 
 const SESSION_KEY = "stellartrust.sep10.session";
+export const AUTH_SESSION_CHANGE_EVENT = "stellartrust:auth-session-change";
 let initialized = false;
+
+function notifySessionChange(): void {
+  window.dispatchEvent(new Event(AUTH_SESSION_CHANGE_EVENT));
+}
 
 async function loadKit() {
   const [{ Networks, StellarWalletsKit }, { defaultModules }] =
@@ -48,6 +53,7 @@ export function saveSession(session: AuthSessionResponse): void {
   // sessionStorage limits token lifetime to the current browser tab. The token is
   // never written to logs, URLs, localStorage, or source-controlled config.
   window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  notifySessionChange();
 }
 
 export function loadSession(): AuthSessionResponse | null {
@@ -76,6 +82,8 @@ export async function disconnectWallet(): Promise<void> {
 
 export function clearSession(): void {
   if (typeof window !== "undefined") {
+    const hadSession = window.sessionStorage.getItem(SESSION_KEY) !== null;
     window.sessionStorage.removeItem(SESSION_KEY);
+    if (hadSession) notifySessionChange();
   }
 }

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AccountActionLink } from "@/components/AccountActionLink";
 import { Icon, type IconName } from "@/components/Icon";
 import { WalletConnect } from "@/features/wallet/WalletConnect";
 
@@ -55,7 +56,7 @@ export default function Home() {
         <div className="mx-auto max-w-[1280px] px-md py-section sm:px-lg"><div className="grid gap-xxl lg:grid-cols-[.75fr_1.25fr]"><div><p className="eyebrow">Simple by design</p><h2 className="mt-sm text-3xl font-bold tracking-tight sm:text-4xl">From wallet to settlement in three clear stages.</h2><p className="mt-md leading-7 text-muted">Each action is explicit, attributable, and protected by idempotent APIs.</p><Link href="/escrow" className="btn-primary mt-lg">Explore escrow <Icon name="arrow-right" className="h-4 w-4" /></Link></div><ol className="divide-y divide-hairline-light border-y border-hairline-light">{steps.map(([number, title, copy]) => <li key={number} className="grid gap-sm py-lg sm:grid-cols-[72px_1fr]"><span className="font-mono text-sm font-semibold text-primary-active">{number}</span><div><h3 className="font-semibold">{title}</h3><p className="mt-xs text-sm leading-6 text-muted">{copy}</p></div></li>)}</ol></div></div>
       </section>
 
-      <section className="mx-auto max-w-[1280px] px-md py-section sm:px-lg"><div className="panel-dark grid items-center gap-xl p-xl sm:p-xxl lg:grid-cols-[1fr_auto]"><div><p className="eyebrow">Ready to begin?</p><h2 className="mt-sm text-3xl font-bold text-on-dark">Move value with verifiable trust.</h2><p className="mt-sm max-w-2xl text-muted-strong">Connect a Stellar wallet, complete identity checks, and create your first protected order.</p></div><Link href="/kyc" className="btn-primary">Get verified <Icon name="arrow-right" className="h-4 w-4" /></Link></div></section>
+      <section className="mx-auto max-w-[1280px] px-md py-section sm:px-lg"><div className="panel-dark grid items-center gap-xl p-xl sm:p-xxl lg:grid-cols-[1fr_auto]"><div><p className="eyebrow">Ready to begin?</p><h2 className="mt-sm text-3xl font-bold text-on-dark">Move value with verifiable trust.</h2><p className="mt-sm max-w-2xl text-muted-strong">Connect a Stellar wallet, complete identity checks, and create your first protected order.</p></div><AccountActionLink verificationLabel="Get verified" dashboardLabel="Open dashboard" /></div></section>
     </main>
   );
 }

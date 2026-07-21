@@ -4,15 +4,20 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { useIdentity } from "@/components/IdentityProvider";
 
-const links = [
+const baseLinks = [
   { href: "/", label: "Overview" },
   { href: "/escrow", label: "Escrow" },
-  { href: "/kyc", label: "Verification" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const { isVerified } = useIdentity();
+  const accountLink = isVerified
+    ? { href: "/dashboard", label: "Dashboard" }
+    : { href: "/kyc", label: "Verification" };
+  const links = [...baseLinks, accountLink];
   const [open, setOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobileNavRef = useRef<HTMLElement>(null);
@@ -64,7 +69,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           <div className="hidden items-center gap-sm md:flex">
             <span className={`rounded-pill border px-sm py-xs font-mono text-[11px] uppercase tracking-wider ${light ? "border-hairline-light text-muted" : "border-hairline-dark text-muted-strong"}`}><span className="mr-xs inline-block h-1.5 w-1.5 rounded-full bg-status-verified" />Testnet</span>
-            <Link href="/escrow" className="btn-primary">Launch app <Icon name="arrow-right" className="h-4 w-4" /></Link>
+            <Link href={accountLink.href} className="btn-primary">{isVerified ? "Open dashboard" : "Start verification"} <Icon name="arrow-right" className="h-4 w-4" /></Link>
           </div>
 
           <button ref={menuButtonRef} type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-controls="mobile-navigation" aria-label={open ? "Close navigation" : "Open navigation"} className={`grid h-10 w-10 place-items-center rounded-md border md:hidden ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
@@ -78,7 +83,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
             <div className={`mt-auto border-t pt-lg ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
               <p className={`mb-md text-sm ${light ? "text-muted" : "text-muted-strong"}`}>Secure escrow and identity verification on Stellar testnet.</p>
-              <Link href="/escrow" className="btn-primary w-full justify-center">Launch app <Icon name="arrow-right" className="h-4 w-4" /></Link>
+              <Link href={accountLink.href} className="btn-primary w-full justify-center">{isVerified ? "Open dashboard" : "Start verification"} <Icon name="arrow-right" className="h-4 w-4" /></Link>
             </div>
           </nav>
         ) : null}

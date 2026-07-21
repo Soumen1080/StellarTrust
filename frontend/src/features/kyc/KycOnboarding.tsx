@@ -1,12 +1,13 @@
 "use client";
 
-import { ApplicantType, type AuthSessionResponse, type IdentityProfileResponse, type KycApplicationResponse } from "@stellartrust/shared";
+import { ApplicantType, KycStatus, type KycApplicationResponse } from "@stellartrust/shared";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { useIdentity } from "@/components/IdentityProvider";
 import { StatusPill } from "@/components/StatusPill";
 import { api } from "@/lib/api";
-import { loadSession } from "@/lib/wallet-auth";
 
 type SandboxScenario = "pass" | "review" | "fail" | "aml-hit";
 
@@ -17,9 +18,15 @@ const checks = [
 ];
 
 export function KycOnboarding() {
-  const [session, setSession] = useState<AuthSessionResponse | null>(null);
-  const [sessionChecked, setSessionChecked] = useState(false);
-  const [profile, setProfile] = useState<IdentityProfileResponse | null>(null);
+  const router = useRouter();
+  const {
+    session,
+    profile,
+    loading: identityLoading,
+    error: identityError,
+    isVerified,
+    refreshProfile,
+  } = useIdentity();
   const [result, setResult] = useState<KycApplicationResponse | null>(null);
   const [applicantType, setApplicantType] = useState<"individual" | "business">(ApplicantType.Individual);
   const [scenario, setScenario] = useState<SandboxScenario>("pass");
@@ -27,12 +34,12 @@ export function KycOnboarding() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const currentSession = loadSession();
-    setSession(currentSession);
-    setSessionChecked(true);
-    if (!currentSession) return;
-    void api.getIdentity(currentSession.accessToken).then((identity) => { setProfile(identity); setResult(identity.latestVerification); }).catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not load profile"));
-  }, []);
+    setResult(profile?.latestVerification ?? null);
+  }, [profile]);
+
+  useEffect(() => {
+    if (!identityLoading && isVerified) router.replace("/dashboard");
+  }, [identityLoading, isVerified, router]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -55,12 +62,15 @@ export function KycOnboarding() {
         faceImageRef: `sandbox://face/${visualScenario}`,
       });
       setResult(response);
-      setProfile(await api.getIdentity(session.accessToken));
+      const refreshedProfile = await refreshProfile();
+      if (refreshedProfile?.user.kycStatus === KycStatus.Verified) {
+        router.replace("/dashboard");
+      }
     } catch (err) { setError(err instanceof Error ? err.message : "Verification failed"); }
     finally { setPending(false); }
   }
 
-  if (!sessionChecked) return <LoadingState />;
+  if (identityLoading || isVerified) return <LoadingState />;
 
   if (!session) {
     return <section className="panel-light overflow-hidden"><div className="grid lg:grid-cols-[1fr_.8fr]"><div className="p-xl sm:p-xxl"><span className="grid h-12 w-12 place-items-center rounded-lg bg-primary/20 text-primary-active"><Icon name="wallet" className="h-6 w-6" /></span><p className="eyebrow mt-lg">Step 1 of 2</p><h2 className="mt-xs text-2xl font-bold">Connect your Stellar wallet</h2><p className="mt-sm max-w-xl leading-7 text-muted">Your wallet proves account ownership through a signed SEP-10 challenge. StellarTrust never receives or stores your private key.</p><Link href="/" className="btn-primary mt-lg">Connect from overview <Icon name="arrow-right" className="h-4 w-4" /></Link></div><div className="border-t border-hairline-light bg-surface-strong-light p-xl lg:border-l lg:border-t-0"><p className="text-sm font-semibold">What you will need</p><ul className="mt-md space-y-md text-sm text-muted"><li className="flex gap-sm"><Icon name="check" className="h-5 w-5 shrink-0 text-status-verified" />A supported Stellar testnet wallet</li><li className="flex gap-sm"><Icon name="check" className="h-5 w-5 shrink-0 text-status-verified" />Identity or business information</li><li className="flex gap-sm"><Icon name="check" className="h-5 w-5 shrink-0 text-status-verified" />A valid passport or identity document</li></ul></div></div></section>;
@@ -76,7 +86,7 @@ export function KycOnboarding() {
         <fieldset><legend className="text-sm font-semibold">Legal identity</legend><div className="mt-md grid gap-md sm:grid-cols-2"><Field label="Email address"><input name="email" type="email" required autoComplete="email" placeholder="name@company.com" className="input" /></Field><Field label="Legal name"><input name="legalName" required autoComplete="name" placeholder="Name as shown on document" className="input" /></Field><Field label="Country" hint="Two-letter ISO code"><input name="country" required minLength={2} maxLength={2} defaultValue="US" className="input uppercase" /></Field>{applicantType === ApplicantType.Individual ? <Field label="Date of birth"><input name="dateOfBirth" type="date" required className="input" /></Field> : <><Field label="Business name"><input name="businessName" required placeholder="Registered business name" className="input" /></Field><Field label="Registration number"><input name="registrationNumber" required placeholder="Official registry number" className="input" /></Field></>}</div></fieldset>
         <div className="my-xl border-t border-hairline-light" />
         <fieldset><legend className="text-sm font-semibold">Identity document</legend><p className="mt-xs text-sm text-muted">Passport is used by the current sandbox provider.</p><div className="mt-md grid gap-md sm:grid-cols-2"><Field label="Passport / ID number"><input name="documentNumber" required minLength={4} autoComplete="off" placeholder="Document number" className="input" /></Field><Field label="Document expiry"><input name="expiryDate" type="date" required defaultValue="2099-01-01" className="input" /></Field></div></fieldset>
-        {error ? <div role="alert" className="mt-lg rounded-lg border border-status-rejected/30 bg-status-rejected/5 p-md text-sm text-status-rejected">{error}</div> : null}
+        {error ?? identityError ? <div role="alert" className="mt-lg rounded-lg border border-status-rejected/30 bg-status-rejected/5 p-md text-sm text-status-rejected">{error ?? identityError}</div> : null}
         <div className="mt-xl flex flex-col-reverse gap-sm border-t border-hairline-light pt-lg sm:flex-row sm:items-center sm:justify-between"><p className="flex items-center gap-xs text-xs text-muted"><Icon name="lock" className="h-4 w-4" />Encrypted in transit · idempotent submission</p><button type="submit" disabled={pending} className="btn-primary min-w-[190px]">{pending ? "Running checks…" : "Submit verification"}<Icon name={pending ? "clock" : "arrow-right"} className="h-4 w-4" /></button></div>
       </div>
     </form>
