@@ -111,11 +111,23 @@ export function createApp(): Express {
   });
 
   // ── Shared Phase 1 dependency graph ──────────────────────────────────────
-  const identities = new InMemoryIdentityRepository();
+  // The configured demo account is development-only and still authenticates by
+  // signing a SEP-10 challenge with its wallet. Production ignores these values.
+  const demoAccount =
+    config.NODE_ENV === "development" && config.AUTH_DEMO_WALLET
+      ? {
+          stellarPublicKey: config.AUTH_DEMO_WALLET,
+          displayName: config.AUTH_DEMO_NAME,
+        }
+      : undefined;
+  const identities = new InMemoryIdentityRepository(
+    demoAccount ? [demoAccount] : [],
+  );
   const sep10 = new Sep10Service(
     new InMemoryAuthRepository(),
     identities,
     createSigner(),
+    new Set(demoAccount ? [demoAccount.stellarPublicKey] : []),
   );
   const externalVerifier = getBearerVerifier();
   const bearerVerifier = composeBearerVerifiers(

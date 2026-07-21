@@ -29,6 +29,7 @@ export interface Money {
 export interface UserProfile {
   id: string;
   email: string;
+  displayName?: string;
   kycStatus: KycStatus;
   createdAt: string;
 }

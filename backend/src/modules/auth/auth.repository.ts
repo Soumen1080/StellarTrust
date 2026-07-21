@@ -11,6 +11,7 @@ export interface SessionRecord {
   tokenHash: string;
   userId: string;
   walletId: string;
+  roles: string[];
   expiresAt: string;
   revokedAt: string | null;
 }

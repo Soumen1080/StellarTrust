@@ -43,9 +43,24 @@ interface IdentityRecord {
   latestVerification: KycApplicationResponse | null;
 }
 
+export interface DevelopmentDemoAccount {
+  stellarPublicKey: string;
+  displayName: string;
+}
+
 export class InMemoryIdentityRepository implements IdentityRepository {
   private readonly records = new Map<string, IdentityRecord>();
   private readonly walletToUser = new Map<string, string>();
+
+  constructor(demoAccounts: readonly DevelopmentDemoAccount[] = []) {
+    for (const account of demoAccounts) {
+      this.createWalletIdentity(
+        account.stellarPublicKey,
+        account.displayName,
+        KycStatus.Verified,
+      );
+    }
+  }
 
   async upsertWalletIdentity(stellarPublicKey: string): Promise<{
     user: UserProfile;
@@ -62,13 +77,22 @@ export class InMemoryIdentityRepository implements IdentityRepository {
       return { user: record.user, wallet };
     }
 
+    return this.createWalletIdentity(stellarPublicKey);
+  }
+
+  private createWalletIdentity(
+    stellarPublicKey: string,
+    displayName?: string,
+    kycStatus: KycStatus = KycStatus.Pending,
+  ): { user: UserProfile; wallet: WalletRef } {
     const userId = randomUUID();
     const now = new Date().toISOString();
     const user: UserProfile = {
       id: userId,
       // Replaced by the KYC onboarding email; not externally delivered.
       email: `wallet-${stellarPublicKey.slice(0, 12)}@pending.stellartrust.local`,
-      kycStatus: KycStatus.Pending,
+      ...(displayName ? { displayName } : {}),
+      kycStatus,
       createdAt: now,
     };
     const wallet: WalletRef = {

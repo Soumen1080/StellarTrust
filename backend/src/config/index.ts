@@ -63,6 +63,11 @@ const envSchema = z.object({
   AI_SERVICE_URL: z.string().url().default("http://localhost:8000"),
 
   AUTH_DEV_BEARER: z.string().default("dev-local-token"),
+  AUTH_DEMO_WALLET: z
+    .string()
+    .regex(/^G[A-Z2-7]{55}$/, "Must be a Stellar Ed25519 public key")
+    .optional(),
+  AUTH_DEMO_NAME: z.string().trim().min(1).default("sam"),
 
   // SEP-10 wallet authentication (Phase 1).
   SEP10_HOME_DOMAIN: z.string().min(1).default("localhost"),

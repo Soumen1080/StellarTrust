@@ -35,6 +35,7 @@ export class Sep10Service {
     private readonly authRepo: AuthRepository,
     private readonly identityRepo: IdentityRepository,
     private readonly signer: Signer,
+    private readonly fullAccessWallets: ReadonlySet<string> = new Set<string>(),
   ) {}
 
   async createChallenge(
@@ -144,10 +145,14 @@ export class Sep10Service {
     const expiresAt = new Date(
       Date.now() + config.AUTH_SESSION_TTL_SECONDS * 1_000,
     ).toISOString();
+    const roles = this.fullAccessWallets.has(challenge.stellarPublicKey)
+      ? ["user", "compliance"]
+      : ["user"];
     await this.authRepo.saveSession({
       tokenHash: sha256(accessToken),
       userId: user.id,
       walletId: wallet.id,
+      roles,
       expiresAt,
       revokedAt: null,
     });
@@ -172,7 +177,7 @@ export class Sep10Service {
       ? {
           userId: session.userId,
           walletId: session.walletId,
-          roles: ["user"],
+          roles: session.roles,
         }
       : null;
   };
