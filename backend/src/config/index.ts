@@ -39,6 +39,9 @@ const envSchema = z.object({
     .default("info"),
 
   DATABASE_URL: z.string().optional(),
+  // Session-mode pooler URL used only by the Prisma schema engine
+  // (migrate/db push/db pull), never by application queries.
+  DIRECT_URL: z.string().optional(),
   REDIS_URL: z.string().optional(),
 
   // Supabase project (Auth / Storage / API). Optional in Phase 0.
