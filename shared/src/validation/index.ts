@@ -8,7 +8,9 @@ import {
   AiRecommendation,
   ApplicantType,
   CurrencyCode,
+  DisputeResolution,
   EntryDirection,
+  EvidenceKind,
   HumanKycDecision,
   PaymentTransition,
   SUPPORTED_CURRENCIES,
@@ -197,6 +199,44 @@ export const settlementExecuteInputSchema = z.object({
   destinationReference: z.string().min(3).max(256),
 });
 
+// ── Phase 4: Disputes + AI (advisory) ─────────────────────────────────────────
+
+const evidenceReferenceSchema = z
+  .string()
+  .min(1)
+  .max(512)
+  .refine(
+    (value) =>
+      value.startsWith("sandbox://") ||
+      value.startsWith("storage://") ||
+      value.startsWith("https://"),
+    "evidence must be an opaque sandbox/storage reference or HTTPS URL",
+  );
+
+export const openDisputeInputSchema = z.object({
+  orderId: z.string().uuid(),
+  reason: z.string().min(5).max(1_000),
+});
+
+export const disputeEvidenceInputSchema = z.object({
+  kind: z.enum([
+    EvidenceKind.Invoice,
+    EvidenceKind.Tracking,
+    EvidenceKind.Otp,
+    EvidenceKind.Courier,
+    EvidenceKind.Image,
+  ]),
+  supports: z.enum([DisputeResolution.Release, DisputeResolution.Refund]),
+  weight: z.number().min(0).max(1),
+  reference: evidenceReferenceSchema,
+  description: z.string().max(500).optional(),
+});
+
+export const disputeDecisionInputSchema = z.object({
+  decision: z.enum([DisputeResolution.Release, DisputeResolution.Refund]),
+  reason: z.string().min(5).max(1_000),
+});
+
 export type LedgerTransactionInputParsed = z.infer<
   typeof ledgerTransactionInputSchema
 >;
@@ -216,4 +256,11 @@ export type SettlementQuoteInputParsed = z.infer<
 >;
 export type SettlementExecuteInputParsed = z.infer<
   typeof settlementExecuteInputSchema
+>;
+export type OpenDisputeInputParsed = z.infer<typeof openDisputeInputSchema>;
+export type DisputeEvidenceInputParsed = z.infer<
+  typeof disputeEvidenceInputSchema
+>;
+export type DisputeDecisionInputParsed = z.infer<
+  typeof disputeDecisionInputSchema
 >;

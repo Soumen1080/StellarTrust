@@ -11,6 +11,10 @@ import type {
   KycStatusResponse,
   CreateOrderInput,
   CorridorDTO,
+  DisputeDTO,
+  DisputeDecisionInput,
+  DisputeEvidenceInput,
+  OpenDisputeInput,
   OrderDetailsResponse,
   OrderMutationResponse,
   ReconciliationReportDTO,
@@ -205,4 +209,49 @@ export const api = {
       `/api/settlement/orders/${settlementId}`,
       { accessToken },
     ),
+
+  // ── Phase 4: Disputes + AI (advisory) ───────────────────────────────────
+  openDispute: (
+    accessToken: string,
+    idempotencyKey: string,
+    input: OpenDisputeInput,
+  ) =>
+    request<{ dispute: DisputeDTO }>("/api/disputes", {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  submitDisputeEvidence: (
+    accessToken: string,
+    disputeId: string,
+    idempotencyKey: string,
+    input: DisputeEvidenceInput,
+  ) =>
+    request<{ dispute: DisputeDTO }>(`/api/disputes/${disputeId}/evidence`, {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  resolveDispute: (
+    accessToken: string,
+    disputeId: string,
+    idempotencyKey: string,
+    decision?: DisputeDecisionInput,
+  ) =>
+    request<{ dispute: DisputeDTO }>(`/api/disputes/${disputeId}/resolve`, {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(decision ?? {}),
+    }),
+  listDisputes: (accessToken: string) =>
+    request<{ disputes: DisputeDTO[] }>("/api/disputes", { accessToken }),
+  listDisputeQueue: (accessToken: string) =>
+    request<{ disputes: DisputeDTO[] }>("/api/disputes/queue", { accessToken }),
+  getDispute: (accessToken: string, disputeId: string) =>
+    request<{ dispute: DisputeDTO }>(`/api/disputes/${disputeId}`, {
+      accessToken,
+    }),
 };

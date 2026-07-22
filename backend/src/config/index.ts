@@ -150,6 +150,23 @@ const envSchema = z.object({
 
   AUTO_RESOLVE_MAX_AMOUNT: z.coerce.number().nonnegative().default(50000),
   AUTO_RESOLVE_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),
+
+  // ── Phase 4: Disputes + AI (advisory) ────────────────────────────────────
+  // Evidence submission window after a dispute is opened (PRD: 24h).
+  DISPUTE_EVIDENCE_WINDOW_HOURS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(720)
+    .default(24),
+  // Timeout for the advisory AI dispute call; on timeout we degrade to human
+  // review rather than block the dispute (Rules.md §6).
+  DISPUTE_AI_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(30_000)
+    .default(3000),
 });
 
 const parsed = envSchema.safeParse(process.env);

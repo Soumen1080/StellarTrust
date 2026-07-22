@@ -256,3 +256,38 @@ export const CURRENCY_SCALE: Record<CurrencyCode, number> = {
   XLM: 7,
   USDC: 7,
 };
+
+
+// ── Phase 4: Disputes + AI (advisory) ─────────────────────────────────────────
+
+/** Evidence categories accepted during a dispute (PRD / Phase 4 deliverables). */
+export const EvidenceKind = {
+  Invoice: "invoice",
+  Tracking: "tracking",
+  Otp: "otp",
+  Courier: "courier",
+  Image: "image",
+} as const;
+export type EvidenceKind = (typeof EvidenceKind)[keyof typeof EvidenceKind];
+
+/**
+ * Terminal dispute resolution. Reuses the advisory vocabulary for the two
+ * fund outcomes; `ManualReview` is never a terminal resolution (it routes to a
+ * human). A resolved dispute is always Release or Refund.
+ */
+export const DisputeResolution = {
+  Release: "release",
+  Refund: "refund",
+} as const;
+export type DisputeResolution =
+  (typeof DisputeResolution)[keyof typeof DisputeResolution];
+
+/** Who produced the terminal dispute decision. */
+export const DisputeDecisionMaker = {
+  /** Auto-resolved below amount / above confidence thresholds (Rules.md #3). */
+  AutoPolicy: "auto_policy",
+  /** A human compliance reviewer signed off (required above thresholds). */
+  Human: "human",
+} as const;
+export type DisputeDecisionMaker =
+  (typeof DisputeDecisionMaker)[keyof typeof DisputeDecisionMaker];

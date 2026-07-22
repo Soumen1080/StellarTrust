@@ -18,16 +18,16 @@
 - **What:** AI-powered cross-border escrow, liquidity settlement, and RWA
   tokenization platform on Stellar.
 - **Track:** Production (real product for real users).
-- **Current phase:** Phase 3 — Cross-Border Settlement (**application
-  implementation complete; live anchor, Horizon path-finding/AMM adapter, and
-  production persistence remain**; see §2). Phases 1–2 application code remains
-  complete with the same operational prerequisites outstanding.
+- **Current phase:** Phase 4 — Disputes + AI advisory (**application
+  implementation complete**; auto-execution of the resolved outcome and a
+  reputation store remain). Phases 1–3 application code remains complete with
+  their operational prerequisites outstanding.
 - **Repo state:** All six portions are present. Shared/backend/frontend checks
-  are green locally; backend has 41 passing tests. Phases 2–3 use interfaces
-  with in-memory repositories and deterministic/sandbox chain, anchor, and
-  liquidity adapters locally, while migration `0004` defines the Phase 2
-  financial-transition and reconciliation persistence contract (a Phase 3
-  settlement schema is still to be authored).
+  are green locally; backend has 48 passing tests. Phases 2–4 use interfaces
+  with in-memory repositories and deterministic/sandbox chain, anchor,
+  liquidity, and AI adapters locally, while migration `0004` defines the Phase 2
+  financial-transition and reconciliation persistence contract (Phase 3
+  settlement and Phase 4 dispute schemas are still to be authored).
 
 ### Canonical docs
 - `PRD.md` — product requirements, users, features.
@@ -41,12 +41,43 @@
 
 ## 2. Current Focus
 
-- **Currently working on:** Phase 3 application code is complete and validated.
-  The remaining work is operational: implement a live per-corridor anchor client
-  and a Horizon path-finding + AMM liquidity adapter, author the Phase 3
-  settlement persistence schema, and verify corridors against a live sandbox
-  anchor + testnet liquidity. Phase 2's public-testnet/production-adapter items
-  and the exposed-credential rotation also remain outstanding.
+- **Currently working on:** Phase 4 application code is complete and validated.
+  The remaining work is to (a) auto-execute a resolved dispute's outcome through
+  the escrow/payments path (needs the arbiter release-path state-machine work),
+  and (b) add a real reputation store (Phase 6). Earlier phases' operational
+  prerequisites (live anchor/Horizon adapters, public-testnet contract, prod
+  persistence, credential rotation) also remain.
+- **What was built (Phase 4 — Disputes + AI advisory):**
+  - Shared contracts: `EvidenceKind`, `DisputeResolution`,
+    `DisputeDecisionMaker`; expanded `DisputeDTO` (order link, amount, evidence,
+    advisory, `autoResolvable`, resolution, evidence window); evidence/decision
+    Zod schemas.
+  - `disputes` bounded context (`backend/src/modules/disputes`):
+    - `DisputeRiskClient` + `HttpDisputeRiskClient` (calls the read-only AI
+      `/dispute-recommend`) with a `DeterministicDisputeRiskClient` for tests;
+      an AI timeout/outage degrades to a manual-review advisory (never blocks).
+    - `DisputeService` — lifecycle open → evidence (bounded window) → advisory →
+      resolution. AI is advisory only; the backend applies the human gate:
+      auto-resolve is permitted **only** below `AUTO_RESOLVE_MAX_AMOUNT` and
+      at/above `AUTO_RESOLVE_MIN_CONFIDENCE` with a non-conflicting, non-manual
+      advisory; everything else requires a compliance sign-off. Every advisory
+      and final decision is append-only audit-logged and reproducible from the
+      stored evidence.
+    - `InMemoryDisputeRepository` + a `DisputeOrderGateway` port into payments
+      (kept isolated; wired in the composition root over the payment repository).
+    - Authenticated, idempotent `/api/disputes` routes (open, evidence, resolve,
+      list, compliance queue, details).
+  - Fixed the advisory `conflicting` test to use **raw evidence** (reputation is
+    a prior, not conflicting evidence) in both the backend deterministic client
+    and the Python engine, so auto-resolve is reachable and correct.
+  - Frontend `/disputes` console: open a dispute, submit evidence, view the
+    read-only AI advisory (recommendation + confidence + explanation + signals),
+    auto-resolve when eligible, and a compliance human-decision form. New nav
+    link and typed API client methods.
+  - Config: `DISPUTE_EVIDENCE_WINDOW_HOURS`, `DISPUTE_AI_TIMEOUT_MS`.
+  - **Design boundary:** the dispute record is the auditable resolution
+    authority; actual fund movement stays on the Phase 2 compliance arbiter path
+    (escrow/payments), keeping the tested money state machine unchanged.
 - **What was built (Phase 3 — Cross-Border Settlement):**
   - Shared contracts: settlement lifecycle/transition/route/anchor enums,
     `CURRENCY_SCALE`, corridor/quote/route/settlement/anchor-transfer/
@@ -127,28 +158,29 @@
     implementations pending validated Postgres adapters.
 
 - **Verification status (this environment):**
-  - ✅ `shared`: TypeScript build passes (Phase 3 contracts compile).
-  - ✅ `backend`: lint + typecheck + **41 tests pass** across six test files.
-    Phase 3 coverage proves BigInt currency conversion, best-route selection,
-    fee/slippage constraint rejection (fail closed), end-to-end deposit →
-    convert → payout with balanced+linked ledger transitions, zero-mismatch
-    settlement reconciliation, quote idempotency, and cross-user/expiry guards.
-  - ✅ `frontend`: optimized production build passes and `/settlement` is
+  - ✅ `shared`: TypeScript build passes (Phase 4 dispute contracts compile).
+  - ✅ `backend`: lint + typecheck + **48 tests pass** across seven test files.
+    Phase 4 coverage proves party-only dispute access, an explainable advisory,
+    threshold-gated auto-resolve, human sign-off for high-value/conflicting
+    disputes, and a complete audit trail (opened + advisory + resolved).
+  - ✅ `frontend`: optimized production build passes and `/disputes` is
     generated alongside the existing routes.
-  - ⚠️ Phase 3 live path NOT run here: live anchor client, Horizon
-    path-finding/AMM adapter, and a Phase 3 settlement Postgres schema are not
-    yet implemented; corridors were validated only against the deterministic
-    sandbox adapters.
-  - ⚠️ `contracts`, `database`/Compose, and public-testnet items are unchanged
-    from Phase 2 (CI/Linux authoritative; Docker/psql unavailable locally).
+  - ⚠️ `ai`: the dispute engine `conflicting` fix byte-compiles; `pytest` is not
+    installable locally (CI authoritative). Existing AI tests are unaffected.
+  - ⚠️ Phase 4 fund execution: a resolved dispute records the authorized outcome
+    but does not itself move funds — the compliance arbiter executes it via the
+    Phase 2 payments/escrow path. Auto-execution + a reputation store are
+    deferred.
+  - ⚠️ Phase 3 live path, `contracts`, `database`/Compose, and public-testnet
+    items are unchanged (CI/Linux authoritative; Docker/psql unavailable here).
   - ⚠️ **Security action:** the previously exposed Supabase server secret must
     still be rotated before any external integration is enabled.
 
-- **Next up:** implement the live per-corridor anchor client and Horizon
-  path-finding + AMM liquidity adapter; author the Phase 3 settlement
-  persistence schema/migration; verify corridors end-to-end against a live
-  sandbox anchor + funded testnet; then close the remaining operational Phase 2
-  items (credential rotation, testnet contract smoke, production adapters).
+- **Next up:** wire resolved-dispute outcomes to auto-execute through the
+  escrow/payments arbiter path (needs the release-path state-machine work); add
+  a reputation store; then resume the deferred Phase 2/3 operational items
+  (live anchor/Horizon adapters, public-testnet contract, prod persistence,
+  credential rotation).
 
 ---
 
@@ -196,6 +228,10 @@
 | D38 | 2026-07-22 | Routing selects the best route by net destination value, then fee, then speed, and fails closed when no route meets the slippage/fee limits | Deliver the most value while honoring explicit user constraints; never silently exceed limits |
 | D39 | 2026-07-22 | Liquidity conversion uses classic Stellar (path payments + AMM) behind `LiquidityGateway`; anchors sit behind `AnchorGateway` with SEP-6/24/31 + SEP-12 | Rules.md #3 (no Soroban for liquidity/settlement) and D5 (anchor-based fiat ramp); adapters swap sandbox → live per corridor |
 | D40 | 2026-07-22 | SEP-12 KYC exchange with the anchor retains only an opaque customer id; sandbox anchor and deterministic liquidity adapters are refused outside development/test | Data minimization/PII protection (D25, Rules.md §7) and fail-closed on synthetic adapters in staging/production |
+| D41 | 2026-07-22 | Dispute AI is advisory only; the backend owns the human gate. Auto-resolve only when below `AUTO_RESOLVE_MAX_AMOUNT` AND at/above `AUTO_RESOLVE_MIN_CONFIDENCE` with a non-conflicting, non-manual advisory; else a compliance human must sign off | Rules.md #3/#6 — AI never makes autonomous money decisions above threshold |
+| D42 | 2026-07-22 | The dispute record is the auditable resolution authority; fund movement stays on the Phase 2 compliance-operated escrow/payments arbiter path | Keep bounded contexts isolated and the tested money state machine unchanged; avoid AI/dispute code writing funds |
+| D43 | 2026-07-22 | An AI dispute-service timeout/outage degrades to a manual-review advisory rather than blocking or auto-deciding the dispute | Rules.md §6 — fall back to human review when AI is down |
+| D44 | 2026-07-22 | Advisory "conflicting evidence" is computed from raw submitted evidence only; reputation is a bounded prior nudge, not conflicting evidence | Correctness — otherwise neutral reputations flag every dispute as conflicting and auto-resolve is unreachable |
 
 ---
 
@@ -221,6 +257,8 @@
 | Phase 3 anchor adapter | Sandbox anchor settles synchronously and holds no real fiat | Behind `AnchorGateway`; implement a live per-corridor SEP-6/24/31 client (async status/webhooks) before staging |
 | Phase 3 liquidity adapter | Deterministic route economics are not live Horizon path-finding/AMM quotes | Behind `LiquidityGateway`; implement a Horizon path-finding + AMM adapter (`LIQUIDITY_GATEWAY=horizon`) before staging |
 | Phase 3 persistence | Settlement quotes/transitions/mismatches are in-memory | Author a forward-only settlement Postgres schema and implement/transaction-test the adapter |
+| Phase 4 dispute execution | A resolved dispute records the authorized outcome but does not itself move funds | By design the compliance arbiter executes it via the Phase 2 payments/escrow path; auto-execution needs the release-path state-machine work |
+| Phase 4 reputation | Buyer/seller reputation inputs default to neutral (0.5) | Add a reputation store (Phase 6) feeding the advisory; current advisory relies on evidence weights |
 
 ---
 
@@ -267,6 +305,7 @@
 | 2026-07-18 | **Phase 1 Identity & Wallet application implementation completed (D20–D28).** Added shared contracts and migration `0003`; KMS-boundary SEP-10 challenges, signature/replay checks, hashed opaque sessions, and Supabase/dev verifier composition; sandbox KYC/KYB provider; timeout-safe advisory AI integration; backend-owned policy, human review, verified profiles, and PII-safe audit; Wallets Kit sign-in; `/kyc` onboarding/status and `/admin/kyc` compliance UI; exact-origin CORS and environment template. Verified locally: shared build; backend lint/typecheck/24 tests/build; frontend typecheck/production build; AI byte-compilation. AI pytest, contract tests, and DB migrations remain CI-only on this machine. Runtime Phase 1 repositories are still in-memory pending Postgres adapters. Supabase server secret rotation remains required. |
 | 2026-07-20 | **Phase 2 application implementation completed (D29–D34).** Added shared payment/reconciliation contracts; strict authenticated/idempotent order lifecycle and arbiter refund; atomic balanced ledger + linked chain + audit transition records; deterministic local Soroban boundary; scheduled reconciliation, alert/report, and blocking; migration `0004`; buyer-confirmed contract release and tests; `/escrow` UI; testnet deploy helper; and gitignored `infra/.env`. Validated shared build, backend lint/typecheck/29 tests, frontend production build, and diff checks. Public testnet, production adapters, DB migration execution, and contract CI remain unchecked/manual prerequisites. |
 | 2026-07-22 | **Phase 3 application implementation completed (D35–D40).** Added shared settlement contracts (enums, `CURRENCY_SCALE`, corridor/quote/route/settlement/anchor DTOs, quote/execute schemas); new `settlement` bounded context — `SandboxAnchorGateway` (SEP-6/24/31 + SEP-12, opaque customer id), `DeterministicLiquidityGateway` (path-payment + AMM economics, exact BigInt conversion), `RoutingService` (best-route + fail-closed fee/slippage limits), `SettlementService` (deposit→convert→payout with per-currency-balanced ledger via `FX_CONVERSION`, PII-safe audit, quote idempotency), and `SettlementReconciliationJob` (ledger↔anchor/chain, blocks on mismatch); authenticated idempotent `/api/settlement` routes; config `ANCHOR_GATEWAY`/`LIQUIDITY_GATEWAY`/`SETTLEMENT_QUOTE_TTL_SECONDS`/`SETTLEMENT_DEFAULT_MAX_SLIPPAGE_BPS`; frontend `/settlement` console + nav link + typed API client. Validated shared build, backend lint/typecheck/**41 tests**, and frontend production build. Live anchor client, Horizon path-finding/AMM adapter, Phase 3 settlement persistence schema, and live-corridor verification remain manual/operational prerequisites. |
+| 2026-07-22 | **Phase 4 application implementation completed (D41–D44).** Added shared dispute contracts (`EvidenceKind`, `DisputeResolution`, `DisputeDecisionMaker`, expanded `DisputeDTO`, evidence/decision schemas); new `disputes` bounded context — `HttpDisputeRiskClient`/`DeterministicDisputeRiskClient` (advisory `/dispute-recommend`, outage→manual review), `DisputeService` (open → bounded evidence window → advisory → threshold-gated auto-resolve or compliance human sign-off, append-only audit of AI + human decisions), `InMemoryDisputeRepository` + `DisputeOrderGateway` port; authenticated idempotent `/api/disputes` routes; config `DISPUTE_EVIDENCE_WINDOW_HOURS`/`DISPUTE_AI_TIMEOUT_MS`. Corrected advisory `conflicting` to use raw evidence (backend + Python engine). Frontend `/disputes` console + nav link + typed API client. Validated shared build, backend lint/typecheck/**48 tests**, and frontend production build. Auto-execution of the resolved outcome and a reputation store are deferred; AI pytest is CI-only. |
 
 ---
 

@@ -74,6 +74,10 @@ def recommend_dispute(req: DisputeRecommendRequest) -> DisputeRecommendResponse:
     release_weight = sum(e.weight for e in req.evidence if e.supports == Recommendation.RELEASE)
     refund_weight = sum(e.weight for e in req.evidence if e.supports == Recommendation.REFUND)
 
+    # "Conflicting" means opposing *evidence* exists. Reputation is a prior
+    # nudge, not evidence, so it is excluded from the conflict test.
+    conflicting = release_weight > 0 and refund_weight > 0
+
     # Reputation nudges (bounded, explainable).
     release_weight += req.seller_reputation * 0.25
     refund_weight += (1.0 - req.buyer_reputation) * 0.25
@@ -96,7 +100,6 @@ def recommend_dispute(req: DisputeRecommendRequest) -> DisputeRecommendResponse:
         rec = Recommendation.REFUND
         confidence = refund_weight / total
 
-    conflicting = release_weight > 0 and refund_weight > 0
     signals = [f"{e.kind}->{e.supports.value}({e.weight:.2f})" for e in req.evidence]
     signals.append(f"buyer_rep={req.buyer_reputation:.2f}")
     signals.append(f"seller_rep={req.seller_reputation:.2f}")

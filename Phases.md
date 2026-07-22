@@ -130,19 +130,37 @@ adapter, and production persistence remain manual/operational prerequisites.
 
 ## Phase 4 — Disputes + AI (advisory)
 
+**Status:** Application implementation complete (AI advisory engine + backend
+human-gated dispute workflow + audit). The dispute record is the auditable
+resolution authority; the actual fund movement stays on the Phase 2
+compliance-operated escrow/payments arbiter path.
+
 **Goal:** Fair, auditable dispute resolution with human oversight.
 
 **Deliverables**
-- Evidence upload (invoice, tracking, OTP, courier, images) + 24h window.
-- AI Risk Engine: recommendation + confidence + explanation + signals.
-- Human approval gate above thresholds; auto-resolve only below amount /
-  above confidence thresholds (configurable).
-- Reputation + fraud-signal inputs; full decision audit log.
+- [x] Evidence upload (invoice, tracking, OTP, courier, images) + bounded review
+  window (`DISPUTE_EVIDENCE_WINDOW_HOURS`, default 24h). Evidence stores only
+  opaque references, never raw content/PII.
+- [x] AI Risk Engine: recommendation + confidence + explanation + signals
+  (existing AI `/dispute-recommend`; backend `HttpDisputeRiskClient` with a
+  deterministic test adapter; AI outage degrades to human review).
+- [x] Human approval gate above thresholds; auto-resolve only below amount /
+  above confidence thresholds (`AUTO_RESOLVE_MAX_AMOUNT`,
+  `AUTO_RESOLVE_MIN_CONFIDENCE`) with a non-conflicting, non-manual advisory.
+- [x] Reputation + fraud-signal inputs; full append-only decision audit (AI
+  advisory and human/auto decision both logged and reproducible).
+- [ ] Wire the recorded resolution to execute the escrow release/refund
+  automatically (currently the compliance arbiter executes it via the Phase 2
+  payments path); requires the release-path state-machine work.
+- [ ] Reputation store (Phase 6) — reputations currently default to neutral.
 
 **Acceptance criteria**
-- A dispute produces an explainable AI recommendation.
-- High-value/low-confidence disputes require human sign-off.
-- Every decision (AI + human) is audit-logged and reproducible.
+- [x] A dispute produces an explainable AI recommendation (recommendation +
+  confidence + explanation + signals; reproducible from stored evidence).
+- [x] High-value/low-confidence (or conflicting) disputes require human
+  sign-off — auto-resolve is refused and only a compliance reviewer can decide.
+- [x] Every decision (AI advisory + human/auto resolution) is audit-logged and
+  reproducible (dispute tests assert the audit trail).
 
 ---
 

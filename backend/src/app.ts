@@ -53,6 +53,13 @@ import { InMemorySettlementRepository } from "./modules/settlement/settlement.re
 import { SettlementService } from "./modules/settlement/settlement.service.js";
 import { SettlementReconciliationJob } from "./modules/settlement/settlement.reconciliation.job.js";
 import { createSettlementRouter } from "./modules/settlement/settlement.routes.js";
+import {
+  DeterministicDisputeRiskClient,
+  HttpDisputeRiskClient,
+} from "./modules/disputes/dispute-risk.client.js";
+import { InMemoryDisputeRepository } from "./modules/disputes/dispute.repository.js";
+import { DisputeService } from "./modules/disputes/dispute.service.js";
+import { createDisputeRouter } from "./modules/disputes/dispute.routes.js";
 
 type HelmetFactory = () => RequestHandler;
 
@@ -232,6 +239,22 @@ export function createApp(): Express {
   );
   app.locals.settlementReconciliationJob = settlementReconciliation;
 
+  // ── Phase 4: Disputes + AI (advisory) ────────────────────────────────────
+  // The AI dispute recommender is advisory only; the backend owns the human
+  // gate and any fund movement stays on the compliance arbiter path.
+  const disputeRepository = new InMemoryDisputeRepository();
+  const disputeOrders = {
+    getOrder: (orderId: string) => paymentRepository.findOrder(orderId),
+  };
+  const disputes = new DisputeService(
+    disputeRepository,
+    disputeOrders,
+    config.isTest
+      ? new DeterministicDisputeRiskClient()
+      : new HttpDisputeRiskClient(),
+    audit,
+  );
+
   // ── Module routers ────────────────────────────────────────────────────────
   app.use("/api/auth", createAuthRouter(sep10, identities, bearerVerifier));
   app.use("/api/kyc", createKycRouter(kyc, bearerVerifier));
@@ -244,6 +267,7 @@ export function createApp(): Express {
     "/api/settlement",
     createSettlementRouter(settlement, settlementReconciliation, bearerVerifier),
   );
+  app.use("/api/disputes", createDisputeRouter(disputes, bearerVerifier));
 
   // ── Error boundary ──────────────────────────────────────────────────────
   app.use(notFoundHandler);

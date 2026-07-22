@@ -21,6 +21,9 @@ import type {
   RouteType,
   SettlementStatus,
   SettlementTransition,
+  DisputeDecisionMaker,
+  DisputeResolution,
+  EvidenceKind,
 } from "../constants/index.js";
 
 /** Monetary amount as a fixed-precision minor-unit string to avoid float drift. */
@@ -173,13 +176,74 @@ export interface AiAdvisory {
   signals: string[];
 }
 
+// ── Disputes (Phase 4) ────────────────────────────────────────────────────────
+
+/**
+ * A single piece of dispute evidence. `supports` indicates which fund outcome
+ * the evidence lends weight to; `weight` is a bounded 0..1 advisory strength.
+ * Never store raw PII/documents — `reference` is an opaque storage handle.
+ */
+export interface DisputeEvidenceInput {
+  kind: EvidenceKind;
+  supports: DisputeResolution;
+  weight: number;
+  /** Opaque storage/sandbox reference (e.g. "storage://..."). Not raw content. */
+  reference: string;
+  description?: string;
+}
+
+export interface DisputeEvidenceDTO extends DisputeEvidenceInput {
+  id: string;
+  submittedBy: string;
+  createdAt: string;
+}
+
+export interface OpenDisputeInput {
+  orderId: string;
+  reason: string;
+}
+
+/** Human compliance decision on a dispute (mandatory reason, Rules.md #6). */
+export interface DisputeDecisionInput {
+  decision: DisputeResolution;
+  reason: string;
+}
+
+export interface DisputeResolutionDTO {
+  outcome: DisputeResolution;
+  decidedBy: DisputeDecisionMaker;
+  /** "auto_policy" or "user:<id>". */
+  actor: string;
+  reason: string;
+  decidedAt: string;
+}
+
 export interface DisputeDTO {
   id: string;
-  escrowId: string;
+  orderId: string;
+  escrowId: string | null;
   status: DisputeStatus;
-  aiAdvisory: AiAdvisory | null;
-  humanDecision: AiRecommendation | null;
+  amount: Money;
+  openedBy: string;
+  reason: string;
+  evidence: DisputeEvidenceDTO[];
+  /** Latest advisory snapshot (reproducible from the stored evidence). */
+  advisory: AiAdvisory | null;
+  /** True only when the advisory + amount satisfied the auto-resolve gate. */
+  autoResolvable: boolean;
+  resolution: DisputeResolutionDTO | null;
+  /** ISO time after which no further evidence is accepted. */
+  evidenceWindowClosesAt: string;
   createdAt: string;
+  updatedAt: string;
+}
+
+export interface DisputeDetailsResponse {
+  dispute: DisputeDTO;
+}
+
+export interface DisputeListResponse {
+  disputes: DisputeDTO[];
 }
 
 // ── Stellar reconciliation ────────────────────────────────────────────────────
