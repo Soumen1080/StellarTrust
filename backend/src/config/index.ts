@@ -87,6 +87,17 @@ const envSchema = z.object({
 
   AI_SERVICE_URL: z.string().url().default("http://localhost:8000"),
 
+  // ── OpenAI advisory engine (optional KYC profile-review backend) ─────────
+  // When KYC_RISK_ENGINE=openai and OPENAI_API_KEY is set, KYC profile risk is
+  // scored by OpenAI (advisory only — never moves funds/ledger; a failure
+  // degrades to human review). The key is a secret: provide it via the
+  // gitignored local .env or a secret manager, never in committed source.
+  KYC_RISK_ENGINE: z.enum(["service", "openai"]).default("service"),
+  OPENAI_API_KEY: z.string().optional(),
+  OPENAI_MODEL: z.string().default("gpt-4o-mini"),
+  OPENAI_BASE_URL: z.string().url().default("https://api.openai.com/v1"),
+  OPENAI_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(15_000),
+
   AUTH_DEV_BEARER: z.string().default("dev-local-token"),
   AUTH_DEMO_WALLET: z
     .string()

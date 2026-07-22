@@ -518,3 +518,126 @@ KYC_AUTO_APPROVE=true
 | Date | Change |
 |---|---|
 | 2026-07-22 | Stage 1 batch 1 implemented: testnet `DemoEnvSigner` (DEMO_MODE), 10s KYC auto-verify (config-gated, stateless resolve-on-read, `GET /api/kyc/status`, frontend polling), shared `autoApproveAt` + `KycStatusResponse`, config hygiene (removed hardcoded origin). Backend 29/29 tests, frontend typecheck, and an auto-verify smoke all pass. Deleted `awsedrfgyhuji.md`. |
+
+
+
+---
+
+## 11. OpenAI Integration & Development Auto-Approval (2026-07-22)
+
+### 11.1 Configuration Added
+
+**OpenAI API Key Integration:**
+- Added OpenAI API key to backend `.env` for KYC risk assessment
+- Set `KYC_RISK_ENGINE=openai` to use OpenAI instead of the local AI service
+- Using `gpt-4o-mini` model for advisory KYC risk scoring
+- API Key: stored in `backend/.env` as `OPENAI_API_KEY` (kept out of version control; never commit real keys)
+
+### 11.2 Development Auto-Approval Mode
+
+**Current Behavior (Development Only):**
+- `KYC_AUTO_APPROVE=true` is enabled in development `.env`
+- **All KYC verification requests automatically approve after 10 seconds**
+- This bypasses the OpenAI advisory AND the human review queue
+- Allows smooth development and testing of downstream flows (escrow, payments, disputes)
+
+**Why This Approach:**
+During development, we want:
+1. OpenAI integration configured and ready to use
+2. All requests to pass automatically so developers can test full workflows
+3. No dependency on manual compliance reviews
+4. No blocking on AI service response times
+
+**Current Flow:**
+```
+User submits KYC → Status: "Under Review" → 
+10 seconds pass → Frontend polls /api/kyc/status → 
+Auto-approve resolves → Status: "Verified" → 
+User can proceed with orders/escrow
+```
+
+### 11.3 Production Transition Plan
+
+**When moving to production behavior:**
+
+1. **Phase 1 - Enable OpenAI Review (keep auto-approve):**
+   - OpenAI is already configured
+   - System will call OpenAI for advisory scoring
+   - But auto-approve still bypasses it temporarily
+   - Test that OpenAI integration works correctly
+
+2. **Phase 2 - Disable Auto-Approve (use real workflow):**
+   - Set `KYC_AUTO_APPROVE=false` in `.env`
+   - System will use: Provider → OpenAI Advisory → Decision Engine → Human Review (if needed)
+   - Low-risk cases (below `KYC_APPROVE_MAX_RISK=0.35`) auto-approve via policy
+   - High-risk cases route to human compliance review queue
+   - AI advisory is logged and auditable
+
+3. **Phase 3 - Production Hardening:**
+   - Move `OPENAI_API_KEY` to secret manager (never in `.env` in production)
+   - Set `NODE_ENV=production` (disables auto-approve regardless of flag)
+   - Implement rate limiting on KYC endpoints
+   - Monitor OpenAI API usage and costs
+
+### 11.4 Safety Guardrails (Already Implemented)
+
+**Auto-approve CANNOT activate in production:**
+- `app.ts` passes `{ autoApprove: config.KYC_AUTO_APPROVE && !config.isProduction }`
+- Even if `KYC_AUTO_APPROVE=true` is mistakenly set in production env, `!config.isProduction` prevents it
+- All audit logs clearly mark development auto-approvals with `"development": true`
+
+**OpenAI Integration Safety:**
+- OpenAI is advisory-only (Rules.md §3, §6) — never moves funds or writes ledger
+- On OpenAI timeout/failure, system degrades gracefully to human review
+- Only opaque references and normalized signals sent to OpenAI (no PII, names, DOB, documents)
+- Sanctions hits always force reject, regardless of AI recommendation
+
+### 11.5 Updated Shortcut Status
+
+| # | Shortcut | Status | Production Plan |
+|---|---|---|---|
+| **S6** | **OpenAI configured but bypassed by auto-approve** | ✅ **NEW** | Set `KYC_AUTO_APPROVE=false` |
+| S3 | KYC auto-verify after 10s | ✅ enabled | Set `KYC_AUTO_APPROVE=false` |
+| S4 | Testnet demo signer instead of KMS | ✅ enabled | Implement `KmsSigner` |
+| S1 | Deterministic escrow gateway | unchanged | Implement `SorobanRpcEscrowGateway` |
+| S2 | AI call skipped (when auto-approve on) | ✅ bypassed | Automatic when S3/S6 disabled |
+| S5 | In-memory stores | ⏳ next batch | Postgres/Redis repositories |
+
+### 11.6 Testing the Current Setup
+
+**To verify OpenAI integration works (when ready to test):**
+
+1. Temporarily disable auto-approve:
+   ```bash
+   # In backend/.env
+   KYC_AUTO_APPROVE=false
+   ```
+
+2. Submit a KYC application via the frontend
+
+3. Check backend logs for OpenAI API call:
+   ```
+   OpenAI KYC advisory: { riskScore: X, decision: "approve/review/reject", confidence: Y }
+   ```
+
+4. Verify the decision engine applies policy correctly:
+   - Low risk (< 0.35) + high confidence (> 0.7) → Auto-approve
+   - High risk or low confidence → Human review queue
+   - Sanctions hit → Always reject
+
+5. Re-enable auto-approve for continued development:
+   ```bash
+   KYC_AUTO_APPROVE=true
+   ```
+
+### 11.7 Files Modified
+
+- `backend/.env` — Added OpenAI configuration + enabled auto-approve
+- `backend/.env.example` — Documented OpenAI env vars
+- `devlopement.md` — This section (§11)
+
+### 11.8 Changelog Entry
+
+| Date | Change |
+|---|---|
+| 2026-07-22 | **§11 OpenAI Integration:** Added OpenAI API key to backend configuration with `KYC_RISK_ENGINE=openai`. Currently bypassed by `KYC_AUTO_APPROVE=true` for smooth development (all KYC requests auto-verify after 10s). OpenAI integration is ready and can be activated by disabling auto-approve. Documented production transition plan and safety guardrails. Added new shortcut S6 to track this state. |

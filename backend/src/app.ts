@@ -39,6 +39,8 @@ import {
   DeterministicKycRiskClient,
   HttpKycRiskClient,
 } from "./modules/kyc/kyc-risk.client.js";
+import { OpenAiKycRiskClient } from "./modules/kyc/openai-kyc.client.js";
+import type { KycRiskClient } from "./modules/kyc/kyc-risk.client.js";
 import { KycService } from "./modules/kyc/kyc.service.js";
 import { createKycProvider } from "./modules/kyc/providers/provider.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
@@ -198,11 +200,19 @@ export function createApp(): Express {
   verifiers.push(externalVerifier);
   const bearerVerifier = composeBearerVerifiers(...verifiers);
   const audit = new InMemoryAuditRepository();
+  const kycRiskClient: KycRiskClient = config.isTest
+    ? new DeterministicKycRiskClient()
+    : config.KYC_RISK_ENGINE === "openai" && config.OPENAI_API_KEY
+      ? new OpenAiKycRiskClient(config.OPENAI_API_KEY)
+      : new HttpKycRiskClient();
+  if (config.KYC_RISK_ENGINE === "openai" && !config.OPENAI_API_KEY && !config.isTest) {
+    logger.warn(
+      "KYC_RISK_ENGINE=openai but OPENAI_API_KEY is unset; falling back to the AI service client",
+    );
+  }
   const kyc = new KycService(
     createKycProvider(),
-    config.isTest
-      ? new DeterministicKycRiskClient()
-      : new HttpKycRiskClient(),
+    kycRiskClient,
     new InMemoryKycRepository(),
     identities,
     audit,
