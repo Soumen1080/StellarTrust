@@ -2,7 +2,6 @@
 import { createApp } from "./app.js";
 import { config } from "./config/index.js";
 import { closePool } from "./db/index.js";
-import { closePrisma } from "./db/prisma.js";
 import { logger } from "./lib/logger.js";
 
 const app = createApp();
@@ -30,9 +29,7 @@ async function shutdown(signal: string): Promise<void> {
   reconciliationJob.stop();
   settlementReconciliationJob.stop();
   server.close(() => {
-    void Promise.allSettled([closePool(), closePrisma()]).finally(() =>
-      process.exit(0),
-    );
+    void closePool().finally(() => process.exit(0));
   });
   // Force-exit if graceful shutdown stalls.
   setTimeout(() => process.exit(1), 10_000).unref();

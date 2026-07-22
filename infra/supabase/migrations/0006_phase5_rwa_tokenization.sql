@@ -9,6 +9,15 @@
 
 begin;
 
+-- Supersede the Phase 0 placeholder RWA tables from 0001 (assets/tokenizations/
+-- token_holdings) with the full Phase 5 schema below. The placeholders
+-- (issuer_id/kind/face_value, stellar_asset_code, investor_id) were never used
+-- by application code, and creating them again here would collide on a clean
+-- sequential apply. Forward-only and safe: nothing references them.
+drop table if exists token_holdings cascade;
+drop table if exists tokenizations cascade;
+drop table if exists assets cascade;
+
 -- Asset types supported by the RWA token contract
 create type asset_type as enum ('invoice', 'commodity', 'real_estate', 'other');
 
