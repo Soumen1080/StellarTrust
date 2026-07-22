@@ -176,3 +176,83 @@ export const HumanKycDecision = {
 } as const;
 export type HumanKycDecision =
   (typeof HumanKycDecision)[keyof typeof HumanKycDecision];
+
+
+// ── Phase 3: Cross-Border Settlement ──────────────────────────────────────────
+
+/** Cross-border settlement lifecycle status. */
+export const SettlementStatus = {
+  Quoted: "quoted",
+  DepositPending: "deposit_pending",
+  Converting: "converting",
+  PayoutPending: "payout_pending",
+  Completed: "completed",
+  Failed: "failed",
+} as const;
+export type SettlementStatus =
+  (typeof SettlementStatus)[keyof typeof SettlementStatus];
+
+/**
+ * Financially recorded settlement transitions. Each writes a balanced ledger
+ * transaction linked to an anchor transfer and/or a chain (path payment) record.
+ */
+export const SettlementTransition = {
+  /** Anchor receives source funds (SEP-6/24/31 deposit). */
+  Deposit: "deposit",
+  /** On-chain source→destination conversion (path payment or AMM swap). */
+  Convert: "convert",
+  /** Anchor pays the destination beneficiary (SEP-6/24/31 withdrawal). */
+  Payout: "payout",
+} as const;
+export type SettlementTransition =
+  (typeof SettlementTransition)[keyof typeof SettlementTransition];
+
+/**
+ * On-chain liquidity mechanism used for a conversion hop.
+ * Classic Stellar only (Rules.md #3: no Soroban for liquidity/settlement).
+ */
+export const RouteType = {
+  PathPayment: "path_payment",
+  Amm: "amm",
+} as const;
+export type RouteType = (typeof RouteType)[keyof typeof RouteType];
+
+/** Simplified anchor transfer status (SEP-6/24/31). */
+export const AnchorTransferStatus = {
+  Pending: "pending",
+  Completed: "completed",
+  Failed: "failed",
+} as const;
+export type AnchorTransferStatus =
+  (typeof AnchorTransferStatus)[keyof typeof AnchorTransferStatus];
+
+/** Anchor protocol used for a corridor leg. */
+export const AnchorProtocol = {
+  Sep6: "sep6",
+  Sep24: "sep24",
+  Sep31: "sep31",
+} as const;
+export type AnchorProtocol =
+  (typeof AnchorProtocol)[keyof typeof AnchorProtocol];
+
+/** SEP-12 customer KYC exchange status (anchor-side). */
+export const AnchorKycStatus = {
+  Accepted: "ACCEPTED",
+  NeedsInfo: "NEEDS_INFO",
+  Rejected: "REJECTED",
+} as const;
+export type AnchorKycStatus =
+  (typeof AnchorKycStatus)[keyof typeof AnchorKycStatus];
+
+/**
+ * Number of decimal places (scale) for each supported currency's minor unit.
+ * Used to convert between currencies with exact BigInt arithmetic (no floats).
+ */
+export const CURRENCY_SCALE: Record<CurrencyCode, number> = {
+  USD: 2,
+  EUR: 2,
+  INR: 2,
+  NGN: 2,
+  XLM: 7,
+  USDC: 7,
+};

@@ -126,6 +126,28 @@ const envSchema = z.object({
     .default(60_000),
   ESCROW_GATEWAY: z.enum(["deterministic", "soroban-rpc"]).default("deterministic"),
 
+  // ── Phase 3: Cross-Border Settlement ────────────────────────────────────
+  // Sandbox anchor + deterministic liquidity for local/test; live adapters are
+  // required (and the sandbox/deterministic ones refused) in staging/production.
+  ANCHOR_GATEWAY: z.enum(["sandbox", "live"]).default("sandbox"),
+  LIQUIDITY_GATEWAY: z
+    .enum(["deterministic", "horizon"])
+    .default("deterministic"),
+  // How long a settlement quote stays executable before it must be re-quoted.
+  SETTLEMENT_QUOTE_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(10)
+    .max(600)
+    .default(120),
+  // Default max slippage applied when a quote request omits the constraint.
+  SETTLEMENT_DEFAULT_MAX_SLIPPAGE_BPS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .default(100),
+
   AUTO_RESOLVE_MAX_AMOUNT: z.coerce.number().nonnegative().default(50000),
   AUTO_RESOLVE_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.9),
 });

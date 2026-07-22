@@ -91,20 +91,40 @@ Stellar testnet deployment remain manual/operational prerequisites.
 
 ## Phase 3 — Cross-Border Settlement
 
+**Status:** Application implementation complete (sandbox anchor + deterministic
+liquidity behind interfaces). Live anchor per corridor, Horizon path-finding/AMM
+adapter, and production persistence remain manual/operational prerequisites.
+
 **Goal:** Multi-currency settlement with a real fiat ramp.
 
 **Deliverables**
-- Path payments for cross-currency conversion.
-- AMM liquidity pool integration.
-- **Anchor integration** (SEP-31/24/6) — start with a controlled/sandbox anchor
-  per corridor; SEP-12 KYC exchange.
-- Routing service: best rate + lowest fee + fastest path, with slippage/fee
-  constraints.
+- [x] Path payments for cross-currency conversion (classic Stellar liquidity
+  behind `LiquidityGateway`; deterministic local adapter, Horizon adapter
+  pending for staging/prod).
+- [x] AMM liquidity pool integration (modeled as a second routed mechanism
+  alongside path payments with its own fee/slippage economics).
+- [x] **Anchor integration** (SEP-31/24/6) — controlled/sandbox anchor per
+  corridor behind `AnchorGateway`; SEP-12 KYC exchange retains only an opaque
+  customer id (no raw PII).
+- [x] Routing service: best rate + lowest fee + fastest path, with slippage/fee
+  constraints (fail closed when no route satisfies the limits).
+- [ ] Replace the sandbox anchor and deterministic liquidity adapters with a
+  live per-corridor anchor client and a Horizon path-finding + AMM adapter for
+  staging/production.
+- [ ] Forward-only Postgres schema for settlement quotes/transitions and
+  settlement reconciliation persistence.
 
 **Acceptance criteria**
-- USD→X and X→USD test corridor settles end-to-end via anchor + path payment.
-- Routing picks the best available path and respects fee/slippage limits.
-- Deposits/withdrawals reconcile against the ledger.
+- [x] USD→X and X→USD test corridor settles end-to-end via anchor + path
+  payment (deposit → convert → payout), each leg producing a balanced ledger
+  transaction linked to its anchor/chain record (settlement tests green).
+- [x] Routing picks the best available path and respects fee/slippage limits
+  (unit-tested: path payment chosen over AMM on net output; rejects when
+  slippage/fee limits exclude every route).
+- [x] Deposits/withdrawals reconcile against the ledger (settlement
+  reconciliation reports zero unresolved mismatches for the happy path).
+- [ ] Verify the same corridors end-to-end against a live sandbox anchor +
+  Horizon testnet liquidity (requires anchor credentials + funded testnet).
 
 ---
 

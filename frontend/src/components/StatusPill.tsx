@@ -1,6 +1,6 @@
-import type { EscrowState, KycStatus, OrderStatus } from "@stellartrust/shared";
+import type { EscrowState, KycStatus, OrderStatus, SettlementStatus } from "@stellartrust/shared";
 
-type Status = EscrowState | KycStatus | OrderStatus;
+type Status = EscrowState | KycStatus | OrderStatus | SettlementStatus;
 
 const STATUS_STYLE: Record<string, string> = {
   locked: "border-status-locked/30 bg-status-locked/10 text-status-locked",
@@ -16,6 +16,12 @@ const STATUS_STYLE: Record<string, string> = {
   deposited: "border-info/30 bg-info/10 text-info",
   confirmed: "border-status-verified/30 bg-status-verified/10 text-status-verified",
   cancelled: "border-status-refunded/30 bg-status-refunded/10 text-status-refunded",
+  completed: "border-status-verified/30 bg-status-verified/10 text-status-verified",
+  quoted: "border-muted/30 bg-muted/10 text-muted-strong",
+  deposit_pending: "border-info/30 bg-info/10 text-info",
+  converting: "border-status-locked/30 bg-status-locked/10 text-status-locked",
+  payout_pending: "border-info/30 bg-info/10 text-info",
+  failed: "border-status-rejected/30 bg-status-rejected/10 text-status-rejected",
 };
 
 export function StatusPill({ status }: { status: Status }) {

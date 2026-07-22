@@ -10,19 +10,29 @@ import { rateLimit } from "express-rate-limit";
 import helmetImport from "helmet";
 import { pinoHttp } from "pino-http";
 import { config } from "./config/index.js";
+import { getPool } from "./db/index.js";
 import { ReconciliationJob } from "./jobs/reconciliation.job.js";
 import { logger } from "./lib/logger.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
 import { requestId, type RequestWithId } from "./middleware/requestId.js";
+import type { BearerVerifier } from "./middleware/auth.js";
 import { InMemoryAuditRepository } from "./modules/audit/audit.repository.js";
-import { InMemoryAuthRepository } from "./modules/auth/auth.repository.js";
+import {
+  InMemoryAuthRepository,
+  type AuthRepository,
+} from "./modules/auth/auth.repository.js";
+import { PgAuthRepository } from "./modules/auth/pg-auth.repository.js";
 import { createAuthRouter } from "./modules/auth/auth.routes.js";
 import {
   composeBearerVerifiers,
   Sep10Service,
 } from "./modules/auth/sep10.service.js";
 import { getBearerVerifier } from "./modules/auth/verifier.factory.js";
-import { InMemoryIdentityRepository } from "./modules/identity/identity.repository.js";
+import {
+  InMemoryIdentityRepository,
+  type IdentityRepository,
+} from "./modules/identity/identity.repository.js";
+import { PgIdentityRepository } from "./modules/identity/pg-identity.repository.js";
 import { InMemoryKycRepository } from "./modules/kyc/kyc.repository.js";
 import { createKycRouter } from "./modules/kyc/kyc.routes.js";
 import {
@@ -37,6 +47,12 @@ import { InMemoryPaymentRepository } from "./modules/payments/payment.repository
 import { createPaymentRouter } from "./modules/payments/payment.routes.js";
 import { PaymentService } from "./modules/payments/payment.service.js";
 import { createSigner } from "./modules/stellar/signer.js";
+import { createAnchorGateway } from "./modules/settlement/anchor.gateway.js";
+import { createLiquidityGateway } from "./modules/settlement/liquidity.gateway.js";
+import { InMemorySettlementRepository } from "./modules/settlement/settlement.repository.js";
+import { SettlementService } from "./modules/settlement/settlement.service.js";
+import { SettlementReconciliationJob } from "./modules/settlement/settlement.reconciliation.job.js";
+import { createSettlementRouter } from "./modules/settlement/settlement.routes.js";
 
 type HelmetFactory = () => RequestHandler;
 
@@ -120,20 +136,60 @@ export function createApp(): Express {
           displayName: config.AUTH_DEMO_NAME,
         }
       : undefined;
-  const identities = new InMemoryIdentityRepository(
-    demoAccount ? [demoAccount] : [],
-  );
+  const demoAccounts = demoAccount ? [demoAccount] : [];
+
+  // Persist identities and sessions in Postgres when a database is configured
+  // so opaque SEP-10 bearer tokens survive restarts. Tests stay hermetic on the
+  // in-memory implementations (no DB connection).
+  const usePersistentStore = Boolean(config.DATABASE_URL) && !config.isTest;
+  if (usePersistentStore) {
+    logger.info("identity/auth: using Postgres-backed repositories");
+  } else {
+    logger.warn(
+      "identity/auth: using in-memory repositories — sessions reset on restart",
+    );
+  }
+
+  const identities: IdentityRepository = usePersistentStore
+    ? new PgIdentityRepository(getPool(), demoAccounts)
+    : new InMemoryIdentityRepository(demoAccounts);
+  const authRepository: AuthRepository = usePersistentStore
+    ? new PgAuthRepository(getPool())
+    : new InMemoryAuthRepository();
   const sep10 = new Sep10Service(
-    new InMemoryAuthRepository(),
+    authRepository,
     identities,
     createSigner(),
     new Set(demoAccount ? [demoAccount.stellarPublicKey] : []),
   );
   const externalVerifier = getBearerVerifier();
-  const bearerVerifier = composeBearerVerifiers(
-    sep10.sessionVerifier,
-    externalVerifier,
-  );
+
+  // ── DEV-ONLY AUTH BYPASS ──────────────────────────────────────────────────
+  // When enabled (development + a configured demo wallet), any request bearing
+  // `AUTH_DEV_BEARER` is accepted and mapped to the seeded demo identity — no
+  // SEP-10 challenge/signature required. This is strictly local: the guard
+  // below never activates in staging/production (mirrors the demoAccount gate),
+  // so protected money/PII/escrow routes remain authenticated in real
+  // deployments (Rules.md #5). Resolving to the real demo identity (a valid
+  // user UUID) keeps identity-backed endpoints working under Postgres.
+  const verifiers: BearerVerifier[] = [sep10.sessionVerifier];
+  if (config.NODE_ENV === "development" && config.AUTH_DEMO_WALLET) {
+    const demoWallet = config.AUTH_DEMO_WALLET;
+    logger.warn(
+      "auth: DEV BYPASS active — AUTH_DEV_BEARER grants the demo identity without SEP-10",
+    );
+    verifiers.push(async (token) => {
+      if (token !== config.AUTH_DEV_BEARER) return null;
+      const { user, wallet } = await identities.upsertWalletIdentity(demoWallet);
+      return {
+        userId: user.id,
+        walletId: wallet.id,
+        roles: ["user", "compliance"],
+      };
+    });
+  }
+  verifiers.push(externalVerifier);
+  const bearerVerifier = composeBearerVerifiers(...verifiers);
   const audit = new InMemoryAuditRepository();
   const kyc = new KycService(
     createKycProvider(),
@@ -159,6 +215,23 @@ export function createApp(): Express {
   );
   app.locals.reconciliationJob = reconciliation;
 
+  // ── Phase 3: Cross-Border Settlement ─────────────────────────────────────
+  const settlementRepository = new InMemorySettlementRepository();
+  const liquidityGateway = createLiquidityGateway();
+  const anchorGateway = createAnchorGateway();
+  const settlement = new SettlementService(
+    settlementRepository,
+    liquidityGateway,
+    anchorGateway,
+    audit,
+  );
+  const settlementReconciliation = new SettlementReconciliationJob(
+    settlementRepository,
+    anchorGateway,
+    config.RECONCILIATION_INTERVAL_MS,
+  );
+  app.locals.settlementReconciliationJob = settlementReconciliation;
+
   // ── Module routers ────────────────────────────────────────────────────────
   app.use("/api/auth", createAuthRouter(sep10, identities, bearerVerifier));
   app.use("/api/kyc", createKycRouter(kyc, bearerVerifier));
@@ -166,6 +239,10 @@ export function createApp(): Express {
   app.use(
     "/api/payments",
     createPaymentRouter(payments, reconciliation, bearerVerifier),
+  );
+  app.use(
+    "/api/settlement",
+    createSettlementRouter(settlement, settlementReconciliation, bearerVerifier),
   );
 
   // ── Error boundary ──────────────────────────────────────────────────────

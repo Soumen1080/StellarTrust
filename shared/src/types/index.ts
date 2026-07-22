@@ -15,6 +15,12 @@ import type {
   OrderStatus,
   PaymentTransition,
   ReconciliationStatus,
+  AnchorKycStatus,
+  AnchorProtocol,
+  AnchorTransferStatus,
+  RouteType,
+  SettlementStatus,
+  SettlementTransition,
 } from "../constants/index.js";
 
 /** Monetary amount as a fixed-precision minor-unit string to avoid float drift. */
@@ -308,4 +314,147 @@ export interface IdentityProfileResponse {
   business: BusinessProfile | null;
   wallets: WalletRef[];
   latestVerification: KycApplicationResponse | null;
+}
+
+
+// ── Phase 3: Cross-Border Settlement ──────────────────────────────────────────
+
+/**
+ * A supported settlement corridor: a source→destination currency pair served by
+ * a specific anchor, bridged on-chain through a Stellar asset.
+ */
+export interface CorridorDTO {
+  id: string;
+  sourceCurrency: CurrencyCode;
+  destinationCurrency: CurrencyCode;
+  anchorId: string;
+  anchorName: string;
+  /** Stellar asset used as the on-chain settlement bridge (e.g. "USDC"). */
+  bridgeAsset: CurrencyCode;
+  anchorProtocol: AnchorProtocol;
+  estimatedSeconds: number;
+}
+
+/** A single conversion hop within a route (classic Stellar liquidity only). */
+export interface RouteHop {
+  type: RouteType;
+  fromCurrency: CurrencyCode;
+  toCurrency: CurrencyCode;
+  /** Human-readable indicative price (destination units per 1 source unit). */
+  price: string;
+}
+
+/**
+ * A fully-costed candidate route. `destinationAmount` already reflects fees and
+ * the quoted slippage; `effectiveRate` is destination-per-source for display.
+ */
+export interface SettlementRouteDTO {
+  type: RouteType;
+  hops: RouteHop[];
+  source: Money;
+  destinationAmount: Money;
+  /** Protocol/liquidity fee retained on the source side. */
+  fee: Money;
+  effectiveRate: string;
+  slippageBps: number;
+  estimatedSeconds: number;
+}
+
+export interface SettlementQuoteInput {
+  sourceCurrency: CurrencyCode;
+  destinationCurrency: CurrencyCode;
+  /** Source amount in minor units (integer string). */
+  sourceAmount: MinorUnitAmount;
+  /** Optional constraint: reject routes above this slippage (basis points). */
+  maxSlippageBps?: number;
+  /** Optional constraint: reject routes whose source-side fee exceeds this. */
+  maxFeeAmount?: MinorUnitAmount;
+}
+
+export interface SettlementQuoteDTO {
+  id: string;
+  corridorId: string;
+  source: Money;
+  /** The best selected route. */
+  route: SettlementRouteDTO;
+  /** All routes considered, best-first (for transparency/auditability). */
+  consideredRoutes: SettlementRouteDTO[];
+  maxSlippageBps: number;
+  maxFeeAmount: MinorUnitAmount | null;
+  expiresAt: string;
+  createdAt: string;
+}
+
+export interface SettlementExecuteInput {
+  quoteId: string;
+  /** Destination beneficiary reference (opaque; never raw bank/PII in logs). */
+  destinationReference: string;
+}
+
+/** Anchor-side transfer record (SEP-6/24/31). No raw PII is stored. */
+export interface AnchorTransferDTO {
+  id: string;
+  kind: "deposit" | "withdrawal";
+  protocol: AnchorProtocol;
+  status: AnchorTransferStatus;
+  amount: MinorUnitAmount;
+  currency: CurrencyCode;
+  /** Opaque anchor-side reference id. */
+  reference: string;
+  /** SEP-12 customer id used for this transfer. */
+  customerId: string;
+  createdAt: string;
+}
+
+export interface SettlementTransitionDTO {
+  id: string;
+  settlementId: string;
+  transition: SettlementTransition;
+  ledgerTransaction: LedgerTransactionDTO;
+  anchorTransfer: AnchorTransferDTO | null;
+  stellarTransaction: StellarTxRecord | null;
+  createdAt: string;
+}
+
+export interface SettlementDTO {
+  id: string;
+  userId: string;
+  quoteId: string;
+  corridorId: string;
+  status: SettlementStatus;
+  source: Money;
+  destination: Money;
+  route: SettlementRouteDTO;
+  destinationReference: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SettlementMutationResponse {
+  settlement: SettlementDTO;
+  transitions: SettlementTransitionDTO[];
+}
+
+export interface SettlementDetailsResponse {
+  settlement: SettlementDTO;
+  transitions: SettlementTransitionDTO[];
+  blockedByReconciliation: boolean;
+}
+
+export interface SettlementReconciliationMismatchDTO {
+  id: string;
+  settlementId: string;
+  transitionId: string;
+  reason: string;
+  resolvedAt: string | null;
+  createdAt: string;
+}
+
+export interface SettlementReconciliationReportDTO {
+  status: ReconciliationStatus;
+  checked: number;
+  matched: number;
+  unresolved: number;
+  mismatches: SettlementReconciliationMismatchDTO[];
+  ranAt: string;
 }

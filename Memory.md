@@ -8,7 +8,7 @@
 > **Update policy:** Every change to the codebase or docs should update the
 > relevant section here (Current Focus, Decision Log, Changelog, Complications).
 
-**Last updated:** 2026-07-20
+**Last updated:** 2026-07-22
 
 ---
 
@@ -18,14 +18,16 @@
 - **What:** AI-powered cross-border escrow, liquidity settlement, and RWA
   tokenization platform on Stellar.
 - **Track:** Production (real product for real users).
-- **Current phase:** Phase 2 — Core Payment + Escrow (**application
-  implementation complete; public-testnet and production-adapter verification
-  remain**; see §2).
+- **Current phase:** Phase 3 — Cross-Border Settlement (**application
+  implementation complete; live anchor, Horizon path-finding/AMM adapter, and
+  production persistence remain**; see §2). Phases 1–2 application code remains
+  complete with the same operational prerequisites outstanding.
 - **Repo state:** All six portions are present. Shared/backend/frontend checks
-  are green locally; backend has 29 passing tests. Phase 2 uses interfaces with
-  in-memory repositories and a deterministic Soroban adapter locally, while
-  migration `0004` defines the production financial-transition and
-  reconciliation persistence contract.
+  are green locally; backend has 41 passing tests. Phases 2–3 use interfaces
+  with in-memory repositories and deterministic/sandbox chain, anchor, and
+  liquidity adapters locally, while migration `0004` defines the Phase 2
+  financial-transition and reconciliation persistence contract (a Phase 3
+  settlement schema is still to be authored).
 
 ### Canonical docs
 - `PRD.md` — product requirements, users, features.
@@ -39,10 +41,42 @@
 
 ## 2. Current Focus
 
-- **Currently working on:** Phase 2 application code is complete and validated.
-  The remaining work is operational: rotate exposed credentials, deploy/smoke
-  test the contract on public testnet, and implement production Postgres, Redis,
-  Soroban RPC, and KMS/HSM adapters.
+- **Currently working on:** Phase 3 application code is complete and validated.
+  The remaining work is operational: implement a live per-corridor anchor client
+  and a Horizon path-finding + AMM liquidity adapter, author the Phase 3
+  settlement persistence schema, and verify corridors against a live sandbox
+  anchor + testnet liquidity. Phase 2's public-testnet/production-adapter items
+  and the exposed-credential rotation also remain outstanding.
+- **What was built (Phase 3 — Cross-Border Settlement):**
+  - Shared contracts: settlement lifecycle/transition/route/anchor enums,
+    `CURRENCY_SCALE`, corridor/quote/route/settlement/anchor-transfer/
+    reconciliation DTOs, and quote/execute Zod schemas.
+  - `settlement` bounded context (`backend/src/modules/settlement`):
+    - `AnchorGateway` + deterministic `SandboxAnchorGateway` — SEP-6/24/31
+      deposit/withdrawal and SEP-12 KYC exchange; retains only an opaque
+      customer id (no raw PII). Fail-closed factory (`ANCHOR_GATEWAY`).
+    - `LiquidityGateway` + `DeterministicLiquidityGateway` — classic-Stellar
+      path-payment and AMM route economics with exact BigInt minor-unit
+      conversion (`convertMinorUnits`, USD-referenced price table). Fail-closed
+      factory (`LIQUIDITY_GATEWAY`).
+    - `RoutingService` — pure best-route selection (max destination value, then
+      lower fee, then faster) that fails closed when no route satisfies the
+      slippage/fee limits.
+    - `SettlementService` — quote a corridor, then execute deposit → convert →
+      payout. Every leg writes a balanced double-entry ledger transaction (each
+      currency self-balances via an `FX_CONVERSION` account) linked to its
+      anchor transfer and/or path-payment record, plus append-only audit.
+      Idempotent per quote; expired quotes and cross-user execution rejected.
+    - `SettlementReconciliationJob` — re-verifies balanced ledger + successful
+      anchor/chain records per transition and blocks settlements with an
+      unresolved mismatch (Golden Rule #7).
+    - Authenticated, idempotent REST routes under `/api/settlement`
+      (`/corridors`, `/quotes`, `/orders`, `/orders/:id`, `/reconciliation/run`).
+  - Frontend `/settlement` console: corridor picker → routed quote (destination,
+    rate, fee, slippage, routes considered) → execute, plus a settlement history
+    with per-leg detail. New nav link and typed API client methods.
+  - Config: `ANCHOR_GATEWAY`, `LIQUIDITY_GATEWAY`, `SETTLEMENT_QUOTE_TTL_SECONDS`,
+    `SETTLEMENT_DEFAULT_MAX_SLIPPAGE_BPS`.
 - **What was built (Phase 2):**
   - Shared payment-transition, order mutation/detail, and reconciliation DTOs +
     Zod create-order validation.
@@ -93,28 +127,28 @@
     implementations pending validated Postgres adapters.
 
 - **Verification status (this environment):**
-  - ✅ `shared`: TypeScript build passes.
-  - ✅ `backend`: lint + typecheck + **29 tests pass** across five test files.
-    Phase 2 coverage proves state order/authorization, balanced+linked records,
-    confirmation-gated release, arbiter-only refund, and zero unresolved
-    happy-path reconciliation mismatches.
-  - ✅ `frontend`: optimized production build passes and `/escrow` is generated.
-  - ✅ `git diff --check`: no whitespace errors.
-  - ⚠️ `contracts`: `cargo test` was attempted; Windows compiled many crates but
-    failed inside `soroban-env-common`/macro dependencies before project source.
-    CI/Linux is authoritative for contract tests.
-  - ⚠️ `database` and Compose: Docker/psql are not installed locally, so
-    migration `0004` and `docker compose config` cannot be executed here; CI
-    remains authoritative for migrations.
-  - ⚠️ Public Stellar testnet deploy/smoke was not run because a funded manual
-    identity and functioning Stellar CLI are required.
+  - ✅ `shared`: TypeScript build passes (Phase 3 contracts compile).
+  - ✅ `backend`: lint + typecheck + **41 tests pass** across six test files.
+    Phase 3 coverage proves BigInt currency conversion, best-route selection,
+    fee/slippage constraint rejection (fail closed), end-to-end deposit →
+    convert → payout with balanced+linked ledger transitions, zero-mismatch
+    settlement reconciliation, quote idempotency, and cross-user/expiry guards.
+  - ✅ `frontend`: optimized production build passes and `/settlement` is
+    generated alongside the existing routes.
+  - ⚠️ Phase 3 live path NOT run here: live anchor client, Horizon
+    path-finding/AMM adapter, and a Phase 3 settlement Postgres schema are not
+    yet implemented; corridors were validated only against the deterministic
+    sandbox adapters.
+  - ⚠️ `contracts`, `database`/Compose, and public-testnet items are unchanged
+    from Phase 2 (CI/Linux authoritative; Docker/psql unavailable locally).
   - ⚠️ **Security action:** the previously exposed Supabase server secret must
-    be rotated before any external integration is enabled.
+    still be rotated before any external integration is enabled.
 
-- **Next up:** rotate the exposed Supabase secret; install Docker/Postgres/Redis;
-  validate migration `0004`; create/fund a Stellar testnet deployer and run the
-  contract smoke flow; implement Postgres/Redis/Soroban RPC/KMS adapters; then
-  check off the remaining operational Phase 2 criteria before Phase 3.
+- **Next up:** implement the live per-corridor anchor client and Horizon
+  path-finding + AMM liquidity adapter; author the Phase 3 settlement
+  persistence schema/migration; verify corridors end-to-end against a live
+  sandbox anchor + funded testnet; then close the remaining operational Phase 2
+  items (credential rotation, testnet contract smoke, production adapters).
 
 ---
 
@@ -156,6 +190,12 @@
 | D32 | 2026-07-20 | Use a deterministic Soroban adapter only for local/test; require KMS-backed RPC submission in staging/production | Enable reproducible tests without pretending synthetic receipts are live chain settlement |
 | D33 | 2026-07-20 | Keep Phase 2 runtime persistence in-memory until migration `0004` can be validated with production Postgres/Redis adapters | Preserve explicit interfaces and avoid claiming untested financial persistence |
 | D34 | 2026-07-20 | Store safe local stack defaults in gitignored `infra/.env`; leave external credentials commented/manual | Make local setup reproducible without committing API keys or secrets |
+| D35 | 2026-07-22 | Model cross-border settlement as three financial transitions — deposit → convert → payout — each an immutable balanced ledger transaction linked to its anchor transfer and/or path-payment record | Every fiat/liquidity leg is independently reconcilable and can never exist without balanced accounting |
+| D36 | 2026-07-22 | Record cross-currency conversions with a per-currency-balanced double-entry posting through an `FX_CONVERSION` account (source and destination legs each self-balance) | Keep Golden Rule #1 (balanced per currency) intact for multi-currency movement without floating FX in the ledger |
+| D37 | 2026-07-22 | All settlement money math uses integer minor units with BigInt and a USD-referenced rational price table + `CURRENCY_SCALE` | Financial precision across currencies with differing decimals; no float drift (extends D12) |
+| D38 | 2026-07-22 | Routing selects the best route by net destination value, then fee, then speed, and fails closed when no route meets the slippage/fee limits | Deliver the most value while honoring explicit user constraints; never silently exceed limits |
+| D39 | 2026-07-22 | Liquidity conversion uses classic Stellar (path payments + AMM) behind `LiquidityGateway`; anchors sit behind `AnchorGateway` with SEP-6/24/31 + SEP-12 | Rules.md #3 (no Soroban for liquidity/settlement) and D5 (anchor-based fiat ramp); adapters swap sandbox → live per corridor |
+| D40 | 2026-07-22 | SEP-12 KYC exchange with the anchor retains only an opaque customer id; sandbox anchor and deterministic liquidity adapters are refused outside development/test | Data minimization/PII protection (D25, Rules.md §7) and fail-closed on synthetic adapters in staging/production |
 
 ---
 
@@ -178,6 +218,9 @@
 | Phase 2 persistence | Runtime payment/idempotency/reconciliation stores are in-memory | Migration `0004` defines the contract; implement and transaction-test Postgres/Redis adapters |
 | Local database tooling | Docker and psql are unavailable on this machine | Validate migrations in CI or after installing Docker Desktop/Postgres client |
 | Contract toolchain | Windows cargo fails inside Soroban dependency macro compilation | Run `cargo test` in Linux CI; use a working Stellar CLI for testnet deployment |
+| Phase 3 anchor adapter | Sandbox anchor settles synchronously and holds no real fiat | Behind `AnchorGateway`; implement a live per-corridor SEP-6/24/31 client (async status/webhooks) before staging |
+| Phase 3 liquidity adapter | Deterministic route economics are not live Horizon path-finding/AMM quotes | Behind `LiquidityGateway`; implement a Horizon path-finding + AMM adapter (`LIQUIDITY_GATEWAY=horizon`) before staging |
+| Phase 3 persistence | Settlement quotes/transitions/mismatches are in-memory | Author a forward-only settlement Postgres schema and implement/transaction-test the adapter |
 
 ---
 
@@ -223,6 +266,7 @@
 | 2026-07-18 | **Supabase wired in (D19).** Added `@supabase/supabase-js` + `jose`; config now recognizes `SUPABASE_URL/PUBLISHABLE_KEY/SECRET_KEY/JWKS_URL`. New `modules/auth`: Supabase admin client adapter, JWKS JWT verifier, and a verifier factory (JWKS in dev/prod, dev stub in test, stub refused in staging/prod). Ledger routes use the selected verifier. Local `backend/.env` created (gitignored) with the project's values. Runtime smoke confirmed: `/health` ok; ledger endpoint rejects no-token / dev-token / bogus-JWT with 401 while Supabase JWKS verification is active. Backend lint/typecheck/test(17)/build still green. DB still uses raw `DATABASE_URL` (needs the project DB password to point at Supabase Postgres). |
 | 2026-07-18 | **Phase 1 Identity & Wallet application implementation completed (D20–D28).** Added shared contracts and migration `0003`; KMS-boundary SEP-10 challenges, signature/replay checks, hashed opaque sessions, and Supabase/dev verifier composition; sandbox KYC/KYB provider; timeout-safe advisory AI integration; backend-owned policy, human review, verified profiles, and PII-safe audit; Wallets Kit sign-in; `/kyc` onboarding/status and `/admin/kyc` compliance UI; exact-origin CORS and environment template. Verified locally: shared build; backend lint/typecheck/24 tests/build; frontend typecheck/production build; AI byte-compilation. AI pytest, contract tests, and DB migrations remain CI-only on this machine. Runtime Phase 1 repositories are still in-memory pending Postgres adapters. Supabase server secret rotation remains required. |
 | 2026-07-20 | **Phase 2 application implementation completed (D29–D34).** Added shared payment/reconciliation contracts; strict authenticated/idempotent order lifecycle and arbiter refund; atomic balanced ledger + linked chain + audit transition records; deterministic local Soroban boundary; scheduled reconciliation, alert/report, and blocking; migration `0004`; buyer-confirmed contract release and tests; `/escrow` UI; testnet deploy helper; and gitignored `infra/.env`. Validated shared build, backend lint/typecheck/29 tests, frontend production build, and diff checks. Public testnet, production adapters, DB migration execution, and contract CI remain unchecked/manual prerequisites. |
+| 2026-07-22 | **Phase 3 application implementation completed (D35–D40).** Added shared settlement contracts (enums, `CURRENCY_SCALE`, corridor/quote/route/settlement/anchor DTOs, quote/execute schemas); new `settlement` bounded context — `SandboxAnchorGateway` (SEP-6/24/31 + SEP-12, opaque customer id), `DeterministicLiquidityGateway` (path-payment + AMM economics, exact BigInt conversion), `RoutingService` (best-route + fail-closed fee/slippage limits), `SettlementService` (deposit→convert→payout with per-currency-balanced ledger via `FX_CONVERSION`, PII-safe audit, quote idempotency), and `SettlementReconciliationJob` (ledger↔anchor/chain, blocks on mismatch); authenticated idempotent `/api/settlement` routes; config `ANCHOR_GATEWAY`/`LIQUIDITY_GATEWAY`/`SETTLEMENT_QUOTE_TTL_SECONDS`/`SETTLEMENT_DEFAULT_MAX_SLIPPAGE_BPS`; frontend `/settlement` console + nav link + typed API client. Validated shared build, backend lint/typecheck/**41 tests**, and frontend production build. Live anchor client, Horizon path-finding/AMM adapter, Phase 3 settlement persistence schema, and live-corridor verification remain manual/operational prerequisites. |
 
 ---
 

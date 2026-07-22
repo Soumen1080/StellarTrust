@@ -10,10 +10,16 @@ import type {
   KycReviewItem,
   KycStatusResponse,
   CreateOrderInput,
+  CorridorDTO,
   OrderDetailsResponse,
   OrderMutationResponse,
   ReconciliationReportDTO,
   Sep10ChallengeResponse,
+  SettlementDetailsResponse,
+  SettlementExecuteInput,
+  SettlementMutationResponse,
+  SettlementQuoteDTO,
+  SettlementQuoteInput,
 } from "@stellartrust/shared";
 
 const DEFAULT_API_BASE =
@@ -166,4 +172,37 @@ export const api = {
       headers: { "idempotency-key": idempotencyKey },
       body: "{}",
     }),
+
+  // ── Phase 3: Cross-Border Settlement ────────────────────────────────────
+  listCorridors: (accessToken: string) =>
+    request<{ corridors: CorridorDTO[] }>("/api/settlement/corridors", {
+      accessToken,
+    }),
+  quoteSettlement: (accessToken: string, input: SettlementQuoteInput) =>
+    request<SettlementQuoteDTO>("/api/settlement/quotes", {
+      method: "POST",
+      accessToken,
+      body: JSON.stringify(input),
+    }),
+  executeSettlement: (
+    accessToken: string,
+    idempotencyKey: string,
+    input: SettlementExecuteInput,
+  ) =>
+    request<SettlementMutationResponse>("/api/settlement/orders", {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  listSettlements: (accessToken: string) =>
+    request<{ settlements: SettlementDetailsResponse[] }>(
+      "/api/settlement/orders",
+      { accessToken },
+    ),
+  getSettlement: (accessToken: string, settlementId: string) =>
+    request<SettlementDetailsResponse>(
+      `/api/settlement/orders/${settlementId}`,
+      { accessToken },
+    ),
 };

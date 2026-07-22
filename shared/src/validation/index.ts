@@ -169,6 +169,34 @@ export const kycReviewDecisionInputSchema = z.object({
   reason: z.string().min(5).max(1_000),
 });
 
+// ── Phase 3: Cross-Border Settlement ──────────────────────────────────────────
+
+export const settlementQuoteInputSchema = z
+  .object({
+    sourceCurrency: currencySchema,
+    destinationCurrency: currencySchema,
+    sourceAmount: minorUnitAmountSchema.refine((value) => value !== "0", {
+      message: "sourceAmount must be greater than zero",
+    }),
+    // Basis points (1% = 100 bps). 0..10000.
+    maxSlippageBps: z.number().int().min(0).max(10_000).optional(),
+    maxFeeAmount: minorUnitAmountSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.sourceCurrency === value.destinationCurrency) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["destinationCurrency"],
+        message: "source and destination currencies must differ",
+      });
+    }
+  });
+
+export const settlementExecuteInputSchema = z.object({
+  quoteId: z.string().uuid(),
+  destinationReference: z.string().min(3).max(256),
+});
+
 export type LedgerTransactionInputParsed = z.infer<
   typeof ledgerTransactionInputSchema
 >;
@@ -182,4 +210,10 @@ export type KycApplicationInputParsed = z.infer<
 >;
 export type KycReviewDecisionInputParsed = z.infer<
   typeof kycReviewDecisionInputSchema
+>;
+export type SettlementQuoteInputParsed = z.infer<
+  typeof settlementQuoteInputSchema
+>;
+export type SettlementExecuteInputParsed = z.infer<
+  typeof settlementExecuteInputSchema
 >;

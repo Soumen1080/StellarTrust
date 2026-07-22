@@ -9,6 +9,7 @@ import { useIdentity } from "@/components/IdentityProvider";
 const baseLinks = [
   { href: "/", label: "Overview" },
   { href: "/escrow", label: "Escrow" },
+  { href: "/settlement", label: "Settlement" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
