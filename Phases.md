@@ -166,18 +166,44 @@ compliance-operated escrow/payments arbiter path.
 
 ## Phase 5 — RWA Tokenization (opt-in module)
 
+**Status:** Application implementation complete (Soroban `rwa_token` contract +
+backend `rwa` module + escrow-triggered payout + frontend console). Public
+Stellar testnet contract deployment and production Postgres/KMS-Soroban adapters
+remain manual/operational prerequisites.
+
 **Goal:** Sellers unlock working capital; investors get transparent ownership.
 
 **Deliverables**
-- Soroban `rwa_token` contract (issuance + payout distribution).
-- Tokenize invoice/commodity/real estate; fractional ownership.
-- Investor purchase flow; payout to holders when buyer pays through escrow.
-- Ownership/transfer transparency + compliance controls.
+- [x] Soroban `rwa_token` contract (issuance + payout distribution) with
+  asset metadata, freeze/authorization compliance controls, pro-rata share
+  computation, holder enumeration, and unit tests.
+- [x] Tokenize invoice/commodity/real estate; fractional ownership (asset →
+  tokenization → deploy → investor purchase flow with units-sold tracking and
+  auto-funding).
+- [x] Investor purchase flow; payout to holders when buyer pays through escrow
+  (`PaymentService` auto-distributes a pro-rata payout on `Release` for any
+  tokenization whose `linkedOrderId` matches the released order).
+- [x] Ownership/transfer transparency + compliance controls (freeze/unfreeze,
+  authorization whitelist; append-only audit on every mutation).
+- [x] Forward-only Phase 5 Postgres schema (migration `0006`): assets,
+  tokenizations, token_holdings, payout_distributions, payout_records + RWA
+  ledger accounts, over-sell/auto-fund triggers, and RLS.
+- [x] Frontend `/rwa` console (marketplace, tokenize, portfolio) + typed API
+  client + navigation.
+- [ ] Deploy the `rwa_token` contract to public Stellar testnet and replace the
+  `DeterministicRwaGateway` + in-memory repository with a KMS-backed Soroban RPC
+  adapter and Postgres persistence.
 
 **Acceptance criteria**
-- An invoice can be tokenized, sold fractionally, and pays holders on buyer
-  payment — all reconciled in the ledger.
-- Tokenization is fully separate from the escrow happy path.
+- [x] An invoice can be tokenized, sold fractionally, and pays holders on buyer
+  payment — all reconciled in the ledger (covered by the RWA + escrow-release
+  integration tests; each payout posts a balanced ledger transaction).
+- [x] Tokenization is fully separate from the escrow happy path (Rules.md §3):
+  RWA is a peer module; the payout is a non-fatal, retryable hook on release and
+  never alters the tested Phase 2 money state machine.
+- [ ] Verify tokenization + payout end-to-end against the deployed public
+  testnet contract with production-style persistence (manual credentials/funding
+  required).
 
 ---
 

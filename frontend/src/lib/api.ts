@@ -24,6 +24,16 @@ import type {
   SettlementMutationResponse,
   SettlementQuoteDTO,
   SettlementQuoteInput,
+  AssetDTO,
+  AssetListResponse,
+  CreateAssetInput,
+  CreateTokenizationInput,
+  InvestorPortfolioResponse,
+  PayoutDistributionDTO,
+  PurchaseUnitsInput,
+  TokenizationDTO,
+  TokenizationDetailsResponse,
+  TokenizationListResponse,
 } from "@stellartrust/shared";
 
 const DEFAULT_API_BASE =
@@ -254,4 +264,127 @@ export const api = {
     request<{ dispute: DisputeDTO }>(`/api/disputes/${disputeId}`, {
       accessToken,
     }),
+
+  // ── Phase 5: RWA Tokenization (opt-in module) ───────────────────────────
+  createAsset: (
+    accessToken: string,
+    idempotencyKey: string,
+    input: CreateAssetInput,
+  ) =>
+    request<AssetDTO>("/api/rwa/assets", {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  listAssets: (accessToken: string) =>
+    request<AssetListResponse>("/api/rwa/assets", { accessToken }),
+  createTokenization: (
+    accessToken: string,
+    idempotencyKey: string,
+    input: CreateTokenizationInput,
+  ) =>
+    request<TokenizationDTO>("/api/rwa/tokenizations", {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  deployTokenization: (
+    accessToken: string,
+    tokenizationId: string,
+    idempotencyKey: string,
+  ) =>
+    request<TokenizationDTO>(
+      `/api/rwa/tokenizations/${tokenizationId}/deploy`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    ),
+  listTokenizations: (
+    accessToken: string,
+    filters?: { issuerUserId?: string; status?: string },
+  ) => {
+    const params = new URLSearchParams();
+    if (filters?.issuerUserId) params.set("issuerUserId", filters.issuerUserId);
+    if (filters?.status) params.set("status", filters.status);
+    const query = params.toString();
+    return request<TokenizationListResponse>(
+      `/api/rwa/tokenizations${query ? `?${query}` : ""}`,
+      { accessToken },
+    );
+  },
+  getTokenization: (accessToken: string, tokenizationId: string) =>
+    request<TokenizationDetailsResponse>(
+      `/api/rwa/tokenizations/${tokenizationId}`,
+      { accessToken },
+    ),
+  purchaseUnits: (
+    accessToken: string,
+    tokenizationId: string,
+    idempotencyKey: string,
+    input: PurchaseUnitsInput,
+  ) =>
+    request<TokenizationDetailsResponse>(
+      `/api/rwa/tokenizations/${tokenizationId}/purchase`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: JSON.stringify(input),
+      },
+    ),
+  freezeTokenization: (
+    accessToken: string,
+    tokenizationId: string,
+    idempotencyKey: string,
+  ) =>
+    request<TokenizationDTO>(
+      `/api/rwa/tokenizations/${tokenizationId}/freeze`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    ),
+  unfreezeTokenization: (
+    accessToken: string,
+    tokenizationId: string,
+    idempotencyKey: string,
+  ) =>
+    request<TokenizationDTO>(
+      `/api/rwa/tokenizations/${tokenizationId}/unfreeze`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: "{}",
+      },
+    ),
+  getRwaPortfolio: (accessToken: string) =>
+    request<InvestorPortfolioResponse>("/api/rwa/portfolio", { accessToken }),
+  distributeRwaPayout: (
+    accessToken: string,
+    tokenizationId: string,
+    idempotencyKey: string,
+    input: {
+      orderId: string;
+      transition: string;
+      payoutAmount: string;
+      payoutCurrency: string;
+    },
+  ) =>
+    request<PayoutDistributionDTO>(
+      `/api/rwa/tokenizations/${tokenizationId}/distribute-payout`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: JSON.stringify(input),
+      },
+    ),
 };

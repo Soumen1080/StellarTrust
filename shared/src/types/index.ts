@@ -522,3 +522,148 @@ export interface SettlementReconciliationReportDTO {
   mismatches: SettlementReconciliationMismatchDTO[];
   ranAt: string;
 }
+
+
+
+// ── Phase 5: RWA Tokenization (opt-in module) ─────────────────────────────────
+// Contracts of record for the RWA module. All numeric quantities are strings
+// (minor units / integer unit counts) to avoid float drift and remain JSON-safe.
+
+/** A real-world asset available for tokenization. */
+export interface AssetDTO {
+  id: string;
+  ownerUserId: string;
+  assetType: import("../constants/index.js").AssetType;
+  /** Opaque asset reference (e.g. "invoice:INV-001"). Never raw PII. */
+  assetRef: string;
+  description: string;
+  /** Appraised valuation as a minor-unit integer string. */
+  valuationAmount: MinorUnitAmount;
+  valuationCurrency: CurrencyCode;
+  /** Opaque metadata references (documents, appraisals). Never raw content. */
+  metadata?: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** An on-chain RWA token contract representing fractional ownership. */
+export interface TokenizationDTO {
+  id: string;
+  assetId: string;
+  issuerUserId: string;
+  /** Deployed Soroban contract address (null until deployed). */
+  contractId: string | null;
+  contractDeployedAt: string | null;
+  /** Total fractional units (integer string). */
+  totalUnits: string;
+  /** Units sold to investors so far (integer string). */
+  unitsSold: string;
+  /** Price per unit as a minor-unit integer string. */
+  pricePerUnitAmount: MinorUnitAmount;
+  pricePerUnitCurrency: CurrencyCode;
+  /** Compliance: transfers restricted to authorized holders. */
+  requireAuthorization: boolean;
+  /** Compliance: transfers frozen. */
+  frozen: boolean;
+  /** Escrow order whose release triggers the payout (null if none). */
+  linkedOrderId: string | null;
+  status: import("../constants/index.js").TokenizationStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** An investor's ownership record of tokenized units. */
+export interface TokenHoldingDTO {
+  id: string;
+  tokenizationId: string;
+  holderUserId: string;
+  /** Stellar address holding the units. */
+  holderAddress: string;
+  /** Units held (integer string). */
+  units: string;
+  /** Amount paid at purchase (minor-unit integer string). */
+  purchaseAmount: MinorUnitAmount;
+  purchaseCurrency: CurrencyCode;
+  purchasedAt: string;
+  authorized: boolean;
+  updatedAt: string;
+}
+
+/** A pro-rata payout event triggered by a buyer payment. */
+export interface PayoutDistributionDTO {
+  id: string;
+  tokenizationId: string;
+  triggeredByOrderId: string | null;
+  triggeredByTransition: string | null;
+  /** Total payout amount (minor-unit integer string). */
+  totalAmount: MinorUnitAmount;
+  totalCurrency: CurrencyCode;
+  status: import("../constants/index.js").PayoutStatus;
+  ledgerTransactionId: string | null;
+  initiatedAt: string;
+  completedAt: string | null;
+}
+
+/** An individual holder's share within a payout distribution. */
+export interface PayoutRecordDTO {
+  id: string;
+  distributionId: string;
+  holderUserId: string;
+  unitsHeld: string;
+  shareAmount: MinorUnitAmount;
+  shareCurrency: CurrencyCode;
+  ledgerEntryId: string | null;
+  createdAt: string;
+}
+
+export interface CreateAssetInput {
+  assetType: import("../constants/index.js").AssetType;
+  assetRef: string;
+  description: string;
+  valuationAmount: MinorUnitAmount;
+  valuationCurrency: CurrencyCode;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateTokenizationInput {
+  assetId: string;
+  totalUnits: string;
+  pricePerUnitAmount: MinorUnitAmount;
+  pricePerUnitCurrency: CurrencyCode;
+  requireAuthorization?: boolean;
+  linkedOrderId?: string;
+}
+
+export interface PurchaseUnitsInput {
+  units: string;
+  holderAddress: string;
+}
+
+export interface TokenizationDetailsResponse {
+  tokenization: TokenizationDTO;
+  asset: AssetDTO;
+  holdings: TokenHoldingDTO[];
+  distributions: PayoutDistributionDTO[];
+  /** Units still available for purchase (integer string). */
+  availableUnits: string;
+  /** Total raised from investors (minor-unit integer string). */
+  totalRaised: MinorUnitAmount;
+}
+
+export interface InvestorPortfolioResponse {
+  holdings: Array<{
+    holding: TokenHoldingDTO;
+    tokenization: TokenizationDTO;
+    asset: AssetDTO;
+  }>;
+  totalInvested: MinorUnitAmount;
+  totalPayoutsReceived: MinorUnitAmount;
+}
+
+export interface TokenizationListResponse {
+  tokenizations: TokenizationDTO[];
+}
+
+export interface AssetListResponse {
+  assets: AssetDTO[];
+}

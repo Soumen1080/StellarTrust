@@ -11,6 +11,7 @@ const baseLinks = [
   { href: "/escrow", label: "Escrow" },
   { href: "/settlement", label: "Settlement" },
   { href: "/disputes", label: "Disputes" },
+  { href: "/rwa", label: "RWA" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {

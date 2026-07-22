@@ -291,3 +291,45 @@ export const DisputeDecisionMaker = {
 } as const;
 export type DisputeDecisionMaker =
   (typeof DisputeDecisionMaker)[keyof typeof DisputeDecisionMaker];
+
+
+
+// ── Phase 5: RWA Tokenization (opt-in module) ─────────────────────────────────
+
+/** Type of real-world asset being tokenized. */
+export const AssetType = {
+  Invoice: "invoice",
+  Commodity: "commodity",
+  RealEstate: "real_estate",
+  Other: "other",
+} as const;
+export type AssetType = (typeof AssetType)[keyof typeof AssetType];
+
+/** Tokenization lifecycle status. */
+export const TokenizationStatus = {
+  /** Created but not yet deployed on-chain. */
+  Draft: "draft",
+  /** Deployed and accepting investor purchases. */
+  Active: "active",
+  /** Fully subscribed (all units sold). */
+  Funded: "funded",
+  /** Payout distribution in progress. */
+  Distributing: "distributing",
+  /** Payout completed. */
+  Distributed: "distributed",
+  /** Transfers frozen (compliance control). */
+  Frozen: "frozen",
+  /** Cancelled before activation. */
+  Cancelled: "cancelled",
+} as const;
+export type TokenizationStatus =
+  (typeof TokenizationStatus)[keyof typeof TokenizationStatus];
+
+/** Pro-rata payout distribution status. */
+export const PayoutStatus = {
+  Pending: "pending",
+  Processing: "processing",
+  Completed: "completed",
+  Failed: "failed",
+} as const;
+export type PayoutStatus = (typeof PayoutStatus)[keyof typeof PayoutStatus];

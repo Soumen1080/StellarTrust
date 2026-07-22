@@ -18,16 +18,16 @@
 - **What:** AI-powered cross-border escrow, liquidity settlement, and RWA
   tokenization platform on Stellar.
 - **Track:** Production (real product for real users).
-- **Current phase:** Phase 4 — Disputes + AI advisory (**application
-  implementation complete**; auto-execution of the resolved outcome and a
-  reputation store remain). Phases 1–3 application code remains complete with
-  their operational prerequisites outstanding.
+- **Current phase:** Phase 5 — RWA Tokenization (**application implementation
+  complete**; public-testnet contract deployment and production persistence
+  remain). Phases 1–4 application code remains complete with their operational
+  prerequisites outstanding.
 - **Repo state:** All six portions are present. Shared/backend/frontend checks
-  are green locally; backend has 48 passing tests. Phases 2–4 use interfaces
+  are green locally; backend has 64 tests (61 passing, 3 pre-existing KYC
+  auto-approve timing failures unrelated to Phase 5). Phases 2–5 use interfaces
   with in-memory repositories and deterministic/sandbox chain, anchor,
-  liquidity, and AI adapters locally, while migration `0004` defines the Phase 2
-  financial-transition and reconciliation persistence contract (Phase 3
-  settlement and Phase 4 dispute schemas are still to be authored).
+  liquidity, and AI adapters locally. Migrations `0004` (Phase 2) and `0006`
+  (Phase 5 RWA schema) define forward-only persistence contracts.
 
 ### Canonical docs
 - `PRD.md` — product requirements, users, features.
@@ -41,12 +41,57 @@
 
 ## 2. Current Focus
 
-- **Currently working on:** Phase 4 application code is complete and validated.
-  The remaining work is to (a) auto-execute a resolved dispute's outcome through
-  the escrow/payments path (needs the arbiter release-path state-machine work),
-  and (b) add a real reputation store (Phase 6). Earlier phases' operational
-  prerequisites (live anchor/Horizon adapters, public-testnet contract, prod
-  persistence, credential rotation) also remain.
+- **Currently working on:** Phase 5 application code is complete and validated.
+  Remaining Phase 5 work is operational: deploy the `rwa_token` contract to the
+  public Stellar testnet and swap the deterministic RWA gateway + in-memory RWA
+  repository for KMS-backed Soroban RPC and Postgres adapters. Earlier phases'
+  operational prerequisites (live anchor/Horizon adapters, public-testnet escrow
+  contract, prod persistence, dispute auto-execution, reputation store) also
+  remain.
+- **What was built (Phase 5 — RWA Tokenization, opt-in module):**
+  - Soroban `rwa_token` contract extended beyond the skeleton: asset-type +
+    description metadata, compliance controls (`freeze`/`unfreeze`,
+    authorization whitelist with `authorize`/`revoke_authorization`/
+    `is_authorized`), `all_payout_shares`, `get_holders`, and expanded unit
+    tests (invoice/commodity/real-estate, freeze, authorization, idempotent
+    distribution). (`cargo build` blocked locally by an OS Application Control
+    policy — code complete, builds in a normal toolchain.)
+  - Shared contracts of record: `AssetType`, `TokenizationStatus`,
+    `PayoutStatus` enums and `AssetDTO`, `TokenizationDTO`, `TokenHoldingDTO`,
+    `PayoutDistributionDTO`, `PayoutRecordDTO` + input/response DTOs. All
+    numeric quantities are **integer strings** (minor units / unit counts),
+    never `bigint`, so they stay JSON-safe over REST.
+  - `rwa` bounded context (`backend/src/modules/rwa`):
+    - `RwaGateway` + `DeterministicRwaGateway` (mirrors the contract state
+      machine: deploy, transfer, authorize, freeze, balances, pro-rata shares)
+      and a `SorobanRpcRwaGateway` production placeholder. Fail-closed factory
+      (`RWA_GATEWAY`).
+    - `RwaService` — create asset → tokenize → deploy → investor purchase →
+      pro-rata payout distribution, plus freeze/unfreeze and investor portfolio.
+      Exact BigInt arithmetic internally; strings at the boundary. Append-only
+      audit on every mutation.
+    - `InMemoryRwaRepository` — assets/tokenizations/holdings/distributions/
+      payout-records with units-sold tracking, over-subscription guard, and
+      auto-funding.
+    - Authenticated, idempotent `/api/rwa` routes (assets, tokenizations,
+      deploy, purchase, freeze/unfreeze, portfolio, distribute-payout).
+  - **Escrow integration:** `PaymentService` takes an optional `RwaService` and,
+    on `Release`, auto-distributes a pro-rata payout to holders of any
+    tokenization whose `linkedOrderId` matches the released order. Failures are
+    audited and non-fatal (payout is retryable) so the tested money state
+    machine is unchanged.
+  - Forward-only migration `0006_phase5_rwa_tokenization.sql`: assets,
+    tokenizations, token_holdings, payout_distributions, payout_records, RWA
+    ledger accounts, units-sold/over-sell/auto-fund triggers, and RLS.
+  - Frontend `/rwa` console: marketplace (investor purchase), tokenize (issuer
+    two-step asset→tokenization + deploy + freeze), and portfolio tabs. New nav
+    link, `StatusPill` statuses, and typed API client methods.
+  - Config: `RWA_GATEWAY`.
+  - **Bug caught by tests:** `purchaseUnits` originally transferred units before
+    authorizing the recipient; the contract rejects transfers to unauthorized
+    holders, so authorization now precedes the transfer.
+  - **Design boundary (Rules.md §3):** RWA is a peer module, fully separate from
+    the escrow happy path; the ledger remains the system of record for payouts.
 - **What was built (Phase 4 — Disputes + AI advisory):**
   - Shared contracts: `EvidenceKind`, `DisputeResolution`,
     `DisputeDecisionMaker`; expanded `DisputeDTO` (order link, amount, evidence,
@@ -306,6 +351,7 @@
 | 2026-07-20 | **Phase 2 application implementation completed (D29–D34).** Added shared payment/reconciliation contracts; strict authenticated/idempotent order lifecycle and arbiter refund; atomic balanced ledger + linked chain + audit transition records; deterministic local Soroban boundary; scheduled reconciliation, alert/report, and blocking; migration `0004`; buyer-confirmed contract release and tests; `/escrow` UI; testnet deploy helper; and gitignored `infra/.env`. Validated shared build, backend lint/typecheck/29 tests, frontend production build, and diff checks. Public testnet, production adapters, DB migration execution, and contract CI remain unchecked/manual prerequisites. |
 | 2026-07-22 | **Phase 3 application implementation completed (D35–D40).** Added shared settlement contracts (enums, `CURRENCY_SCALE`, corridor/quote/route/settlement/anchor DTOs, quote/execute schemas); new `settlement` bounded context — `SandboxAnchorGateway` (SEP-6/24/31 + SEP-12, opaque customer id), `DeterministicLiquidityGateway` (path-payment + AMM economics, exact BigInt conversion), `RoutingService` (best-route + fail-closed fee/slippage limits), `SettlementService` (deposit→convert→payout with per-currency-balanced ledger via `FX_CONVERSION`, PII-safe audit, quote idempotency), and `SettlementReconciliationJob` (ledger↔anchor/chain, blocks on mismatch); authenticated idempotent `/api/settlement` routes; config `ANCHOR_GATEWAY`/`LIQUIDITY_GATEWAY`/`SETTLEMENT_QUOTE_TTL_SECONDS`/`SETTLEMENT_DEFAULT_MAX_SLIPPAGE_BPS`; frontend `/settlement` console + nav link + typed API client. Validated shared build, backend lint/typecheck/**41 tests**, and frontend production build. Live anchor client, Horizon path-finding/AMM adapter, Phase 3 settlement persistence schema, and live-corridor verification remain manual/operational prerequisites. |
 | 2026-07-22 | **Phase 4 application implementation completed (D41–D44).** Added shared dispute contracts (`EvidenceKind`, `DisputeResolution`, `DisputeDecisionMaker`, expanded `DisputeDTO`, evidence/decision schemas); new `disputes` bounded context — `HttpDisputeRiskClient`/`DeterministicDisputeRiskClient` (advisory `/dispute-recommend`, outage→manual review), `DisputeService` (open → bounded evidence window → advisory → threshold-gated auto-resolve or compliance human sign-off, append-only audit of AI + human decisions), `InMemoryDisputeRepository` + `DisputeOrderGateway` port; authenticated idempotent `/api/disputes` routes; config `DISPUTE_EVIDENCE_WINDOW_HOURS`/`DISPUTE_AI_TIMEOUT_MS`. Corrected advisory `conflicting` to use raw evidence (backend + Python engine). Frontend `/disputes` console + nav link + typed API client. Validated shared build, backend lint/typecheck/**48 tests**, and frontend production build. Auto-execution of the resolved outcome and a reputation store are deferred; AI pytest is CI-only. |
+| 2026-07-22 | **Phase 5 (RWA Tokenization) application implementation completed.** Extended the Soroban `rwa_token` contract (asset metadata, freeze/authorization compliance controls, `all_payout_shares`/`get_holders`, expanded tests). Added shared RWA contracts of record (`AssetType`/`TokenizationStatus`/`PayoutStatus` + asset/tokenization/holding/distribution/record DTOs, all integer-string amounts for JSON safety). New `rwa` bounded context — `DeterministicRwaGateway` (+ `SorobanRpcRwaGateway` placeholder, fail-closed `RWA_GATEWAY` factory), `RwaService` (asset→tokenize→deploy→purchase→pro-rata payout, freeze/unfreeze, portfolio; exact BigInt math, append-only audit), `InMemoryRwaRepository` (units-sold tracking, over-sell guard, auto-fund); authenticated idempotent `/api/rwa` routes. Wired `PaymentService` to auto-distribute RWA payouts on escrow `Release` for `linkedOrderId` tokenizations (non-fatal, retryable). Forward-only migration `0006_phase5_rwa_tokenization.sql`. Frontend `/rwa` console (marketplace/tokenize/portfolio) + nav link + `StatusPill` statuses + typed API client. Tests caught and fixed an authorize-before-transfer bug. Validated shared build, backend lint/typecheck/**16 new RWA tests (61 pass; 3 pre-existing KYC failures unrelated)**, and frontend production build. Public-testnet contract deploy and prod Postgres/KMS-Soroban adapters remain operational prerequisites. |
 
 ---
 

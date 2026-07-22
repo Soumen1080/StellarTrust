@@ -21,6 +21,8 @@ import {
 import type { AuditRepository } from "../audit/audit.repository.js";
 import type { EscrowGateway } from "../escrow/escrow.gateway.js";
 import type { PaymentRepository } from "./payment.repository.js";
+import type { RwaService } from "../rwa/rwa.service.js";
+import { logger } from "../../lib/logger.js";
 
 const COMMITMENT_ASSET = "10000000-0000-4000-8000-000000000001";
 const COMMITMENT_LIABILITY = "20000000-0000-4000-8000-000000000002";
@@ -60,6 +62,7 @@ export class PaymentService {
     private readonly repository: PaymentRepository,
     private readonly gateway: EscrowGateway,
     private readonly audit: AuditRepository,
+    private readonly rwa?: RwaService,
   ) {}
 
   async createOrder(
@@ -195,7 +198,89 @@ export class PaymentService {
         stellarTransactionId: persistedTransition.stellarTransaction.id,
       },
     });
+
+    // Phase 5: Trigger RWA payout distribution on escrow release
+    if (transition === PaymentTransition.Release && this.rwa) {
+      await this.triggerRwaPayout(order, transition, actorId);
+    }
+
     return { order, escrow, transition: persistedTransition };
+  }
+
+  /**
+   * Trigger RWA payout distribution for orders linked to tokenizations.
+   * This is called automatically when an escrow is released (buyer payment confirmed).
+   */
+  private async triggerRwaPayout(
+    order: OrderDTO,
+    transition: PaymentTransition,
+    actorId: string,
+  ): Promise<void> {
+    if (!this.rwa) return;
+
+    try {
+      // Check if this order has a linked tokenization
+      const tokenizations = await this.rwa.listTokenizations({
+        linkedOrderId: order.id,
+      });
+
+      if (tokenizations.length === 0) {
+        // No tokenization linked to this order, skip payout
+        return;
+      }
+
+      if (tokenizations.length > 1) {
+        logger.warn(
+          `Order ${order.id} has multiple tokenizations (${tokenizations.length}). Only distributing for the first.`,
+        );
+      }
+
+      const tokenization = tokenizations[0];
+      if (!tokenization) {
+        logger.warn(`No tokenization found for order ${order.id}`);
+        return;
+      }
+
+      const payoutAmount = BigInt(order.amount.amount);
+      const payoutCurrency = order.amount.currency;
+
+      logger.info(
+        `Triggering RWA payout distribution for tokenization ${tokenization.id} ` +
+        `(order ${order.id}, amount ${payoutAmount} ${payoutCurrency})`,
+      );
+
+      // Distribute payout to all token holders
+      await this.rwa.distributePayout(
+        tokenization.id,
+        order.id,
+        transition,
+        payoutAmount,
+        payoutCurrency,
+        {
+          userId: actorId,
+          roles: ["system"], // System-triggered payout
+        },
+      );
+
+      logger.info(
+        `RWA payout distribution completed for tokenization ${tokenization.id}`,
+      );
+    } catch (error) {
+      // Log but don't fail the entire payment release if RWA payout fails
+      // The payout can be retried manually via the RWA API
+      logger.error(
+        `Failed to trigger RWA payout for order ${order.id}: ${error}`,
+      );
+      await this.audit.append({
+        actor: `user:${actorId}`,
+        action: "rwa.payout_failed",
+        entity: "order",
+        entityId: order.id,
+        metadata: {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
   }
 
   private ledgerPosting(

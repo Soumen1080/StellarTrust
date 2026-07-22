@@ -62,6 +62,10 @@ import {
 import { InMemoryDisputeRepository } from "./modules/disputes/dispute.repository.js";
 import { DisputeService } from "./modules/disputes/dispute.service.js";
 import { createDisputeRouter } from "./modules/disputes/dispute.routes.js";
+import { createRwaGateway } from "./modules/rwa/rwa.gateway.js";
+import { InMemoryRwaRepository } from "./modules/rwa/rwa.repository.js";
+import { RwaService } from "./modules/rwa/rwa.service.js";
+import { createRwaRouter } from "./modules/rwa/rwa.routes.js";
 
 type HelmetFactory = () => RequestHandler;
 
@@ -222,9 +226,18 @@ export function createApp(): Express {
       autoApproveDelayMs: config.KYC_AUTO_APPROVE_DELAY_MS,
     },
   );
+  // ── Phase 5: RWA Tokenization (opt-in module) ────────────────────────────
+  // RWA module is separate from the escrow happy path. Tokenization enables
+  // sellers to unlock working capital and investors to get transparent
+  // fractional ownership. Payouts distribute automatically when buyer pays.
+  const rwaRepository = new InMemoryRwaRepository();
+  const rwaGateway = createRwaGateway();
+  const rwa = new RwaService(rwaRepository, rwaGateway, audit);
+
+  // Wire RWA into payment service for automatic payout distribution on release
   const paymentRepository = new InMemoryPaymentRepository();
   const escrowGateway = createEscrowGateway();
-  const payments = new PaymentService(paymentRepository, escrowGateway, audit);
+  const payments = new PaymentService(paymentRepository, escrowGateway, audit, rwa);
   const reconciliation = new ReconciliationJob(
     paymentRepository,
     escrowGateway,
@@ -278,6 +291,7 @@ export function createApp(): Express {
     createSettlementRouter(settlement, settlementReconciliation, bearerVerifier),
   );
   app.use("/api/disputes", createDisputeRouter(disputes, bearerVerifier));
+  app.use("/api/rwa", createRwaRouter(rwa, bearerVerifier));
 
   // ── Error boundary ──────────────────────────────────────────────────────
   app.use(notFoundHandler);

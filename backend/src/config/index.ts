@@ -178,6 +178,11 @@ const envSchema = z.object({
     .min(100)
     .max(30_000)
     .default(3000),
+
+  // ── Phase 5: RWA Tokenization ────────────────────────────────────────────
+  // Gateway for RWA token contract operations (deterministic for local/test,
+  // soroban-rpc for staging/production with KMS-backed signing).
+  RWA_GATEWAY: z.enum(["deterministic", "soroban-rpc"]).default("deterministic"),
 });
 
 const parsed = envSchema.safeParse(process.env);

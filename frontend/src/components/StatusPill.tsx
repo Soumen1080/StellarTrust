@@ -1,6 +1,6 @@
-import type { DisputeStatus, EscrowState, KycStatus, OrderStatus, SettlementStatus } from "@stellartrust/shared";
+import type { DisputeStatus, EscrowState, KycStatus, OrderStatus, SettlementStatus, TokenizationStatus, PayoutStatus } from "@stellartrust/shared";
 
-type Status = DisputeStatus | EscrowState | KycStatus | OrderStatus | SettlementStatus;
+type Status = DisputeStatus | EscrowState | KycStatus | OrderStatus | SettlementStatus | TokenizationStatus | PayoutStatus;
 
 const STATUS_STYLE: Record<string, string> = {
   locked: "border-status-locked/30 bg-status-locked/10 text-status-locked",
@@ -25,6 +25,14 @@ const STATUS_STYLE: Record<string, string> = {
   open: "border-status-review/30 bg-status-review/10 text-status-review",
   evidence_window: "border-info/30 bg-info/10 text-info",
   resolved: "border-status-verified/30 bg-status-verified/10 text-status-verified",
+  // Phase 5: RWA tokenization + payout statuses
+  draft: "border-muted/30 bg-muted/10 text-muted-strong",
+  active: "border-info/30 bg-info/10 text-info",
+  funded: "border-status-verified/30 bg-status-verified/10 text-status-verified",
+  distributing: "border-status-locked/30 bg-status-locked/10 text-status-locked",
+  distributed: "border-status-released/30 bg-status-released/10 text-status-released",
+  frozen: "border-status-disputed/30 bg-status-disputed/10 text-status-disputed",
+  processing: "border-status-locked/30 bg-status-locked/10 text-status-locked",
 };
 
 export function StatusPill({ status }: { status: Status }) {
