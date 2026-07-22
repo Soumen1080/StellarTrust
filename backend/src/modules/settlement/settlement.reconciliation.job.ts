@@ -18,18 +18,28 @@ import {
   type SettlementReconciliationReportDTO,
 } from "@stellartrust/shared";
 import { logger } from "../../lib/logger.js";
+import type { AlertSink } from "../../lib/alerts.js";
+import type { MetricsRegistry } from "../../lib/metrics.js";
 import { isBalanced } from "../ledger/ledger.balance.js";
 import type { AnchorGateway } from "./anchor.gateway.js";
 import type { SettlementRepository } from "./settlement.repository.js";
 
 export class SettlementReconciliationJob {
   private timer: NodeJS.Timeout | undefined;
+  private lastUnresolvedCount = 0;
 
   constructor(
     private readonly repository: SettlementRepository,
     private readonly anchor: AnchorGateway,
     private readonly intervalMs: number,
+    private readonly alerts?: AlertSink,
+    private readonly metrics?: MetricsRegistry,
   ) {}
+
+  /** Last observed unresolved mismatch count (for readiness probes). */
+  lastUnresolved(): number {
+    return this.lastUnresolvedCount;
+  }
 
   async run(): Promise<SettlementReconciliationReportDTO> {
     const transitions = await this.repository.listTransitions();
@@ -64,12 +74,27 @@ export class SettlementReconciliationJob {
     };
     if (report.unresolved > 0) {
       logger.error({ report }, "settlement ledger-to-anchor reconciliation mismatch");
+      this.alerts?.emit({
+        severity: "critical",
+        source: "reconciliation.settlement",
+        message:
+          "Unresolved settlement ledger-to-anchor reconciliation mismatch(es) detected",
+        context: { unresolved: report.unresolved, checked: report.checked },
+      });
     } else {
       logger.info(
         { checked: report.checked },
         "settlement ledger-to-anchor reconciliation matched",
       );
     }
+    this.metrics?.reconciliationUnresolved.set(report.unresolved, {
+      domain: "settlement",
+    });
+    this.metrics?.reconciliationRunsTotal.inc({
+      domain: "settlement",
+      result: report.status,
+    });
+    this.lastUnresolvedCount = report.unresolved;
     return report;
   }
 

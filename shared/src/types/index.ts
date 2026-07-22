@@ -667,3 +667,26 @@ export interface TokenizationListResponse {
 export interface AssetListResponse {
   assets: AssetDTO[];
 }
+
+
+// ── Phase 6: Reputation (advisory prior for dispute risk) ─────────────────────
+// Reputation is a bounded 0..1 advisory score derived from completed orders and
+// resolved disputes. It is ADVISORY ONLY — it never gates money movement; it
+// feeds the dispute AI advisory as a prior (Rules.md §6). No PII is stored.
+
+export interface ReputationDTO {
+  userId: string;
+  /** Bounded 0..1 score (0.5 = neutral / no history). */
+  score: number;
+  /** Successfully completed orders (released), as a party. */
+  ordersCompleted: number;
+  /** Disputes resolved in this user's favour. */
+  disputesWon: number;
+  /** Disputes resolved against this user. */
+  disputesLost: number;
+  updatedAt: string;
+}
+
+export interface ReputationResponse {
+  reputation: ReputationDTO;
+}

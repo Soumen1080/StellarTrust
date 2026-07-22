@@ -10,10 +10,13 @@ import { rateLimit } from "express-rate-limit";
 import helmetImport from "helmet";
 import { pinoHttp } from "pino-http";
 import { config } from "./config/index.js";
-import { getPool } from "./db/index.js";
+import { getPool, pingDatabase } from "./db/index.js";
 import { ReconciliationJob } from "./jobs/reconciliation.job.js";
 import { logger } from "./lib/logger.js";
+import { metrics } from "./lib/metrics.js";
+import { LoggingAlertSink } from "./lib/alerts.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
+import { httpMetrics } from "./middleware/metrics.js";
 import { requestId, type RequestWithId } from "./middleware/requestId.js";
 import type { BearerVerifier } from "./middleware/auth.js";
 import { InMemoryAuditRepository } from "./modules/audit/audit.repository.js";
@@ -66,6 +69,9 @@ import { createRwaGateway } from "./modules/rwa/rwa.gateway.js";
 import { InMemoryRwaRepository } from "./modules/rwa/rwa.repository.js";
 import { RwaService } from "./modules/rwa/rwa.service.js";
 import { createRwaRouter } from "./modules/rwa/rwa.routes.js";
+import { InMemoryReputationRepository } from "./modules/reputation/reputation.repository.js";
+import { ReputationService } from "./modules/reputation/reputation.service.js";
+import { createReputationRouter } from "./modules/reputation/reputation.routes.js";
 
 type HelmetFactory = () => RequestHandler;
 
@@ -119,6 +125,7 @@ export function createApp(): Express {
         (req as unknown as RequestWithId).requestId,
     }),
   );
+  app.use(httpMetrics(metrics));
 
   app.use(
     rateLimit({
@@ -137,6 +144,50 @@ export function createApp(): Express {
       time: new Date().toISOString(),
     };
     res.json(body);
+  });
+
+  // ── Phase 6: liveness, readiness, and metrics ─────────────────────────────
+  // Liveness answers "is the process up?" — never touches dependencies so an
+  // orchestrator does not kill a pod during a transient dependency blip.
+  app.get("/health/live", (_req, res) => {
+    res.json({ status: "ok", time: new Date().toISOString() });
+  });
+
+  // Readiness answers "can we serve traffic?" — probes configured dependencies
+  // and any hard-failed reconciliation state. Returns 503 when degraded so the
+  // load balancer stops routing until recovery.
+  app.get("/health/ready", async (_req, res) => {
+    const databaseConfigured = Boolean(config.DATABASE_URL);
+    const database = databaseConfigured ? await pingDatabase() : "not_configured";
+    const reconciliation = app.locals.reconciliationJob as
+      | ReconciliationJob
+      | undefined;
+    const settlementReconciliation = app.locals
+      .settlementReconciliationJob as { lastUnresolved?: () => number } | undefined;
+    const ledgerUnresolved = reconciliation?.lastUnresolved?.() ?? 0;
+    const settlementUnresolved =
+      settlementReconciliation?.lastUnresolved?.() ?? 0;
+
+    const ready =
+      (database === true || database === "not_configured") &&
+      ledgerUnresolved === 0 &&
+      settlementUnresolved === 0;
+
+    res.status(ready ? 200 : 503).json({
+      status: ready ? "ready" : "degraded",
+      checks: {
+        database,
+        ledgerUnresolvedMismatches: ledgerUnresolved,
+        settlementUnresolvedMismatches: settlementUnresolved,
+      },
+      time: new Date().toISOString(),
+    });
+  });
+
+  // Prometheus text-exposition endpoint (operational signals only, no PII).
+  app.get("/metrics", (_req, res) => {
+    res.setHeader("content-type", "text/plain; version=0.0.4; charset=utf-8");
+    res.send(metrics.render());
   });
 
   // ── Shared Phase 1 dependency graph ──────────────────────────────────────
@@ -204,6 +255,9 @@ export function createApp(): Express {
   verifiers.push(externalVerifier);
   const bearerVerifier = composeBearerVerifiers(...verifiers);
   const audit = new InMemoryAuditRepository();
+  // Phase 6: shared alert sink (structured log + metrics; swap for PagerDuty/
+  // Slack in staging/production without touching call sites).
+  const alerts = new LoggingAlertSink(metrics);
   const kycRiskClient: KycRiskClient = config.isTest
     ? new DeterministicKycRiskClient()
     : config.KYC_RISK_ENGINE === "openai" && config.OPENAI_API_KEY
@@ -234,14 +288,29 @@ export function createApp(): Express {
   const rwaGateway = createRwaGateway();
   const rwa = new RwaService(rwaRepository, rwaGateway, audit);
 
-  // Wire RWA into payment service for automatic payout distribution on release
+  // ── Phase 6: Reputation store (advisory prior for dispute risk) ───────────
+  const reputationService = new ReputationService(
+    new InMemoryReputationRepository(),
+    audit,
+  );
+
+  // Wire RWA + reputation into payment service. RWA payout distributes on
+  // release; a completed release also records a positive reputation signal.
   const paymentRepository = new InMemoryPaymentRepository();
   const escrowGateway = createEscrowGateway();
-  const payments = new PaymentService(paymentRepository, escrowGateway, audit, rwa);
+  const payments = new PaymentService(
+    paymentRepository,
+    escrowGateway,
+    audit,
+    rwa,
+    reputationService,
+  );
   const reconciliation = new ReconciliationJob(
     paymentRepository,
     escrowGateway,
     config.RECONCILIATION_INTERVAL_MS,
+    alerts,
+    metrics,
   );
   app.locals.reconciliationJob = reconciliation;
 
@@ -259,6 +328,8 @@ export function createApp(): Express {
     settlementRepository,
     anchorGateway,
     config.RECONCILIATION_INTERVAL_MS,
+    alerts,
+    metrics,
   );
   app.locals.settlementReconciliationJob = settlementReconciliation;
 
@@ -276,6 +347,18 @@ export function createApp(): Express {
       ? new DeterministicDisputeRiskClient()
       : new HttpDisputeRiskClient(),
     audit,
+    reputationService,
+    {
+      // Auto-execute a resolved dispute's outcome through the Phase 2 arbiter
+      // payments path (Phase 6). System-authorized; non-fatal on failure.
+      settle: ({ orderId, outcome }) =>
+        payments
+          .settleDisputedOrder(orderId, outcome, {
+            userId: "system:dispute-resolver",
+            roles: ["system"],
+          })
+          .then(() => undefined),
+    },
   );
 
   // ── Module routers ────────────────────────────────────────────────────────
@@ -292,6 +375,10 @@ export function createApp(): Express {
   );
   app.use("/api/disputes", createDisputeRouter(disputes, bearerVerifier));
   app.use("/api/rwa", createRwaRouter(rwa, bearerVerifier));
+  app.use(
+    "/api/reputation",
+    createReputationRouter(reputationService, bearerVerifier),
+  );
 
   // ── Error boundary ──────────────────────────────────────────────────────
   app.use(notFoundHandler);

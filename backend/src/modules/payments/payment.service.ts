@@ -4,6 +4,7 @@ import {
   EscrowState,
   OrderStatus,
   PaymentTransition,
+  DisputeResolution,
   createOrderInputSchema,
   type CreateOrderInput,
   type EscrowDTO,
@@ -57,12 +58,17 @@ export interface PaymentActor {
   roles: string[];
 }
 
+export interface ReputationRecorder {
+  recordOrderCompleted(userId: string): Promise<void>;
+}
+
 export class PaymentService {
   constructor(
     private readonly repository: PaymentRepository,
     private readonly gateway: EscrowGateway,
     private readonly audit: AuditRepository,
     private readonly rwa?: RwaService,
+    private readonly reputation?: ReputationRecorder,
   ) {}
 
   async createOrder(
@@ -116,7 +122,114 @@ export class PaymentService {
       updatedAt: new Date().toISOString(),
     };
     const currentEscrow = (await this.repository.findEscrow(orderId)) ?? null;
-    return this.commit(order, currentEscrow, requested, actor.userId);
+    const result = await this.commit(order, currentEscrow, requested, actor.userId);
+    // Phase 6: a normal happy-path release completes the trade for both parties
+    // — record it as a positive reputation signal (advisory only, best-effort).
+    if (requested === PaymentTransition.Release) {
+      await this.recordCompletion(order);
+    }
+    return result;
+  }
+
+  /** Best-effort positive reputation signal for a completed trade. */
+  private async recordCompletion(order: OrderDTO): Promise<void> {
+    if (!this.reputation) return;
+    try {
+      await Promise.all([
+        this.reputation.recordOrderCompleted(order.buyerId),
+        this.reputation.recordOrderCompleted(order.sellerId),
+      ]);
+    } catch {
+      // Reputation is advisory; never fail a settled payment because of it.
+    }
+  }
+
+  /**
+   * Execute a resolved dispute's outcome through the arbiter settlement path
+   * (Phase 6 — the "release-path state-machine work" deferred from Phase 4).
+   *
+   * A resolved dispute is the authorization for the fund movement, so this is
+   * gated to compliance/system actors and may release a *locked* escrow without
+   * a prior buyer confirmation. It never advances an order that is not in a
+   * settleable (locked/confirmed) state and fails closed on reconciliation drift.
+   * Release funds the seller (and triggers any linked RWA payout); refund
+   * returns funds to the buyer.
+   */
+  async settleDisputedOrder(
+    orderId: string,
+    outcome: DisputeResolution,
+    actor: PaymentActor,
+  ): Promise<OrderMutationResponse> {
+    if (
+      !actor.roles.includes("compliance") &&
+      !actor.roles.includes("system")
+    ) {
+      throw new ForbiddenError(
+        "Dispute settlement requires an authorized arbiter",
+      );
+    }
+
+    const current = await this.requireOrder(orderId);
+    if (await this.repository.hasUnresolvedMismatch(orderId)) {
+      throw new ConflictError(
+        "Order is blocked until its ledger-to-chain mismatch is resolved",
+      );
+    }
+    const settleable: readonly OrderStatus[] = [
+      OrderStatus.Locked,
+      OrderStatus.Confirmed,
+    ];
+    if (!settleable.includes(current.status)) {
+      throw new ConflictError(
+        `Cannot settle a dispute for an order in ${current.status} status`,
+      );
+    }
+    const escrow = (await this.repository.findEscrow(orderId)) ?? null;
+    if (!escrow || escrow.state !== EscrowState.Locked) {
+      throw new ConflictError("Dispute settlement requires a locked escrow");
+    }
+
+    const transition =
+      outcome === DisputeResolution.Refund
+        ? PaymentTransition.Refund
+        : PaymentTransition.Release;
+    const order: OrderDTO = {
+      ...current,
+      status:
+        transition === PaymentTransition.Refund
+          ? OrderStatus.Refunded
+          : OrderStatus.Released,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Dispute settlement moves funds out of escrow holding into contract
+    // custody in one balanced transaction. The outcome (release→seller vs
+    // refund→buyer) is recorded by the transition type + audit, so both use the
+    // same balanced core legs (avoids reversing delivery-confirmation entries
+    // that never posted when releasing a still-locked escrow).
+    const ledger: LedgerTransactionInput = {
+      referenceId: `dispute-settle:${order.id}:${transition}`,
+      description: `Dispute-authorized ${transition} (${order.id})`,
+      entries: [
+        {
+          accountId: ESCROW_HOLDING,
+          direction: EntryDirection.Debit,
+          amount: order.amount.amount,
+          currency: order.amount.currency,
+        },
+        {
+          accountId: CONTRACT_CUSTODY,
+          direction: EntryDirection.Credit,
+          amount: order.amount.amount,
+          currency: order.amount.currency,
+        },
+      ],
+    };
+
+    return this.commit(order, escrow, transition, actor.userId, {
+      arbiter: true,
+      ledger,
+    });
   }
 
   async list(userId: string): Promise<OrderDetailsResponse[]> {
@@ -143,6 +256,7 @@ export class PaymentService {
     currentEscrow: EscrowDTO | null,
     transition: PaymentTransition,
     actorId: string,
+    options: { arbiter?: boolean; ledger?: LedgerTransactionInput } = {},
   ): Promise<OrderMutationResponse> {
     const chain = await this.gateway.submitTransition({
       orderId: order.id,
@@ -152,6 +266,7 @@ export class PaymentService {
       buyerId: order.buyerId,
       sellerId: order.sellerId,
       contractId: currentEscrow?.contractId ?? null,
+      arbiter: options.arbiter ?? false,
     });
 
     let escrow = currentEscrow;
@@ -184,7 +299,7 @@ export class PaymentService {
       escrow,
       actorId,
       chain,
-      ledger: this.ledgerPosting(order, transition),
+      ledger: options.ledger ?? this.ledgerPosting(order, transition),
     });
     await this.audit.append({
       actor: `user:${actorId}`,

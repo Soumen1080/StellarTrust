@@ -6,18 +6,28 @@ import {
   type ReconciliationReportDTO,
 } from "@stellartrust/shared";
 import { logger } from "../lib/logger.js";
+import type { AlertSink } from "../lib/alerts.js";
+import type { MetricsRegistry } from "../lib/metrics.js";
 import type { EscrowGateway } from "../modules/escrow/escrow.gateway.js";
 import { isBalanced } from "../modules/ledger/ledger.balance.js";
 import type { PaymentRepository } from "../modules/payments/payment.repository.js";
 
 export class ReconciliationJob {
   private timer: NodeJS.Timeout | undefined;
+  private lastUnresolvedCount = 0;
 
   constructor(
     private readonly repository: PaymentRepository,
     private readonly gateway: EscrowGateway,
     private readonly intervalMs: number,
+    private readonly alerts?: AlertSink,
+    private readonly metrics?: MetricsRegistry,
   ) {}
+
+  /** Last observed unresolved mismatch count (for readiness probes). */
+  lastUnresolved(): number {
+    return this.lastUnresolvedCount;
+  }
 
   async run(): Promise<ReconciliationReportDTO> {
     const transitions = await this.repository.listTransitions();
@@ -68,9 +78,23 @@ export class ReconciliationJob {
     };
     if (report.unresolved > 0) {
       logger.error({ report }, "ledger-to-chain reconciliation mismatch");
+      this.alerts?.emit({
+        severity: "critical",
+        source: "reconciliation.ledger",
+        message: "Unresolved ledger-to-chain reconciliation mismatch(es) detected",
+        context: { unresolved: report.unresolved, checked: report.checked },
+      });
     } else {
       logger.info({ checked: report.checked }, "ledger-to-chain reconciliation matched");
     }
+    this.metrics?.reconciliationUnresolved.set(report.unresolved, {
+      domain: "ledger",
+    });
+    this.metrics?.reconciliationRunsTotal.inc({
+      domain: "ledger",
+      result: report.status,
+    });
+    this.lastUnresolvedCount = report.unresolved;
     return report;
   }
 

@@ -16,6 +16,13 @@ export interface ChainTransitionInput {
   buyerId: string;
   sellerId: string;
   contractId: string | null;
+  /**
+   * Arbiter authority (compliance/dispute resolution). When true, a release may
+   * settle a locked escrow WITHOUT prior buyer confirmation — the arbiter's
+   * resolution is the authorization (mirrors the Soroban contract's arbiter
+   * release path). Refund is always arbiter-gated at the service layer.
+   */
+  arbiter?: boolean;
 }
 
 export interface ChainReceipt {
@@ -81,10 +88,10 @@ export class DeterministicEscrowGateway implements EscrowGateway {
         contract.deliveryConfirmed = true;
       }
       if (input.transition === PaymentTransition.Release) {
-        if (
-          contract.state !== EscrowState.Locked ||
-          !contract.deliveryConfirmed
-        ) {
+        // Arbiter (dispute) resolution may release a locked escrow without a
+        // prior buyer confirmation; the resolution is the authorization.
+        const confirmed = contract.deliveryConfirmed || input.arbiter === true;
+        if (contract.state !== EscrowState.Locked || !confirmed) {
           throw new ChainError(
             "Release requires locked escrow and buyer confirmation",
           );

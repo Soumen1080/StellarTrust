@@ -5,7 +5,7 @@
  * adapter). The dispute record is the auditable authority for a resolution;
  * fund movement remains the compliance-operated escrow/payments arbiter path.
  */
-import type { DisputeDTO, OrderDTO } from "@stellartrust/shared";
+import type { DisputeDTO, DisputeResolution, OrderDTO } from "@stellartrust/shared";
 
 /**
  * Narrow port into the payments bounded context so disputes can validate the
@@ -14,6 +14,19 @@ import type { DisputeDTO, OrderDTO } from "@stellartrust/shared";
  */
 export interface DisputeOrderGateway {
   getOrder(orderId: string): Promise<OrderDTO | undefined>;
+}
+
+/**
+ * Port to execute a resolved dispute's fund movement through the Phase 2
+ * arbiter escrow/payments path (Phase 6). Keeps disputes decoupled from the
+ * payment service internals; the composition root supplies the adapter.
+ */
+export interface DisputeSettlementGateway {
+  settle(input: {
+    orderId: string;
+    outcome: DisputeResolution;
+    disputeId: string;
+  }): Promise<void>;
 }
 
 export interface DisputeRepository {

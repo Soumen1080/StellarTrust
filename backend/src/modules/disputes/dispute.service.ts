@@ -37,10 +37,12 @@ import {
   ValidationError,
 } from "../../lib/errors.js";
 import type { AuditRepository } from "../audit/audit.repository.js";
+import type { ReputationService } from "../reputation/reputation.service.js";
 import type { DisputeRiskClient } from "./dispute-risk.client.js";
 import type {
   DisputeOrderGateway,
   DisputeRepository,
+  DisputeSettlementGateway,
 } from "./dispute.repository.js";
 
 export interface DisputeActor {
@@ -48,7 +50,7 @@ export interface DisputeActor {
   roles: string[];
 }
 
-/** Neutral default reputation until a reputation store exists (Phase 6). */
+/** Neutral fallback when no reputation service is wired (e.g. isolated tests). */
 const DEFAULT_REPUTATION = 0.5;
 
 export class DisputeService {
@@ -57,6 +59,8 @@ export class DisputeService {
     private readonly orders: DisputeOrderGateway,
     private readonly risk: DisputeRiskClient,
     private readonly audit: AuditRepository,
+    private readonly reputation?: ReputationService,
+    private readonly settlement?: DisputeSettlementGateway,
   ) {}
 
   async open(
@@ -128,7 +132,7 @@ export class DisputeService {
     }
 
     const dispute = await this.requireDispute(disputeId);
-    await this.requireOrderParty(dispute.orderId, actor);
+    const order = await this.requireOrderParty(dispute.orderId, actor);
     if (dispute.resolution) {
       throw new ConflictError("Dispute is already resolved");
     }
@@ -144,6 +148,13 @@ export class DisputeService {
     };
     const evidenceList = [...dispute.evidence, evidence];
 
+    // Reputation is an advisory prior (Phase 6): fetch the parties' scores when
+    // a reputation store is wired, else fall back to neutral.
+    const [buyerReputation, sellerReputation] = await Promise.all([
+      this.reputationScore(order.buyerId),
+      this.reputationScore(order.sellerId),
+    ]);
+
     // Recompute the advisory from the full evidence set so it is always a
     // reproducible function of the stored inputs (Rules.md §6).
     const result = await this.risk.recommend({
@@ -151,8 +162,8 @@ export class DisputeService {
       amountMinor: dispute.amount.amount,
       currency: dispute.amount.currency,
       evidence: evidenceList,
-      buyerReputation: DEFAULT_REPUTATION,
-      sellerReputation: DEFAULT_REPUTATION,
+      buyerReputation,
+      sellerReputation,
     });
     const advisory: AiAdvisory = {
       recommendation: result.recommendation,
@@ -280,6 +291,14 @@ export class DisputeService {
         advisoryConfidence: dispute.advisory.confidence,
       },
     });
+
+    // Phase 6: update the advisory reputation prior and auto-execute the
+    // resolved fund movement through the arbiter payments path. Both are
+    // best-effort and non-fatal — the dispute record is the authority, and a
+    // settlement failure is audited and retryable via the compliance arbiter.
+    await this.updateReputation(dispute.orderId, resolutionOutcome, dispute.id);
+    await this.autoExecuteSettlement(dispute, resolutionOutcome);
+
     return resolved;
   }
 
@@ -328,6 +347,77 @@ export class DisputeService {
     const dispute = await this.repository.find(disputeId);
     if (!dispute) throw new NotFoundError("Dispute not found");
     return dispute;
+  }
+
+  private async reputationScore(userId: string): Promise<number> {
+    if (!this.reputation) return DEFAULT_REPUTATION;
+    return this.reputation.getScore(userId);
+  }
+
+  /**
+   * Update the advisory reputation prior from the resolved outcome. Release
+   * favours the seller (the buyer's claim did not prevail); refund favours the
+   * buyer. Advisory only — never gates money.
+   */
+  private async updateReputation(
+    orderId: string,
+    outcome: DisputeResolution,
+    disputeId: string,
+  ): Promise<void> {
+    if (!this.reputation) return;
+    const order = await this.orders.getOrder(orderId);
+    if (!order) return;
+    const winnerUserId =
+      outcome === DisputeResolution.Refund ? order.buyerId : order.sellerId;
+    const loserUserId =
+      outcome === DisputeResolution.Refund ? order.sellerId : order.buyerId;
+    try {
+      await this.reputation.recordDisputeOutcome({
+        winnerUserId,
+        loserUserId,
+        disputeId,
+      });
+    } catch {
+      // Reputation is advisory; never fail a resolution because of it.
+    }
+  }
+
+  /**
+   * Auto-execute the resolved outcome through the arbiter payments path. The
+   * dispute record is the authorization; a failure is audited and left for a
+   * manual compliance retry (money movement never silently succeeds/fails).
+   */
+  private async autoExecuteSettlement(
+    dispute: DisputeDTO,
+    outcome: DisputeResolution,
+  ): Promise<void> {
+    if (!this.settlement) return;
+    try {
+      await this.settlement.settle({
+        orderId: dispute.orderId,
+        outcome,
+        disputeId: dispute.id,
+      });
+      await this.audit.append({
+        actor: "system:dispute-settlement",
+        action: "dispute.settlement_executed",
+        entity: "dispute",
+        entityId: dispute.id,
+        metadata: { orderId: dispute.orderId, outcome },
+      });
+    } catch (err) {
+      await this.audit.append({
+        actor: "system:dispute-settlement",
+        action: "dispute.settlement_failed",
+        entity: "dispute",
+        entityId: dispute.id,
+        metadata: {
+          orderId: dispute.orderId,
+          outcome,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
   }
 
   private async requireOrderParty(

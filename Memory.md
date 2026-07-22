@@ -18,16 +18,18 @@
 - **What:** AI-powered cross-border escrow, liquidity settlement, and RWA
   tokenization platform on Stellar.
 - **Track:** Production (real product for real users).
-- **Current phase:** Phase 5 — RWA Tokenization (**application implementation
-  complete**; public-testnet contract deployment and production persistence
-  remain). Phases 1–4 application code remains complete with their operational
-  prerequisites outstanding.
+- **Current phase:** Phase 6 — Hardening (**application-level hardening
+  complete**: observability/metrics/alerting, readiness probes, reputation
+  store, dispute auto-execution). Remaining Phase 6 deliverables are
+  operational/external (security audit, MSB licensing, real anchors, mainnet).
+  Phases 1–5 application code is complete with their operational prerequisites
+  outstanding.
 - **Repo state:** All six portions are present. Shared/backend/frontend checks
-  are green locally; backend has 64 tests (61 passing, 3 pre-existing KYC
-  auto-approve timing failures unrelated to Phase 5). Phases 2–5 use interfaces
-  with in-memory repositories and deterministic/sandbox chain, anchor,
-  liquidity, and AI adapters locally. Migrations `0004` (Phase 2) and `0006`
-  (Phase 5 RWA schema) define forward-only persistence contracts.
+  are green locally; backend has 81 tests (78 passing, 3 pre-existing KYC
+  auto-approve timing failures unrelated to Phases 5–6). Phases 2–6 use
+  interfaces with in-memory repositories and deterministic/sandbox chain,
+  anchor, liquidity, and AI adapters locally. Migrations `0004` (Phase 2) and
+  `0006` (Phase 5 RWA schema) define forward-only persistence contracts.
 
 ### Canonical docs
 - `PRD.md` — product requirements, users, features.
@@ -41,13 +43,47 @@
 
 ## 2. Current Focus
 
-- **Currently working on:** Phase 5 application code is complete and validated.
-  Remaining Phase 5 work is operational: deploy the `rwa_token` contract to the
-  public Stellar testnet and swap the deterministic RWA gateway + in-memory RWA
-  repository for KMS-backed Soroban RPC and Postgres adapters. Earlier phases'
-  operational prerequisites (live anchor/Horizon adapters, public-testnet escrow
-  contract, prod persistence, dispute auto-execution, reputation store) also
-  remain.
+- **Currently working on:** Phase 6 application-level hardening is complete and
+  validated. Remaining Phase 6 work is operational/external and cannot be done
+  in code: independent Soroban security audit, MSB/money-transmitter licensing,
+  real anchor partnerships, and mainnet deployment (KMS/HSM + live credentials).
+  Earlier phases' operational prerequisites (public-testnet contracts, live
+  anchor/Horizon adapters, prod Postgres/KMS-Soroban adapters) also remain.
+- **What was built (Phase 6 — Hardening, application layer):**
+  - **Observability.** `lib/metrics.ts`: dependency-free Prometheus registry
+    (Counter/Gauge/Histogram) exposing `http_requests_total`,
+    `http_request_duration_seconds`, `reconciliation_unresolved_mismatches`,
+    `reconciliation_runs_total`, `alerts_total`. `middleware/metrics.ts` records
+    per-route request count + latency with bounded cardinality (matched route
+    pattern, never ids/PII). `/metrics` (Prometheus text), `/health/live`
+    (liveness), and `/health/ready` (DB ping + reconciliation drift → 503 when
+    degraded) endpoints. Per-request id already provides trace correlation.
+  - **Alerting.** `lib/alerts.ts`: `AlertSink` interface + `LoggingAlertSink`
+    (structured log + metric) + `RecordingAlertSink` (tests). Both reconciliation
+    jobs now emit a critical alert on unresolved drift, set the unresolved gauge
+    + run counter, and track `lastUnresolved()` for the readiness probe.
+  - **Reputation store** (`modules/reputation`, the Phase 4 deferral): bounded
+    0..1 advisory score from completed orders and resolved disputes
+    (Laplace-smoothed toward a neutral 0.5 prior). `ReputationService`
+    (getScore/getReputation/recordOrderCompleted/recordDisputeOutcome, all
+    audited) + `InMemoryReputationRepository` + read-only `/api/reputation`
+    routes (self, or compliance for any user). Advisory only — never gates money.
+    Wired into the dispute advisory (real buyer/seller priors) and updated on
+    every resolved dispute (winner/loser) and every completed order.
+  - **Dispute auto-execution** (the Phase 4 "release-path state-machine work"):
+    `PaymentService.settleDisputedOrder(orderId, outcome, actor)` — an
+    arbiter/system-gated path that releases or refunds a *locked* escrow on the
+    authority of a resolved dispute (adds an `arbiter` flag to the escrow
+    gateway so release no longer requires prior buyer confirmation; uses a
+    balanced escrow→custody ledger override; a release also fires any linked RWA
+    payout). `DisputeService.resolve` now auto-executes the resolved outcome
+    through a `DisputeSettlementGateway` port — best-effort, audited
+    (`dispute.settlement_executed` / `dispute.settlement_failed`), and
+    retryable, so the dispute record stays the authority and a failure never
+    rolls back the resolution.
+  - **Design boundary upheld:** AI + reputation remain advisory; money moves
+    only through the audited, reconciled arbiter payments path; every action is
+    append-only audit-logged.
 - **What was built (Phase 5 — RWA Tokenization, opt-in module):**
   - Soroban `rwa_token` contract extended beyond the skeleton: asset-type +
     description metadata, compliance controls (`freeze`/`unfreeze`,
@@ -352,6 +388,7 @@
 | 2026-07-22 | **Phase 3 application implementation completed (D35–D40).** Added shared settlement contracts (enums, `CURRENCY_SCALE`, corridor/quote/route/settlement/anchor DTOs, quote/execute schemas); new `settlement` bounded context — `SandboxAnchorGateway` (SEP-6/24/31 + SEP-12, opaque customer id), `DeterministicLiquidityGateway` (path-payment + AMM economics, exact BigInt conversion), `RoutingService` (best-route + fail-closed fee/slippage limits), `SettlementService` (deposit→convert→payout with per-currency-balanced ledger via `FX_CONVERSION`, PII-safe audit, quote idempotency), and `SettlementReconciliationJob` (ledger↔anchor/chain, blocks on mismatch); authenticated idempotent `/api/settlement` routes; config `ANCHOR_GATEWAY`/`LIQUIDITY_GATEWAY`/`SETTLEMENT_QUOTE_TTL_SECONDS`/`SETTLEMENT_DEFAULT_MAX_SLIPPAGE_BPS`; frontend `/settlement` console + nav link + typed API client. Validated shared build, backend lint/typecheck/**41 tests**, and frontend production build. Live anchor client, Horizon path-finding/AMM adapter, Phase 3 settlement persistence schema, and live-corridor verification remain manual/operational prerequisites. |
 | 2026-07-22 | **Phase 4 application implementation completed (D41–D44).** Added shared dispute contracts (`EvidenceKind`, `DisputeResolution`, `DisputeDecisionMaker`, expanded `DisputeDTO`, evidence/decision schemas); new `disputes` bounded context — `HttpDisputeRiskClient`/`DeterministicDisputeRiskClient` (advisory `/dispute-recommend`, outage→manual review), `DisputeService` (open → bounded evidence window → advisory → threshold-gated auto-resolve or compliance human sign-off, append-only audit of AI + human decisions), `InMemoryDisputeRepository` + `DisputeOrderGateway` port; authenticated idempotent `/api/disputes` routes; config `DISPUTE_EVIDENCE_WINDOW_HOURS`/`DISPUTE_AI_TIMEOUT_MS`. Corrected advisory `conflicting` to use raw evidence (backend + Python engine). Frontend `/disputes` console + nav link + typed API client. Validated shared build, backend lint/typecheck/**48 tests**, and frontend production build. Auto-execution of the resolved outcome and a reputation store are deferred; AI pytest is CI-only. |
 | 2026-07-22 | **Phase 5 (RWA Tokenization) application implementation completed.** Extended the Soroban `rwa_token` contract (asset metadata, freeze/authorization compliance controls, `all_payout_shares`/`get_holders`, expanded tests). Added shared RWA contracts of record (`AssetType`/`TokenizationStatus`/`PayoutStatus` + asset/tokenization/holding/distribution/record DTOs, all integer-string amounts for JSON safety). New `rwa` bounded context — `DeterministicRwaGateway` (+ `SorobanRpcRwaGateway` placeholder, fail-closed `RWA_GATEWAY` factory), `RwaService` (asset→tokenize→deploy→purchase→pro-rata payout, freeze/unfreeze, portfolio; exact BigInt math, append-only audit), `InMemoryRwaRepository` (units-sold tracking, over-sell guard, auto-fund); authenticated idempotent `/api/rwa` routes. Wired `PaymentService` to auto-distribute RWA payouts on escrow `Release` for `linkedOrderId` tokenizations (non-fatal, retryable). Forward-only migration `0006_phase5_rwa_tokenization.sql`. Frontend `/rwa` console (marketplace/tokenize/portfolio) + nav link + `StatusPill` statuses + typed API client. Tests caught and fixed an authorize-before-transfer bug. Validated shared build, backend lint/typecheck/**16 new RWA tests (61 pass; 3 pre-existing KYC failures unrelated)**, and frontend production build. Public-testnet contract deploy and prod Postgres/KMS-Soroban adapters remain operational prerequisites. |
+| 2026-07-22 | **Phase 6 (Hardening) application layer completed.** Observability: `lib/metrics.ts` dependency-free Prometheus registry (HTTP count/latency, reconciliation unresolved gauge + run counter, alerts counter), `middleware/metrics.ts` bounded-cardinality per-route recorder, and `/metrics` + `/health/live` + `/health/ready` (DB ping + reconciliation drift → 503) endpoints. Alerting: `lib/alerts.ts` `AlertSink`/`LoggingAlertSink`/`RecordingAlertSink` wired into both reconciliation jobs (critical alert on drift, metrics, `lastUnresolved()` for readiness). Reputation store (`modules/reputation`, Phase 4 deferral): bounded 0..1 Laplace-smoothed advisory score from completed orders + resolved disputes, `ReputationService` (audited) + `InMemoryReputationRepository` + read-only `/api/reputation` routes; wired into the dispute advisory prior and updated on resolutions/completions. Dispute auto-execution (Phase 4 deferral): `PaymentService.settleDisputedOrder` arbiter path (escrow-gateway `arbiter` flag lets a resolved dispute release a locked escrow without buyer confirmation; balanced escrow→custody ledger; release fires linked RWA payout), auto-invoked by `DisputeService.resolve` via a `DisputeSettlementGateway` port — best-effort, audited, retryable. Advisory-only guardrails upheld (AI + reputation never gate money). Added **17 tests** (metrics 7, reputation 5, dispute-settlement 5); fixed a histogram cumulative-bucket double-count bug. Backend lint + full build clean; suite **78 pass, 3 pre-existing KYC failures (unrelated)**. Remaining Phase 6 items (independent security audit, MSB licensing, real anchors, mainnet deploy) are external/operational. |
 
 ---
 
