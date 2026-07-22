@@ -9,6 +9,10 @@ export default defineConfig({
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    // Schema engine (migrate / db push / db pull / introspect) uses this URL.
+    // Must be the SESSION-mode pooler (5432); the transaction pooler (6543)
+    // cannot run migrations. Runtime queries use DATABASE_URL via the app's
+    // driver adapter, configured in application code — not here.
+    url: process.env["DIRECT_URL"],
   },
 });

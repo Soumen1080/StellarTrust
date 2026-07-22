@@ -21,6 +21,8 @@
     "clean": "rimraf dist"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "^7.9.0",
+    "@prisma/client": "^7.9.0",
     "@stellar/stellar-sdk": "16.0.1",
     "@stellartrust/shared": "file:../shared",
     "@supabase/supabase-js": "2.110.7",
