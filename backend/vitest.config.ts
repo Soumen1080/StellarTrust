@@ -9,6 +9,10 @@ export default defineConfig({
     env: {
       NODE_ENV: "test",
       LOG_LEVEL: "silent",
+      // Force the deterministic KYC decision path in tests regardless of the
+      // developer's local .env (which enables the dev auto-approve shortcut).
+      // Keeps tests matching CI without changing dev runtime behavior.
+      KYC_AUTO_APPROVE: "false",
     },
   },
 });
