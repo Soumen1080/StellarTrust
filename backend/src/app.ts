@@ -92,6 +92,13 @@ export function createApp(): Express {
   const app = express();
 
   app.disable("x-powered-by");
+  // Behind Vercel (and most managed platforms) the app runs behind a reverse
+  // proxy that terminates TLS and sets `X-Forwarded-For` / `Forwarded`. Trust
+  // the first proxy hop so `req.ip` resolves to the real client IP instead of
+  // the internal 127.0.0.1 socket address. Without this, express-rate-limit
+  // v8 throws ERR_ERL_FORWARDED_HEADER / ERR_ERL_UNEXPECTED_X_FORWARDED_FOR
+  // and rate limiting would otherwise bucket every request under one IP.
+  app.set("trust proxy", 1);
   app.use(helmet());
   // Allow the primary origin plus explicitly configured deployment origins.
   // Credentials are not used because SEP-10 bearer sessions are sent explicitly.
