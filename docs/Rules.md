@@ -30,7 +30,7 @@ doubt, choose the safer, more auditable, more reversible option.
 
 ## 2. What To Do
 
-- Read `docs/Memory.md` and this file before starting work.
+- Read `Memory.md` and this file before starting work.
 - Keep bounded contexts isolated: `kyc`, `payments`, `ledger`, `liquidity`,
   `escrow`, `disputes`, `rwa`, `stellar`. Cross-module calls go through service
   interfaces, not direct table access.

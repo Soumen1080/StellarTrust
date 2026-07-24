@@ -6,8 +6,10 @@ Asset (RWA) tokenization** platform on the Stellar network.
 > Fast, secure, transparent global commerce: cross-border payments + escrow +
 > AI dispute resolution + asset tokenization, all on Stellar.
 
-See the canonical docs at the repo root: `PRD.md`, `Architecture.md`,
-`Rules.md`, `Phases.md`, `DESIGN.md`, `Memory.md`.
+See the canonical docs in [`docs/`](docs/): [`PRD.md`](docs/PRD.md),
+[`Architecture.md`](docs/Architecture.md), [`Rules.md`](docs/Rules.md),
+[`Phases.md`](docs/Phases.md), [`DESIGN.md`](docs/DESIGN.md),
+[`Memory.md`](docs/Memory.md).
 
 ---
 
@@ -33,7 +35,7 @@ and it holds **contracts only** — no runtime logic, no secrets.
 
 ---
 
-## Golden rules (see `Rules.md`)
+## Golden rules (see [`docs/Rules.md`](docs/Rules.md))
 
 1. The **double-entry ledger** is the source of truth. Every money movement
    writes balanced ledger entries (debits == credits) **and** a Stellar
@@ -62,7 +64,7 @@ Phase 2 now includes:
 
 The default runtime still uses in-memory repositories and a deterministic local
 Soroban boundary. Public-testnet deployment, production Postgres/Redis adapters,
-and KMS/HSM signing are intentionally not claimed as complete; see `Phases.md`.
+and KMS/HSM signing are intentionally not claimed as complete; see [`docs/Phases.md`](docs/Phases.md).
 
 ### Local environment
 
