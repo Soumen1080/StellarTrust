@@ -12,9 +12,16 @@ if (-not (Get-Command stellar -ErrorAction SilentlyContinue)) {
 Write-Host "Building escrow contract..."
 stellar contract build --package escrow
 
-$wasm = Join-Path $PSScriptRoot "..\target\wasm32-unknown-unknown\release\escrow.wasm"
-if (-not (Test-Path $wasm)) {
-  throw "Escrow WASM was not produced at $wasm"
+# Stellar CLI 23+ (SDK 21.1+/protocol 21+) builds to the wasm32v1-none target;
+# older toolchains used wasm32-unknown-unknown. Accept whichever is produced.
+$targetRoot = Join-Path $PSScriptRoot "..\target"
+$wasm = @(
+  (Join-Path $targetRoot "wasm32v1-none\release\escrow.wasm"),
+  (Join-Path $targetRoot "wasm32-unknown-unknown\release\escrow.wasm")
+) | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+if (-not $wasm) {
+  throw "Escrow WASM was not produced under $targetRoot (checked wasm32v1-none and wasm32-unknown-unknown)"
 }
 
 Write-Host "Deploying escrow contract to $Network using the configured '$Source' identity..."

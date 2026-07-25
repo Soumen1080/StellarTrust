@@ -8,7 +8,10 @@ edition = "2021"
 license = "MIT"
 
 [workspace.dependencies]
-soroban-sdk = "22.0.0"
+# Pinned to match the platform toolchain: Stellar CLI 27 (protocol 23) and
+# rustc >= 1.91. SDK 22.x fails to compile on modern rustc (soroban-env-common
+# E0119 conflicting TryFrom impls), which blocked CI and deployment.
+soroban-sdk = "27.0.2"
 
 # Optimize WASM output for on-chain deployment.
 [profile.release]

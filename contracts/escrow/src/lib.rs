@@ -10,7 +10,19 @@
 //! against. State transitions here mirror `EscrowState` in @stellartrust/shared:
 //! Locked -> Released | Refunded | Disputed.
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+};
+
+// ── Storage TTL management ──────────────────────────────────────────────────
+// Soroban archives contract instance storage once its TTL lapses. An escrow
+// holds custody of funds, so its state must not be allowed to expire while a
+// deal is in flight. Every state-mutating entry point bumps the instance TTL,
+// keeping the entry (and its balance) live for ~30 days past the last activity.
+// ~17280 ledgers/day at the 5s close target.
+const DAY_IN_LEDGERS: u32 = 17_280;
+const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
+const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 #[contracttype]
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -88,6 +100,11 @@ impl EscrowContract {
             delivery_confirmed: false,
         };
         env.storage().instance().set(&DataKey::Escrow, &escrow);
+        Self::extend_ttl(&env);
+        env.events().publish(
+            (symbol_short!("lock"),),
+            (escrow.buyer.clone(), escrow.seller.clone(), amount),
+        );
         Ok(())
     }
 
@@ -100,6 +117,9 @@ impl EscrowContract {
         escrow.buyer.require_auth();
         escrow.delivery_confirmed = true;
         env.storage().instance().set(&DataKey::Escrow, &escrow);
+        Self::extend_ttl(&env);
+        env.events()
+            .publish((symbol_short!("confirm"),), escrow.buyer.clone());
         Ok(())
     }
 
@@ -124,6 +144,11 @@ impl EscrowContract {
 
         escrow.state = State::Released;
         env.storage().instance().set(&DataKey::Escrow, &escrow);
+        Self::extend_ttl(&env);
+        env.events().publish(
+            (symbol_short!("release"),),
+            (escrow.seller.clone(), escrow.amount),
+        );
         Ok(())
     }
 
@@ -144,6 +169,11 @@ impl EscrowContract {
 
         escrow.state = State::Refunded;
         env.storage().instance().set(&DataKey::Escrow, &escrow);
+        Self::extend_ttl(&env);
+        env.events().publish(
+            (symbol_short!("refund"),),
+            (escrow.buyer.clone(), escrow.amount),
+        );
         Ok(())
     }
 
@@ -160,6 +190,8 @@ impl EscrowContract {
         by.require_auth();
         escrow.state = State::Disputed;
         env.storage().instance().set(&DataKey::Escrow, &escrow);
+        Self::extend_ttl(&env);
+        env.events().publish((symbol_short!("dispute"),), by);
         Ok(())
     }
 
@@ -176,6 +208,14 @@ impl EscrowContract {
             .instance()
             .get(&DataKey::Escrow)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Keep the instance entry (and the custodied balance it tracks) from being
+    /// archived while a deal is active.
+    fn extend_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 }
 

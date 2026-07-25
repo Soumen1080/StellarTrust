@@ -13,7 +13,19 @@
 //! - Transfer event logging
 //! - Admin operations (freeze/unfreeze)
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Map, String, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, String,
+    Vec,
+};
+
+// ── Storage TTL management ──────────────────────────────────────────────────
+// Instance storage holds the token metadata, balances, and the authorization
+// whitelist. A tokenization is long-lived, so every state-mutating entry point
+// bumps the instance TTL (~30 days past the last activity) to keep holder
+// balances from being archived. ~17280 ledgers/day at the 5s close target.
+const DAY_IN_LEDGERS: u32 = 17_280;
+const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
+const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
 #[contracttype]
 #[derive(Clone)]
@@ -107,6 +119,9 @@ impl RwaTokenContract {
         };
         env.storage().instance().set(&DataKey::Meta, &meta);
         env.storage().instance().set(&DataKey::Balances, &balances);
+        Self::extend_ttl(&env);
+        env.events()
+            .publish((symbol_short!("init"),), (meta.issuer.clone(), total_units));
         Ok(())
     }
 
@@ -137,8 +152,11 @@ impl RwaTokenContract {
         }
         balances.set(from.clone(), from_bal - units);
         let to_bal = balances.get(to.clone()).unwrap_or(0);
-        balances.set(to, to_bal + units);
+        balances.set(to.clone(), to_bal + units);
         env.storage().instance().set(&DataKey::Balances, &balances);
+        Self::extend_ttl(&env);
+        env.events()
+            .publish((symbol_short!("transfer"), from, to), units);
         Ok(())
     }
 
@@ -188,6 +206,8 @@ impl RwaTokenContract {
         }
         meta.distributed = true;
         env.storage().instance().set(&DataKey::Meta, &meta);
+        Self::extend_ttl(&env);
+        env.events().publish((symbol_short!("distrib"),), ());
         Ok(())
     }
 
@@ -197,6 +217,8 @@ impl RwaTokenContract {
         meta.issuer.require_auth();
         meta.frozen = true;
         env.storage().instance().set(&DataKey::Meta, &meta);
+        Self::extend_ttl(&env);
+        env.events().publish((symbol_short!("freeze"),), ());
         Ok(())
     }
 
@@ -206,6 +228,8 @@ impl RwaTokenContract {
         meta.issuer.require_auth();
         meta.frozen = false;
         env.storage().instance().set(&DataKey::Meta, &meta);
+        Self::extend_ttl(&env);
+        env.events().publish((symbol_short!("unfreeze"),), ());
         Ok(())
     }
 
@@ -217,8 +241,10 @@ impl RwaTokenContract {
             return Ok(()); // No-op if authorization not required
         }
         let mut authorized = Self::authorized(&env);
-        authorized.set(address, true);
+        authorized.set(address.clone(), true);
         env.storage().instance().set(&DataKey::Authorized, &authorized);
+        Self::extend_ttl(&env);
+        env.events().publish((symbol_short!("authorize"),), address);
         Ok(())
     }
 
@@ -230,8 +256,10 @@ impl RwaTokenContract {
             return Ok(()); // No-op if authorization not required
         }
         let mut authorized = Self::authorized(&env);
-        authorized.set(address, false);
+        authorized.set(address.clone(), false);
         env.storage().instance().set(&DataKey::Authorized, &authorized);
+        Self::extend_ttl(&env);
+        env.events().publish((symbol_short!("revoke"),), address);
         Ok(())
     }
 
@@ -265,6 +293,14 @@ impl RwaTokenContract {
             .instance()
             .get(&DataKey::Meta)
             .ok_or(Error::NotInitialized)
+    }
+
+    /// Keep the instance entry (metadata, balances, whitelist) from being
+    /// archived while the tokenization is active.
+    fn extend_ttl(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     fn balances(env: &Env) -> Result<Map<Address, i128>, Error> {
