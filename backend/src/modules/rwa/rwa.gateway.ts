@@ -10,7 +10,14 @@
 import { randomUUID } from "node:crypto";
 import { ChainError } from "../../lib/errors.js";
 import { config } from "../../config/index.js";
-import type { AssetType } from "./rwa.types.js";
+import { createSigner, type Signer } from "../stellar/signer.js";
+import {
+  deployFromWasmHash,
+  getContractClient,
+  type ContractResult,
+  type ContractTx,
+} from "../stellar/soroban.client.js";
+import { AssetType } from "./rwa.types.js";
 
 export interface DeployTokenInput {
   issuerAddress: string;
@@ -318,90 +325,217 @@ export class DeterministicRwaGateway implements RwaGateway {
 }
 
 /**
- * Soroban RPC gateway for staging/production.
- * Requires KMS/HSM for signing and Soroban RPC endpoint.
- * 
- * This is a placeholder for the production implementation.
+ * Soroban RPC gateway for the RWA token contract.
+ *
+ * Submits real Soroban transactions via the {@link Signer} boundary. The
+ * server signer is the on-chain **issuer**: it deploys each tokenization's
+ * contract instance, holds the initial supply, and authorizes issuer-gated
+ * operations (transfer-from-issuer, authorize, freeze, mark_distributed). Read
+ * calls are simulated and need no signature.
+ *
+ * Scope note: the token contract gates `transfer` with `from.require_auth()`.
+ * Only the issuer (this signer) can therefore be the `from`. Secondary/resale
+ * transfers, where a non-issuer holder is the `from`, require that holder's own
+ * signature (client-side wallet) and are not driven by this server-side gateway.
  */
 export class SorobanRpcRwaGateway implements RwaGateway {
-  constructor(
-    _rpcUrl: string,
-    _networkPassphrase: string,
-    _signerService: unknown, // KMS/HSM signing service
-  ) {}
+  constructor(private readonly signer: Signer) {}
 
-  async deployToken(_input: DeployTokenInput): Promise<string> {
-    throw new Error(
-      "SorobanRpcRwaGateway.deployToken: Production implementation required. " +
-      "Must use stellar-sdk to build deploy transaction, sign via KMS, and submit to Soroban RPC.",
-    );
+  private async client(contractId: string): Promise<RwaContractClient> {
+    return (await getContractClient(
+      contractId,
+      this.signer,
+    )) as unknown as RwaContractClient;
   }
 
-  async transferUnits(_input: TransferUnitsInput): Promise<void> {
-    throw new Error(
-      "SorobanRpcRwaGateway.transferUnits: Production implementation required.",
-    );
+  /** Deploy a fresh token contract instance and initialize it with the issuer. */
+  async deployToken(input: DeployTokenInput): Promise<string> {
+    if (input.totalUnits <= 0n) {
+      throw new ChainError("Total units must be positive");
+    }
+    const wasmHash = config.RWA_WASM_HASH;
+    if (!wasmHash) {
+      throw new ChainError(
+        "RWA_WASM_HASH is not configured; cannot deploy RWA token contract",
+      );
+    }
+
+    // The server signer is the on-chain issuer, regardless of the caller's
+    // internal issuer id (which is a DB user id, not a Stellar address).
+    const issuer = await this.signer.getPublicKey();
+    const contractId = await deployFromWasmHash(wasmHash, this.signer);
+
+    const client = await this.client(contractId);
+    const tx = await client.initialize({
+      issuer,
+      asset_ref: input.assetRef,
+      asset_type: { tag: assetTypeTag(input.assetType), values: undefined },
+      description: input.description,
+      total_units: input.totalUnits,
+      require_authorization: input.requireAuthorization,
+    });
+    await tx.signAndSend();
+
+    return contractId;
   }
 
-  async authorizeHolder(_input: AuthorizeHolderInput): Promise<void> {
-    throw new Error(
-      "SorobanRpcRwaGateway.authorizeHolder: Production implementation required.",
-    );
+  async transferUnits(input: TransferUnitsInput): Promise<void> {
+    if (input.units <= 0n) {
+      throw new ChainError("Transfer amount must be positive");
+    }
+    // Only the issuer (this signer) can authorize a transfer out of its own
+    // balance; `from` is bound to the signer's on-chain address.
+    const from = await this.signer.getPublicKey();
+    const client = await this.client(input.contractId);
+    const tx = await client.transfer({ from, to: input.to, units: input.units });
+    await tx.signAndSend();
   }
 
-  async revokeAuthorization(_input: AuthorizeHolderInput): Promise<void> {
-    throw new Error(
-      "SorobanRpcRwaGateway.revokeAuthorization: Production implementation required.",
-    );
+  async authorizeHolder(input: AuthorizeHolderInput): Promise<void> {
+    const client = await this.client(input.contractId);
+    const tx = await client.authorize({ address: input.holderAddress });
+    await tx.signAndSend();
   }
 
-  async freezeToken(_contractId: string): Promise<void> {
-    throw new Error(
-      "SorobanRpcRwaGateway.freezeToken: Production implementation required.",
-    );
+  async revokeAuthorization(input: AuthorizeHolderInput): Promise<void> {
+    const client = await this.client(input.contractId);
+    const tx = await client.revoke_authorization({ address: input.holderAddress });
+    await tx.signAndSend();
   }
 
-  async unfreezeToken(_contractId: string): Promise<void> {
-    throw new Error(
-      "SorobanRpcRwaGateway.unfreezeToken: Production implementation required.",
-    );
+  async freezeToken(contractId: string): Promise<void> {
+    const client = await this.client(contractId);
+    const tx = await client.freeze();
+    await tx.signAndSend();
   }
 
-  async getBalance(_contractId: string, _holderAddress: string): Promise<bigint> {
-    throw new Error(
-      "SorobanRpcRwaGateway.getBalance: Production implementation required.",
-    );
+  async unfreezeToken(contractId: string): Promise<void> {
+    const client = await this.client(contractId);
+    const tx = await client.unfreeze();
+    await tx.signAndSend();
   }
 
-  async getPayoutShares(_input: PayoutSharesInput): Promise<PayoutShare[]> {
-    throw new Error(
-      "SorobanRpcRwaGateway.getPayoutShares: Production implementation required.",
-    );
+  async getBalance(contractId: string, holderAddress: string): Promise<bigint> {
+    const client = await this.client(contractId);
+    const tx = await client.balance_of({ holder: holderAddress });
+    return tx.result.unwrap();
   }
 
-  async markDistributed(_contractId: string): Promise<void> {
-    throw new Error(
-      "SorobanRpcRwaGateway.markDistributed: Production implementation required.",
-    );
+  async getPayoutShares(input: PayoutSharesInput): Promise<PayoutShare[]> {
+    if (input.payoutAmount < 0n) {
+      throw new ChainError("Payout amount cannot be negative");
+    }
+    const client = await this.client(input.contractId);
+    const tx = await client.all_payout_shares({ payout: input.payoutAmount });
+    return tx.result
+      .unwrap()
+      .map(([holderAddress, shareAmount]) => ({ holderAddress, shareAmount }));
   }
 
-  async isAuthorized(_contractId: string, _address: string): Promise<boolean> {
-    throw new Error(
-      "SorobanRpcRwaGateway.isAuthorized: Production implementation required.",
-    );
+  async markDistributed(contractId: string): Promise<void> {
+    const client = await this.client(contractId);
+    const tx = await client.mark_distributed();
+    await tx.signAndSend();
   }
 
-  async getContractMeta(_contractId: string): Promise<{
+  async isAuthorized(contractId: string, address: string): Promise<boolean> {
+    const client = await this.client(contractId);
+    const tx = await client.is_authorized({ address });
+    return tx.result.unwrap();
+  }
+
+  async getContractMeta(contractId: string): Promise<
+    | {
+        issuer: string;
+        assetRef: string;
+        totalUnits: bigint;
+        frozen: boolean;
+        distributed: boolean;
+      }
+    | undefined
+  > {
+    let client: RwaContractClient;
+    try {
+      client = await this.client(contractId);
+    } catch {
+      // Unknown/undeployed contract id — mirror the deterministic adapter's
+      // "not found" contract rather than surfacing a lookup error.
+      return undefined;
+    }
+    const tx = await client.get_meta();
+    const meta = tx.result.unwrap();
+    return {
+      issuer: meta.issuer,
+      assetRef: meta.asset_ref,
+      totalUnits: meta.total_units,
+      frozen: meta.frozen,
+      distributed: meta.distributed,
+    };
+  }
+}
+
+/** Map the shared {@link AssetType} to the contract enum's Rust variant tag. */
+function assetTypeTag(assetType: AssetType): string {
+  switch (assetType) {
+    case AssetType.Invoice:
+      return "Invoice";
+    case AssetType.Commodity:
+      return "Commodity";
+    case AssetType.RealEstate:
+      return "RealEstate";
+    case AssetType.Other:
+    default:
+      return "Other";
+  }
+}
+
+/**
+ * Structural view of the spec-generated client for the RWA token contract.
+ * `contract.Client` builds these methods dynamically from the on-chain spec;
+ * this interface types the exact surface the gateway invokes. Method and
+ * argument names mirror the Rust contract (snake_case). Methods declared
+ * `Result<…, Error>` in Rust resolve to a {@link ContractResult}.
+ */
+interface RwaContractClient {
+  initialize(args: {
     issuer: string;
-    assetRef: string;
-    totalUnits: bigint;
-    frozen: boolean;
-    distributed: boolean;
-  } | undefined> {
-    throw new Error(
-      "SorobanRpcRwaGateway.getContractMeta: Production implementation required.",
-    );
-  }
+    asset_ref: string;
+    asset_type: { tag: string; values: undefined };
+    description: string;
+    total_units: bigint;
+    require_authorization: boolean;
+  }): Promise<ContractTx<ContractResult<void>>>;
+  transfer(args: {
+    from: string;
+    to: string;
+    units: bigint;
+  }): Promise<ContractTx<ContractResult<void>>>;
+  balance_of(args: { holder: string }): Promise<ContractTx<ContractResult<bigint>>>;
+  authorize(args: { address: string }): Promise<ContractTx<ContractResult<void>>>;
+  revoke_authorization(args: {
+    address: string;
+  }): Promise<ContractTx<ContractResult<void>>>;
+  freeze(): Promise<ContractTx<ContractResult<void>>>;
+  unfreeze(): Promise<ContractTx<ContractResult<void>>>;
+  is_authorized(args: {
+    address: string;
+  }): Promise<ContractTx<ContractResult<boolean>>>;
+  mark_distributed(): Promise<ContractTx<ContractResult<void>>>;
+  all_payout_shares(args: {
+    payout: bigint;
+  }): Promise<ContractTx<ContractResult<Array<readonly [string, bigint]>>>>;
+  get_meta(): Promise<ContractTx<ContractResult<RwaContractMeta>>>;
+}
+
+interface RwaContractMeta {
+  issuer: string;
+  asset_ref: string;
+  asset_type: unknown;
+  description: string;
+  total_units: bigint;
+  distributed: boolean;
+  frozen: boolean;
+  require_authorization: boolean;
 }
 
 /**
@@ -421,10 +555,7 @@ export function createRwaGateway(): RwaGateway {
   }
 
   if (gatewayType === "soroban-rpc") {
-    throw new Error(
-      "RWA_GATEWAY=soroban-rpc requires the KMS-backed production adapter. " +
-      "SorobanRpcRwaGateway implementation is incomplete.",
-    );
+    return new SorobanRpcRwaGateway(createSigner());
   }
 
   throw new Error(`Unknown RWA_GATEWAY type: ${gatewayType}`);

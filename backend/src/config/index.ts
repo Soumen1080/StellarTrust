@@ -186,6 +186,19 @@ const envSchema = z.object({
   // Gateway for RWA token contract operations (deterministic for local/test,
   // soroban-rpc for staging/production with KMS-backed signing).
   RWA_GATEWAY: z.enum(["deterministic", "soroban-rpc"]).default("deterministic"),
+  // Hex-encoded WASM hash of the RWA token contract, already uploaded on-chain
+  // (via `stellar contract deploy`/`install`). Required when RWA_GATEWAY=
+  // soroban-rpc so the gateway can deploy per-tokenization contract instances.
+  RWA_WASM_HASH: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, "Must be a 32-byte hex WASM hash")
+    .optional(),
+  // Hex-encoded WASM hash of the escrow contract (same rationale as above).
+  // Required when ESCROW_GATEWAY=soroban-rpc.
+  ESCROW_WASM_HASH: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, "Must be a 32-byte hex WASM hash")
+    .optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

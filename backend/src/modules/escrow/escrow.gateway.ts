@@ -7,6 +7,12 @@ import {
 } from "@stellartrust/shared";
 import { ChainError } from "../../lib/errors.js";
 import { config } from "../../config/index.js";
+import { createSigner, type Signer } from "../stellar/signer.js";
+import {
+  getContractClient,
+  type ContractResult,
+  type ContractTx,
+} from "../stellar/soroban.client.js";
 
 export interface ChainTransitionInput {
   orderId: string;
@@ -134,6 +140,83 @@ export class DeterministicEscrowGateway implements EscrowGateway {
 
 
 
+/**
+ * Soroban RPC gateway for the escrow contract.
+ *
+ * Read operations (escrow state) are fully implemented against a real deployed
+ * escrow contract and are what the reconciliation job needs to assert the
+ * ledger against on-chain custody.
+ *
+ * Write operations are intentionally fail-closed. The escrow contract gates
+ * `initialize` and `confirm_delivery` with `buyer.require_auth()`, so locking
+ * funds and confirming delivery must be signed by the **buyer**, not this
+ * server signer. Driving those on-chain requires interface changes this adapter
+ * does not yet have:
+ *   - resolution of `buyerId`/`sellerId` (DB user ids) to Stellar addresses,
+ *   - the payment token's contract id (SAC) and a stroop-denominated amount,
+ *   - client-side (wallet) signing for the buyer-authorized transitions.
+ * Until those exist, `submitTransition` throws rather than silently mislocking
+ * or forging authorizations.
+ */
+export class SorobanRpcEscrowGateway implements EscrowGateway {
+  constructor(private readonly signer: Signer) {}
+
+  async submitTransition(input: ChainTransitionInput): Promise<ChainReceipt> {
+    throw new ChainError(
+      `ESCROW_GATEWAY=soroban-rpc cannot submit the '${input.transition}' ` +
+        "transition yet: escrow initialize/confirm require the buyer's own " +
+        "signature and a resolved buyer/seller Stellar address + token contract. " +
+        "Wire buyer-side (wallet) signing and address resolution before enabling " +
+        "on-chain escrow writes.",
+    );
+  }
+
+  async getTransaction(_hash: string): Promise<ChainReceipt | undefined> {
+    // Receipts are produced by submitTransition, which is not yet enabled for
+    // this gateway; nothing to look up.
+    return undefined;
+  }
+
+  async getEscrowState(contractId: string): Promise<EscrowState | undefined> {
+    let client: EscrowContractClient;
+    try {
+      client = (await getContractClient(
+        contractId,
+        this.signer,
+      )) as unknown as EscrowContractClient;
+    } catch {
+      // Unknown/undeployed escrow contract id.
+      return undefined;
+    }
+    const tx = await client.state();
+    return escrowStateFromTag(tx.result.unwrap().tag);
+  }
+}
+
+/** Map the escrow contract's `State` enum variant tag to the shared EscrowState. */
+function escrowStateFromTag(tag: string): EscrowState | undefined {
+  switch (tag) {
+    case "Locked":
+      return EscrowState.Locked;
+    case "Released":
+      return EscrowState.Released;
+    case "Refunded":
+      return EscrowState.Refunded;
+    case "Disputed":
+      return EscrowState.Disputed;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Structural view of the spec-generated client for the escrow contract. Only
+ * the read surface the gateway invokes is typed here.
+ */
+interface EscrowContractClient {
+  state(): Promise<ContractTx<ContractResult<{ tag: string; values: undefined }>>>;
+}
+
 /** Fail closed rather than running a synthetic chain adapter outside local/test. */
 export function createEscrowGateway(): EscrowGateway {
   if (config.ESCROW_GATEWAY === "deterministic") {
@@ -144,7 +227,5 @@ export function createEscrowGateway(): EscrowGateway {
     }
     return new DeterministicEscrowGateway();
   }
-  throw new Error(
-    "ESCROW_GATEWAY=soroban-rpc requires the KMS-backed production adapter",
-  );
+  return new SorobanRpcEscrowGateway(createSigner());
 }
