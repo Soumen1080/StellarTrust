@@ -21,11 +21,12 @@ const envSchema = z.object({
     .default("development"),
   PORT: z.coerce.number().int().positive().default(8080),
   FRONTEND_ORIGIN: z.string().url().default("http://localhost:3000"),
-  // Additional allowed browser origins (comma-separated). Env-driven; no
-  // deployment URLs hardcoded in source. Falls back to FRONTEND_ORIGIN alone.
+  // Additional allowed browser origins (comma-separated). Env-driven; the
+  // deployed frontend origin is included by default so production works even
+  // before a dashboard override is set. Override via FRONTEND_ORIGINS env.
   FRONTEND_ORIGINS: z
     .string()
-    .default("")
+    .default("https://stellar-trust-frontend.vercel.app")
     .transform((value) =>
       value
         .split(",")

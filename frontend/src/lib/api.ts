@@ -38,7 +38,7 @@ import type {
 
 const DEFAULT_API_BASE =
   process.env.NODE_ENV === "production"
-    ? "https://stellar-trust-backend.vercel.app"
+    ? "https://stellartrust.onrender.com"
     : "http://localhost:8080";
 const API_BASE = (
   process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE
