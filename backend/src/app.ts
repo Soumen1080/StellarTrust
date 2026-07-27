@@ -68,11 +68,19 @@ import {
   DeterministicDisputeRiskClient,
   HttpDisputeRiskClient,
 } from "./modules/disputes/dispute-risk.client.js";
-import { InMemoryDisputeRepository } from "./modules/disputes/dispute.repository.js";
+import {
+  InMemoryDisputeRepository,
+  type DisputeRepository,
+} from "./modules/disputes/dispute.repository.js";
+import { PgDisputeRepository } from "./modules/disputes/pg-dispute.repository.js";
 import { DisputeService } from "./modules/disputes/dispute.service.js";
 import { createDisputeRouter } from "./modules/disputes/dispute.routes.js";
 import { createRwaGateway } from "./modules/rwa/rwa.gateway.js";
-import { InMemoryRwaRepository } from "./modules/rwa/rwa.repository.js";
+import {
+  InMemoryRwaRepository,
+  type RwaRepository,
+} from "./modules/rwa/rwa.repository.js";
+import { PgRwaRepository } from "./modules/rwa/pg-rwa.repository.js";
 import { RwaService } from "./modules/rwa/rwa.service.js";
 import { createRwaRouter } from "./modules/rwa/rwa.routes.js";
 import { InMemoryReputationRepository } from "./modules/reputation/reputation.repository.js";
@@ -299,7 +307,9 @@ export function createApp(): Express {
   // RWA module is separate from the escrow happy path. Tokenization enables
   // sellers to unlock working capital and investors to get transparent
   // fractional ownership. Payouts distribute automatically when buyer pays.
-  const rwaRepository = new InMemoryRwaRepository();
+  const rwaRepository: RwaRepository = usePersistentStore
+    ? new PgRwaRepository(getPool())
+    : new InMemoryRwaRepository();
   const rwaGateway = createRwaGateway();
   const rwa = new RwaService(rwaRepository, rwaGateway, audit);
 
@@ -353,7 +363,9 @@ export function createApp(): Express {
   // ── Phase 4: Disputes + AI (advisory) ────────────────────────────────────
   // The AI dispute recommender is advisory only; the backend owns the human
   // gate and any fund movement stays on the compliance arbiter path.
-  const disputeRepository = new InMemoryDisputeRepository();
+  const disputeRepository: DisputeRepository = usePersistentStore
+    ? new PgDisputeRepository(getPool())
+    : new InMemoryDisputeRepository();
   const disputeOrders = {
     getOrder: (orderId: string) => paymentRepository.findOrder(orderId),
   };
