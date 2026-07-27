@@ -322,17 +322,19 @@ alter table payout_records enable row level security;
 
 -- Basic policies: owners can read their own data
 -- (Production will need more nuanced policies for investors, admins, etc.)
-create policy assets_owner_read on assets
-  for select using (owner_user_id = auth.uid()::uuid);
-
-create policy tokenizations_issuer_read on tokenizations
-  for select using (issuer_user_id = auth.uid()::uuid);
-
-create policy token_holdings_holder_read on token_holdings
-  for select using (holder_user_id = auth.uid()::uuid);
-
-create policy payout_records_holder_read on payout_records
-  for select using (holder_user_id = auth.uid()::uuid);
+--
+-- Supabase exposes auth.uid(); plain Postgres CI does not. Create self-read
+-- policies only when that function exists. RLS remains enabled/deny-by-default
+-- everywhere else. (Mirrors the guard in 0003_phase1_identity_wallet.sql.)
+do $$
+begin
+  if to_regprocedure('auth.uid()') is not null then
+    execute 'create policy assets_owner_read on assets for select using (owner_user_id = auth.uid()::uuid)';
+    execute 'create policy tokenizations_issuer_read on tokenizations for select using (issuer_user_id = auth.uid()::uuid)';
+    execute 'create policy token_holdings_holder_read on token_holdings for select using (holder_user_id = auth.uid()::uuid)';
+    execute 'create policy payout_records_holder_read on payout_records for select using (holder_user_id = auth.uid()::uuid)';
+  end if;
+end $$;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Comments for documentation
