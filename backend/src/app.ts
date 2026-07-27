@@ -19,7 +19,11 @@ import { errorHandler, notFoundHandler } from "./middleware/error.js";
 import { httpMetrics } from "./middleware/metrics.js";
 import { requestId, type RequestWithId } from "./middleware/requestId.js";
 import type { BearerVerifier } from "./middleware/auth.js";
-import { InMemoryAuditRepository } from "./modules/audit/audit.repository.js";
+import {
+  InMemoryAuditRepository,
+  type AuditRepository,
+} from "./modules/audit/audit.repository.js";
+import { PgAuditRepository } from "./modules/audit/pg-audit.repository.js";
 import {
   InMemoryAuthRepository,
   type AuthRepository,
@@ -49,6 +53,8 @@ import { createKycProvider } from "./modules/kyc/providers/provider.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
 import { createEscrowGateway } from "./modules/escrow/escrow.gateway.js";
 import { InMemoryPaymentRepository } from "./modules/payments/payment.repository.js";
+import type { PaymentRepository } from "./modules/payments/payment.repository.js";
+import { PgPaymentRepository } from "./modules/payments/pg-payment.repository.js";
 import { createPaymentRouter } from "./modules/payments/payment.routes.js";
 import { PaymentService } from "./modules/payments/payment.service.js";
 import { createSigner } from "./modules/stellar/signer.js";
@@ -261,7 +267,9 @@ export function createApp(): Express {
   }
   verifiers.push(externalVerifier);
   const bearerVerifier = composeBearerVerifiers(...verifiers);
-  const audit = new InMemoryAuditRepository();
+  const audit: AuditRepository = usePersistentStore
+    ? new PgAuditRepository(getPool())
+    : new InMemoryAuditRepository();
   // Phase 6: shared alert sink (structured log + metrics; swap for PagerDuty/
   // Slack in staging/production without touching call sites).
   const alerts = new LoggingAlertSink(metrics);
@@ -303,7 +311,9 @@ export function createApp(): Express {
 
   // Wire RWA + reputation into payment service. RWA payout distributes on
   // release; a completed release also records a positive reputation signal.
-  const paymentRepository = new InMemoryPaymentRepository();
+  const paymentRepository: PaymentRepository = usePersistentStore
+    ? new PgPaymentRepository(getPool())
+    : new InMemoryPaymentRepository();
   const escrowGateway = createEscrowGateway();
   const payments = new PaymentService(
     paymentRepository,
