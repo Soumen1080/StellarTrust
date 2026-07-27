@@ -209,23 +209,24 @@ fn mark_distributed_is_idempotent() {
 }
 
 #[test]
-#[should_panic(expected = "InvalidAmount")]
 fn negative_transfer_fails() {
     let env = Env::default();
     let (client, issuer) = setup(&env);
     let investor = Address::generate(&env);
-    
-    client.transfer(&issuer, &investor, &-100);
+
+    let result = client.try_transfer(&issuer, &investor, &-100);
+    assert_eq!(result, Err(Ok(Error::InvalidAmount)));
 }
 
 #[test]
-#[should_panic(expected = "InsufficientUnits")]
 fn insufficient_balance_fails() {
     let env = Env::default();
     let (client, issuer) = setup(&env);
     let investor = Address::generate(&env);
-    
-    client.transfer(&issuer, &investor, &2_000); // Only 1000 available
+
+    // Only 1000 available
+    let result = client.try_transfer(&issuer, &investor, &2_000);
+    assert_eq!(result, Err(Ok(Error::InsufficientUnits)));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 3,
+    "address": 2,
     "nonce": 0,
     "mux_id": 0
   },
@@ -19,20 +19,20 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 },
                 {
-                  "string": "invoice:INV-001"
+                  "string": "commodity:GOLD-100KG"
                 },
                 {
                   "vec": [
                     {
-                      "symbol": "Invoice"
+                      "symbol": "Commodity"
                     }
                   ]
                 },
                 {
-                  "string": "Test invoice tokenization"
+                  "string": "100kg gold bar tokenization"
                 },
                 {
-                  "i128": "1000"
+                  "i128": "100"
                 },
                 {
                   "bool": false
@@ -44,32 +44,6 @@
         }
       ]
     ],
-    [
-      [
-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "function_name": "transfer",
-              "args": [
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                },
-                {
-                  "i128": "250"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
-    [],
     []
   ],
   "ledger": {
@@ -92,26 +66,6 @@
               "key": {
                 "ledger_key_nonce": {
                   "nonce": "801925984706572462"
-                }
-              },
-              "durability": "temporary",
-              "val": "void"
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 6311999
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "key": {
-                "ledger_key_nonce": {
-                  "nonce": "5541220902715666415"
                 }
               },
               "durability": "temporary",
@@ -152,15 +106,7 @@
                               "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                             },
                             "val": {
-                              "i128": "750"
-                            }
-                          },
-                          {
-                            "key": {
-                              "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                            },
-                            "val": {
-                              "i128": "250"
+                              "i128": "100"
                             }
                           }
                         ]
@@ -181,7 +127,7 @@
                               "symbol": "asset_ref"
                             },
                             "val": {
-                              "string": "invoice:INV-001"
+                              "string": "commodity:GOLD-100KG"
                             }
                           },
                           {
@@ -191,7 +137,7 @@
                             "val": {
                               "vec": [
                                 {
-                                  "symbol": "Invoice"
+                                  "symbol": "Commodity"
                                 }
                               ]
                             }
@@ -201,7 +147,7 @@
                               "symbol": "description"
                             },
                             "val": {
-                              "string": "Test invoice tokenization"
+                              "string": "100kg gold bar tokenization"
                             }
                           },
                           {
@@ -241,7 +187,7 @@
                               "symbol": "total_units"
                             },
                             "val": {
-                              "i128": "1000"
+                              "i128": "100"
                             }
                           }
                         ]
