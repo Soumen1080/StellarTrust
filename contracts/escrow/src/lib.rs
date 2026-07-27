@@ -11,7 +11,7 @@
 //! Locked -> Released | Refunded | Disputed.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Env,
 };
 
 // ── Storage TTL management ──────────────────────────────────────────────────
@@ -63,6 +63,44 @@ pub enum Error {
     InvalidState = 4,
 }
 
+// ── Contract events (Protocol 23 typed events) ──────────────────────────────
+// Migrated from the deprecated `env.events().publish(...)` API. Topic symbols
+// and data payloads are preserved so downstream consumers see the same shapes.
+
+/// Funds locked into custody. Topic: ("lock",); data: [buyer, seller, amount].
+#[contractevent(topics = ["lock"], data_format = "vec")]
+pub struct Locked {
+    pub buyer: Address,
+    pub seller: Address,
+    pub amount: i128,
+}
+
+/// Buyer confirmed delivery. Topic: ("confirm",); data: buyer.
+#[contractevent(topics = ["confirm"], data_format = "single-value")]
+pub struct Confirmed {
+    pub buyer: Address,
+}
+
+/// Funds released to seller. Topic: ("release",); data: [seller, amount].
+#[contractevent(topics = ["release"], data_format = "vec")]
+pub struct Released {
+    pub seller: Address,
+    pub amount: i128,
+}
+
+/// Funds refunded to buyer. Topic: ("refund",); data: [buyer, amount].
+#[contractevent(topics = ["refund"], data_format = "vec")]
+pub struct Refunded {
+    pub buyer: Address,
+    pub amount: i128,
+}
+
+/// Escrow disputed. Topic: ("dispute",); data: the disputing party.
+#[contractevent(topics = ["dispute"], data_format = "single-value")]
+pub struct Disputed {
+    pub by: Address,
+}
+
 #[contract]
 pub struct EscrowContract;
 
@@ -101,10 +139,12 @@ impl EscrowContract {
         };
         env.storage().instance().set(&DataKey::Escrow, &escrow);
         Self::extend_ttl(&env);
-        env.events().publish(
-            (symbol_short!("lock"),),
-            (escrow.buyer.clone(), escrow.seller.clone(), amount),
-        );
+        Locked {
+            buyer: escrow.buyer.clone(),
+            seller: escrow.seller.clone(),
+            amount,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -118,8 +158,10 @@ impl EscrowContract {
         escrow.delivery_confirmed = true;
         env.storage().instance().set(&DataKey::Escrow, &escrow);
         Self::extend_ttl(&env);
-        env.events()
-            .publish((symbol_short!("confirm"),), escrow.buyer.clone());
+        Confirmed {
+            buyer: escrow.buyer.clone(),
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -145,10 +187,11 @@ impl EscrowContract {
         escrow.state = State::Released;
         env.storage().instance().set(&DataKey::Escrow, &escrow);
         Self::extend_ttl(&env);
-        env.events().publish(
-            (symbol_short!("release"),),
-            (escrow.seller.clone(), escrow.amount),
-        );
+        Released {
+            seller: escrow.seller.clone(),
+            amount: escrow.amount,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -170,10 +213,11 @@ impl EscrowContract {
         escrow.state = State::Refunded;
         env.storage().instance().set(&DataKey::Escrow, &escrow);
         Self::extend_ttl(&env);
-        env.events().publish(
-            (symbol_short!("refund"),),
-            (escrow.buyer.clone(), escrow.amount),
-        );
+        Refunded {
+            buyer: escrow.buyer.clone(),
+            amount: escrow.amount,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -191,7 +235,7 @@ impl EscrowContract {
         escrow.state = State::Disputed;
         env.storage().instance().set(&DataKey::Escrow, &escrow);
         Self::extend_ttl(&env);
-        env.events().publish((symbol_short!("dispute"),), by);
+        Disputed { by }.publish(&env);
         Ok(())
     }
 

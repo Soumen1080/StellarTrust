@@ -14,7 +14,7 @@
 //! - Admin operations (freeze/unfreeze)
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Map, String,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, Map, String,
     Vec,
 };
 
@@ -74,6 +74,51 @@ pub enum Error {
     InvalidAssetType = 9,
 }
 
+// ── Contract events (Protocol 23 typed events) ──────────────────────────────
+// Migrated from the deprecated `env.events().publish(...)` API. Topic symbols
+// and data payloads are preserved so downstream consumers see the same shapes.
+
+/// Tokenization created. Topic: ("init",); data: [issuer, total_units].
+#[contractevent(topics = ["init"], data_format = "vec")]
+pub struct Initialized {
+    pub issuer: Address,
+    pub total_units: i128,
+}
+
+/// Units transferred. Topics: ("transfer", from, to); data: units.
+#[contractevent(data_format = "single-value")]
+pub struct Transfer {
+    #[topic]
+    pub from: Address,
+    #[topic]
+    pub to: Address,
+    pub units: i128,
+}
+
+/// Payout marked distributed. Topic: ("distrib",).
+#[contractevent(topics = ["distrib"])]
+pub struct Distributed {}
+
+/// Transfers frozen. Topic: ("freeze",).
+#[contractevent(topics = ["freeze"])]
+pub struct Frozen {}
+
+/// Transfers unfrozen. Topic: ("unfreeze",).
+#[contractevent(topics = ["unfreeze"])]
+pub struct Unfrozen {}
+
+/// Address authorized. Topic: ("authorize",); data: address.
+#[contractevent(topics = ["authorize"], data_format = "single-value")]
+pub struct Authorized {
+    pub address: Address,
+}
+
+/// Authorization revoked. Topic: ("revoke",); data: address.
+#[contractevent(topics = ["revoke"], data_format = "single-value")]
+pub struct Revoked {
+    pub address: Address,
+}
+
 #[contract]
 pub struct RwaTokenContract;
 
@@ -120,8 +165,11 @@ impl RwaTokenContract {
         env.storage().instance().set(&DataKey::Meta, &meta);
         env.storage().instance().set(&DataKey::Balances, &balances);
         Self::extend_ttl(&env);
-        env.events()
-            .publish((symbol_short!("init"),), (meta.issuer.clone(), total_units));
+        Initialized {
+            issuer: meta.issuer.clone(),
+            total_units,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -155,8 +203,7 @@ impl RwaTokenContract {
         balances.set(to.clone(), to_bal + units);
         env.storage().instance().set(&DataKey::Balances, &balances);
         Self::extend_ttl(&env);
-        env.events()
-            .publish((symbol_short!("transfer"), from, to), units);
+        Transfer { from, to, units }.publish(&env);
         Ok(())
     }
 
@@ -207,7 +254,7 @@ impl RwaTokenContract {
         meta.distributed = true;
         env.storage().instance().set(&DataKey::Meta, &meta);
         Self::extend_ttl(&env);
-        env.events().publish((symbol_short!("distrib"),), ());
+        Distributed {}.publish(&env);
         Ok(())
     }
 
@@ -218,7 +265,7 @@ impl RwaTokenContract {
         meta.frozen = true;
         env.storage().instance().set(&DataKey::Meta, &meta);
         Self::extend_ttl(&env);
-        env.events().publish((symbol_short!("freeze"),), ());
+        Frozen {}.publish(&env);
         Ok(())
     }
 
@@ -229,7 +276,7 @@ impl RwaTokenContract {
         meta.frozen = false;
         env.storage().instance().set(&DataKey::Meta, &meta);
         Self::extend_ttl(&env);
-        env.events().publish((symbol_short!("unfreeze"),), ());
+        Unfrozen {}.publish(&env);
         Ok(())
     }
 
@@ -244,7 +291,7 @@ impl RwaTokenContract {
         authorized.set(address.clone(), true);
         env.storage().instance().set(&DataKey::Authorized, &authorized);
         Self::extend_ttl(&env);
-        env.events().publish((symbol_short!("authorize"),), address);
+        Authorized { address }.publish(&env);
         Ok(())
     }
 
@@ -259,7 +306,7 @@ impl RwaTokenContract {
         authorized.set(address.clone(), false);
         env.storage().instance().set(&DataKey::Authorized, &authorized);
         Self::extend_ttl(&env);
-        env.events().publish((symbol_short!("revoke"),), address);
+        Revoked { address }.publish(&env);
         Ok(())
     }
 

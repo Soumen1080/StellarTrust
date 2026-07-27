@@ -22,7 +22,7 @@ fn create_token<'a>(
     )
 }
 
-fn setup(env: &Env) -> (EscrowContractClient, Address, Address, Address, TokenClient) {
+fn setup(env: &Env) -> (EscrowContractClient<'_>, Address, Address, Address, TokenClient<'_>) {
     env.mock_all_auths();
 
     let admin = Address::generate(env);

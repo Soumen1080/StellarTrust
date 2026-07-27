@@ -5,7 +5,7 @@
 use super::*;
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
-fn setup(env: &Env) -> (RwaTokenContractClient, Address) {
+fn setup(env: &Env) -> (RwaTokenContractClient<'_>, Address) {
     env.mock_all_auths();
     let issuer = Address::generate(env);
     let contract_id = env.register(RwaTokenContract, ());
@@ -21,7 +21,7 @@ fn setup(env: &Env) -> (RwaTokenContractClient, Address) {
     (client, issuer)
 }
 
-fn setup_with_auth(env: &Env) -> (RwaTokenContractClient, Address) {
+fn setup_with_auth(env: &Env) -> (RwaTokenContractClient<'_>, Address) {
     env.mock_all_auths();
     let issuer = Address::generate(env);
     let contract_id = env.register(RwaTokenContract, ());
