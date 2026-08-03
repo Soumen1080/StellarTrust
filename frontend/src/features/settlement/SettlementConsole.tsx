@@ -11,9 +11,9 @@ import {
 import Link from "next/link";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { useIdentity } from "@/components/IdentityProvider";
 import { StatusPill } from "@/components/StatusPill";
 import { api } from "@/lib/api";
-import { loadSession } from "@/lib/wallet-auth";
 
 /** Format an integer minor-unit string into a human amount for a currency. */
 function formatMinor(amount: string, currency: CurrencyCode): string {
@@ -41,7 +41,7 @@ function message(error: unknown): string {
 }
 
 export function SettlementConsole() {
-  const [session, setSession] = useState<AuthSessionResponse | null>(null);
+  const { session } = useIdentity();
   const [corridors, setCorridors] = useState<CorridorDTO[]>([]);
   const [corridorId, setCorridorId] = useState("");
   const [amount, setAmount] = useState("");
@@ -69,16 +69,18 @@ export function SettlementConsole() {
   }, []);
 
   useEffect(() => {
-    const active = loadSession();
-    setSession(active);
-    if (!active) {
+    if (!session) {
+      setCorridors([]);
+      setSettlements([]);
       setLoading(false);
       return;
     }
-    void refresh(active)
+    setLoading(true);
+    setError(null);
+    void refresh(session)
       .catch((err: unknown) => setError(message(err)))
       .finally(() => setLoading(false));
-  }, [refresh]);
+  }, [refresh, session]);
 
   async function getQuote(event: FormEvent) {
     event.preventDefault();

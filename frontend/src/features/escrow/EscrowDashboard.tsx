@@ -4,9 +4,9 @@ import { CurrencyCode, OrderStatus, type AuthSessionResponse, type OrderDetailsR
 import Link from "next/link";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { useIdentity } from "@/components/IdentityProvider";
 import { StatusPill } from "@/components/StatusPill";
 import { api } from "@/lib/api";
-import { loadSession } from "@/lib/wallet-auth";
 
 type Action = "accept" | "deposit" | "lock" | "confirm" | "release";
 type Filter = "all" | "action" | "active" | "complete";
@@ -15,7 +15,7 @@ const FLOW = ["created", "accepted", "deposited", "locked", "confirmed", "releas
 const ACTION_LABEL: Record<Action, string> = { accept: "Accept order", deposit: "Deposit funds", lock: "Lock in escrow", confirm: "Confirm delivery", release: "Release payment" };
 
 export function EscrowDashboard() {
-  const [session, setSession] = useState<AuthSessionResponse | null>(null);
+  const { session } = useIdentity();
   const [orders, setOrders] = useState<OrderDetailsResponse[]>([]);
   const [sellerId, setSellerId] = useState("");
   const [amount, setAmount] = useState("");
@@ -29,11 +29,15 @@ export function EscrowDashboard() {
   const refresh = useCallback(async (active: AuthSessionResponse) => { const response = await api.listOrders(active.accessToken); setOrders(response.orders); }, []);
 
   useEffect(() => {
-    const active = loadSession();
-    setSession(active);
-    if (!active) { setLoading(false); return; }
-    void refresh(active).catch((err: unknown) => setError(message(err))).finally(() => setLoading(false));
-  }, [refresh]);
+    if (!session) {
+      setOrders([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    void refresh(session).catch((err: unknown) => setError(message(err))).finally(() => setLoading(false));
+  }, [refresh, session]);
 
   async function createOrder(event: FormEvent) {
     event.preventDefault();

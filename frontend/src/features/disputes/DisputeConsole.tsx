@@ -9,9 +9,9 @@ import {
 import Link from "next/link";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { useIdentity } from "@/components/IdentityProvider";
 import { StatusPill } from "@/components/StatusPill";
 import { api } from "@/lib/api";
-import { loadSession } from "@/lib/wallet-auth";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "The dispute operation failed";
@@ -20,7 +20,7 @@ function message(error: unknown): string {
 const EVIDENCE_KINDS = Object.values(EvidenceKind);
 
 export function DisputeConsole() {
-  const [session, setSession] = useState<AuthSessionResponse | null>(null);
+  const { session } = useIdentity();
   const [disputes, setDisputes] = useState<DisputeDTO[]>([]);
   const [queue, setQueue] = useState<DisputeDTO[]>([]);
   const [isCompliance, setIsCompliance] = useState(false);
@@ -45,16 +45,19 @@ export function DisputeConsole() {
   }, []);
 
   useEffect(() => {
-    const active = loadSession();
-    setSession(active);
-    if (!active) {
+    if (!session) {
+      setDisputes([]);
+      setQueue([]);
+      setIsCompliance(false);
       setLoading(false);
       return;
     }
-    void refresh(active)
+    setLoading(true);
+    setError(null);
+    void refresh(session)
       .catch((err: unknown) => setError(message(err)))
       .finally(() => setLoading(false));
-  }, [refresh]);
+  }, [refresh, session]);
 
   async function openDispute(event: FormEvent) {
     event.preventDefault();

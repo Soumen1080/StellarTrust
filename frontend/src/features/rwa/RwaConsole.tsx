@@ -14,9 +14,9 @@ import {
 import Link from "next/link";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/Icon";
+import { useIdentity } from "@/components/IdentityProvider";
 import { StatusPill } from "@/components/StatusPill";
 import { api } from "@/lib/api";
-import { loadSession } from "@/lib/wallet-auth";
 
 /** Format an integer minor-unit string into a human amount for a currency. */
 function formatMinor(amount: string, currency: CurrencyCode): string {
@@ -54,7 +54,7 @@ const ASSET_TYPE_LABEL: Record<AssetType, string> = {
 type Tab = "marketplace" | "issue" | "portfolio";
 
 export function RwaConsole() {
-  const [session, setSession] = useState<AuthSessionResponse | null>(null);
+  const { session } = useIdentity();
   const [tab, setTab] = useState<Tab>("marketplace");
   const [tokenizations, setTokenizations] = useState<TokenizationDTO[]>([]);
   const [assets, setAssets] = useState<AssetDTO[]>([]);
@@ -76,16 +76,19 @@ export function RwaConsole() {
   }, []);
 
   useEffect(() => {
-    const active = loadSession();
-    setSession(active);
-    if (!active) {
+    if (!session) {
+      setTokenizations([]);
+      setAssets([]);
+      setPortfolio(null);
       setLoading(false);
       return;
     }
-    void refresh(active)
+    setLoading(true);
+    setError(null);
+    void refresh(session)
       .catch((err: unknown) => setError(message(err)))
       .finally(() => setLoading(false));
-  }, [refresh]);
+  }, [refresh, session]);
 
   const reload = useCallback(async () => {
     if (!session) return;
