@@ -29,6 +29,7 @@
     "express-rate-limit": "8.6.0",
     "helmet": "8.3.0",
     "jose": "6.2.3",
+    "node-fetch": "^2.7.0",
     "pg": "8.22.0",
     "pino": "10.3.1",
     "pino-http": "11.0.0",

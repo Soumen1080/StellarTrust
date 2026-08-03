@@ -1,117 +1,332 @@
-# StellarTrust
+<p align="center">
+	<img src="https://img.shields.io/badge/StellarTrust-Submission%20Ready-0ea5e9?style=for-the-badge" alt="StellarTrust" />
+</p>
 
-AI-powered cross-border **escrow**, **liquidity settlement**, and **Real-World
-Asset (RWA) tokenization** platform on the Stellar network.
+<h1 align="center">StellarTrust</h1>
 
-> Fast, secure, transparent global commerce: cross-border payments + escrow +
-> AI dispute resolution + asset tokenization, all on Stellar.
+<p align="center"><em>Fast. Secure. Auditable. Global escrow and settlement on Stellar.</em></p>
 
-See the canonical docs in [`docs/`](docs/): [`PRD.md`](docs/PRD.md),
-[`Architecture.md`](docs/Architecture.md), [`Rules.md`](docs/Rules.md),
-[`Phases.md`](docs/Phases.md), [`DESIGN.md`](docs/DESIGN.md),
-[`Memory.md`](docs/Memory.md).
+<p align="center">
+	<img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" alt="TypeScript" />
+	<img src="https://img.shields.io/badge/Node.js-Backend-339933?logo=node.js&logoColor=white" alt="Node.js" />
+	<img src="https://img.shields.io/badge/FastAPI-AI%20Service-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+	<img src="https://img.shields.io/badge/Rust-Soroban-000000?logo=rust&logoColor=white" alt="Rust" />
+	<img src="https://img.shields.io/badge/Stellar-Network-08B5E5" alt="Stellar" />
+	<img src="https://img.shields.io/badge/PostgreSQL-Ledger-336791?logo=postgresql&logoColor=white" alt="PostgreSQL" />
+	<img src="https://img.shields.io/badge/Redis-Jobs%20%26%20Queue-DC382D?logo=redis&logoColor=white" alt="Redis" />
+</p>
+
+<p align="center">
+	<strong><a href="#submission-checklist">Submission Checklist</a></strong> |
+	<strong><a href="#project-overview">Project Overview</a></strong> |
+	<strong><a href="#mvp">MVP</a></strong> |
+	<strong><a href="#architecture--workflow">Architecture & Workflow</a></strong> |
+	<strong><a href="#screenshots--media">Screenshots & Media</a></strong> |
+	<strong><a href="#setup">Setup</a></strong>
+</p>
 
 ---
 
-## Repository layout (separation of portions)
+## Project Overview
 
-Every portion is a **self-contained top-level folder** with its own
-dependencies, config, and tests. Portions communicate only over defined
-interfaces (REST + shared type contracts) — never by reaching into each other's
-internals.
+**StellarTrust** is an AI-assisted cross-border escrow and settlement platform built on Stellar. It is designed for secure commerce where buyers need protection, sellers need fast settlement, and reviewers need a clear audit trail.
 
-| Folder | Portion | Toolchain |
+The platform combines:
+
+- Stellar-based payment settlement and asset transfer
+- Soroban escrow contracts for lock, release, and refund flows
+- AI-assisted dispute review with human approval gates
+- A double-entry ledger that stays balanced across every money movement
+- Optional RWA tokenization for invoices and other real-world assets
+
+### Core Modules
+
+- `frontend/` - user dashboards and submission UX
+- `backend/` - API, orchestration, ledger, reconciliation, and workflows
+- `ai/` - FastAPI risk and dispute service
+- `contracts/` - Soroban contracts for escrow and tokenization
+- `shared/` - shared types, validation, and constants
+- `infra/` - deployment and environment support
+- `docs/` - product, architecture, phases, and rules
+
+---
+
+## Submission Checklist
+
+Fill in the links and proof items below before publishing the final submission.
+
+| Requirement | Status / Link |
+|---|---|
+| Public GitHub repository | Add repository URL here |
+| Live demo link | Add Vercel, Netlify, or similar URL here |
+| Contract deployment address | Add deployed contract address here |
+| Transaction hash | Add the contract interaction hash here |
+| Demo video link | Add a 1-2 minute video link here |
+| CI/CD pipeline | Add the workflow or status page link here |
+| Mobile responsive screenshot | Add screenshot link here |
+| CI/CD screenshot | Add screenshot link here |
+| Test output screenshot | Add screenshot link here |
+
+---
+
+## MVP
+
+The MVP covers the trust-critical flow for a buyer and seller:
+
+1. User onboarding and wallet connection
+2. Buyer creates an escrow-backed order
+3. Buyer funds the order
+4. Seller ships and uploads evidence
+5. Buyer confirms delivery or opens a dispute
+6. AI produces an advisory recommendation
+7. Human approval gates sensitive money movement
+8. Ledger and chain are reconciled
+
+### MVP Scope
+
+- Escrow lifecycle: create, accept, deposit, lock, confirm, release, refund, dispute
+- Double-entry ledger for every money movement
+- AI-assisted dispute triage with human review
+- Reconciliation job for ledger versus chain consistency
+- Buyer and seller visibility into escrow state
+
+### Not in MVP
+
+- Autonomous AI money decisions above threshold
+- Becoming a licensed anchor or bank
+- Non-Stellar payment rails
+- Uncontrolled mainnet money movement without operational setup
+
+---
+
+## Architecture & Workflow
+
+StellarTrust uses separated runtimes that communicate through typed contracts and APIs. The architecture keeps financial state auditable and allows the AI service to stay advisory only.
+
+```mermaid
+flowchart TB
+	subgraph Client[Frontend]
+		A[Buyer / Seller / Admin UI]
+		B[Wallet Connect]
+	end
+
+	subgraph Backend[Backend]
+		C[API + Auth + Idempotency]
+		D[Double-entry Ledger]
+		E[Escrow Orchestration]
+		F[Dispute Workflow]
+		G[Reconciliation Job]
+	end
+
+	subgraph AI[AI Service]
+		H[Risk Scoring]
+		I[Dispute Recommendation]
+	end
+
+	subgraph Chain[Stellar + Soroban]
+		J[Escrow Contract]
+		K[RWA Contract]
+		L[Settlement / Transfer]
+	end
+
+	subgraph Data[Data Layer]
+		M[PostgreSQL]
+		N[Redis]
+	end
+
+	A --> C
+	B --> C
+	C --> D
+	C --> E
+	C --> F
+	F --> H
+	F --> I
+	E --> J
+	E --> L
+	E --> K
+	D --> M
+	C --> N
+	G --> M
+	G --> J
+```
+
+### Workflow
+
+```mermaid
+flowchart LR
+	U[1. Register and connect wallet] --> O[2. Create order]
+	O --> F[3. Fund escrow]
+	F --> S[4. Seller ships goods]
+	S --> E[5. Upload evidence]
+	E --> C{6. Confirm delivery?}
+	C -->|Yes| R[Release funds]
+	C -->|No| D[Open dispute]
+	D --> A[AI advisory review]
+	A --> H[Human approval if needed]
+	H --> P[Refund or release]
+	P --> X[Ledger + chain reconciliation]
+```
+
+### What Makes It Safe
+
+- The ledger is the source of truth.
+- AI output is advisory only.
+- All money-mutating operations are idempotent.
+- Reconciliation blocks dependent operations when mismatch is detected.
+- RWA tokenization is isolated from the escrow happy path.
+
+---
+
+## Generated Documents To Upload
+
+Use this section to attach the documents you mentioned in your submission brief.
+
+| Artifact | What to upload | Link |
 |---|---|---|
-| `frontend/` | Next.js dashboards + transactional UI | Node / TS / Tailwind |
-| `backend/`  | Modular-monolith API (Express) | Node / TS |
-| `ai/`       | AI Risk Service (advisory only) | Python / FastAPI |
-| `contracts/`| Soroban escrow + RWA token | Rust |
-| `shared/`   | Cross-portion contracts (types/constants/validation/error codes) | TS |
-| `infra/`    | docker-compose, CI, env templates | — |
+| Detailed architecture | PDF, image, or hosted doc with the full architecture | Add link here |
+| Workflow document | End-to-end user and system workflow | Add link here |
+| MVP document | MVP scope, milestones, and implementation summary | Add link here |
 
-`frontend/` and `backend/` are **independently deployed** projects with their
-own `package.json`, build, and env. `shared/` is the only code both may import,
-and it holds **contracts only** — no runtime logic, no secrets.
+You can also reference the living source documents already in this repository:
 
----
-
-## Golden rules (see [`docs/Rules.md`](docs/Rules.md))
-
-1. The **double-entry ledger** is the source of truth. Every money movement
-   writes balanced ledger entries (debits == credits) **and** a Stellar
-   transaction record.
-2. **No secret keys** in code, DB, env, or logs. Signing happens behind the
-   KMS/HSM boundary only.
-3. **AI is advisory**, human-gated above thresholds.
-4. All money-mutating endpoints are **idempotent**.
-5. **No unauthenticated** money/PII/escrow endpoints.
+- [Product Requirements Document](docs/PRD.md)
+- [Architecture](docs/Architecture.md)
+- [Delivery Phases](docs/Phases.md)
+- [Engineering Rules](docs/Rules.md)
 
 ---
 
-## Current status — Phase 2 application complete
+## Screenshots & Media
 
-Phase 0 foundations and the Phase 1 identity/wallet application are present.
-Phase 2 now includes:
+### Mobile Responsive UI
 
-- Authenticated/idempotent `create → accept → deposit → lock → confirm → release`
-  APIs under `/api/payments/orders` plus an arbiter-only refund path.
-- Balanced ledger postings, linked chain records, and append-only audit metadata
-  for each transition.
-- A scheduled ledger↔chain reconciliation job that reports mismatches and blocks
-  dependent operations.
-- Soroban escrow buyer confirmation + lock/release/refund authorization tests.
-- Postgres migration `0004_phase2_core_payment_escrow.sql` and `/escrow` UI.
+Add a screenshot showing the app on a phone-sized viewport.
 
-The default runtime still uses in-memory repositories and a deterministic local
-Soroban boundary. Public-testnet deployment, production Postgres/Redis adapters,
-and KMS/HSM signing are intentionally not claimed as complete; see [`docs/Phases.md`](docs/Phases.md).
+- Suggested filename: `mobile-ui.png`
+- Add it to your repo, a CDN, or a public drive link
 
-### Local environment
+### CI/CD Pipeline
 
-`infra/.env` is the gitignored local stack configuration. Safe defaults are
-already present. To recreate it, copy `infra/.env.example` and keep real values
-out of source control. Start the full stack with:
+Add a screenshot that shows the pipeline running successfully.
 
-```powershell
-docker compose --env-file infra/.env -f infra/docker-compose.yml up --build
+- Suggested filename: `cicd-pipeline.png`
+- Include build, test, and deploy status if possible
+
+### Test Output
+
+Add a screenshot showing at least 3 passing tests.
+
+- Suggested filename: `tests-passing.png`
+- Make sure the command and passing assertions are visible
+
+### Demo Video
+
+Add a 1-2 minute walkthrough video for reviewers.
+
+- Suggested platform: YouTube, Loom, Google Drive, or similar
+- Suggested title: `StellarTrust Submission Demo`
+
+---
+
+## Deployment Proof
+
+Use this table to record the exact deployment details used in the demo.
+
+| Item | Value |
+|---|---|
+| Live app URL | Replace with deployed frontend URL |
+| API URL | Replace with backend URL |
+| Contract deployment address | Replace with deployed Soroban contract address |
+| Contract interaction transaction hash | Replace with the transaction hash |
+| Network | Replace with the network used for the demo |
+
+---
+
+## Tech Stack
+
+- Frontend: Next.js, TypeScript, Tailwind CSS
+- Backend: Node.js, Express, TypeScript
+- AI service: Python, FastAPI, Pydantic
+- Contracts: Rust, Soroban SDK
+- Data: PostgreSQL, Redis
+- Stellar integration: Stellar SDK, Horizon, Soroban RPC
+
+---
+
+## Repository Structure
+
+```
+StellarTrust/
+├─ frontend/
+├─ backend/
+├─ ai/
+├─ contracts/
+├─ shared/
+├─ infra/
+├─ docs/
+└─ README.md
 ```
 
-Docker is required for this command. Without Docker, run each portion directly
-using its own environment file.
+---
 
-### Phase 2 API
+## Setup
 
-All mutations require `Authorization: Bearer …` and `Idempotency-Key` headers.
+Run each portion independently.
 
-```text
-POST /api/payments/orders
-GET  /api/payments/orders
-GET  /api/payments/orders/:orderId
-POST /api/payments/orders/:orderId/{accept|deposit|lock|confirm|release|refund}
-POST /api/payments/reconciliation/run   # compliance role
+### Frontend
+
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
-### Quick start (backend)
+### Backend
 
 ```bash
 cd backend
 npm install
-cp .env.example .env      # no secrets — references only
-npm run build
-npm test                  # ledger balancing + health e2e
-npm run dev               # starts API on http://localhost:8080
-curl http://localhost:8080/health
+npm run dev
 ```
 
-### Quick start (AI service)
+### AI Service
 
 ```bash
 cd ai
-python -m venv .venv && . .venv/Scripts/activate   # Windows
-pip install -e .[dev]
-uvicorn app.main:app --reload --port 8000
+pip install -e .
+uvicorn app.main:app --reload
 ```
 
-### Contracts (Soroban)
+### Contracts
 
-Requires the Rust toolchain + `stellar` CLI. See `contracts/README.md`.
+```bash
+cd contracts
+cargo test
+```
+
+---
+
+## Testing
+
+Run the relevant tests before submitting.
+
+- Frontend and backend unit tests
+- AI service tests
+- Soroban contract tests
+- Reconciliation and workflow tests
+
+If you include a screenshot in the submission, make sure it clearly shows 3 or more passing tests.
+
+---
+
+## Notes For Reviewers
+
+- Replace every placeholder URL before publishing the public repository.
+- Upload the architecture, workflow, and MVP documents as separate files if your submission requires them.
+- The docs in `docs/` are the canonical source for product and system behavior.
+
+---
+
+## License
+
+Add your project license here if required by your submission format.
