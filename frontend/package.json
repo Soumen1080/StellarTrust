@@ -4,7 +4,7 @@
   "private": true,
   "description": "StellarTrust frontend — Next.js (App Router) + TypeScript + Tailwind. Dashboards (dark) + transactional surfaces (light) per DESIGN.md.",
   "scripts": {
-    "dev": "next dev",
+    "dev": "npm run build:shared && next dev",
     "build:shared": "npm install --prefix ../shared --include=dev --no-audit --no-fund && npm run build --prefix ../shared",
     "build": "npm run build:shared && next build",
     "start": "next start",
