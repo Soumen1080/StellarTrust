@@ -1,7 +1,7 @@
 # StellarTrust — Engineering Rules & Guardrails
 
 > **Status:** Living document. All contributors (human and AI) must follow this.
-> **Last updated:** 2026-07-20
+> **Last updated:** 2026-08-18
 
 These rules exist because StellarTrust moves real money for real users. When in
 doubt, choose the safer, more auditable, more reversible option.
@@ -31,12 +31,26 @@ doubt, choose the safer, more auditable, more reversible option.
 ## 2. What To Do
 
 - Read `Memory.md` and this file before starting work.
-- Keep bounded contexts isolated: `kyc`, `payments`, `ledger`, `liquidity`,
-  `escrow`, `disputes`, `rwa`, `stellar`. Cross-module calls go through service
-  interfaces, not direct table access.
+- Keep bounded contexts isolated: `auth`, `identity`, `kyc`, `payments`,
+  `ledger`, `escrow`, `settlement`, `disputes`, `rwa`, `reputation`, `audit`,
+  `stellar`. Cross-module calls go through service interfaces or an explicit
+  port, never direct table access.
+- **Wire dependencies only in `app.ts`.** A module never constructs its own
+  adapter or repository; it receives them. That is what makes the
+  deterministic ↔ real swap a config change instead of a refactor.
 - Wrap all external systems (KYC provider, anchor, Stellar, AI service) behind
   **adapters/interfaces** so implementations can be swapped (sandbox → live).
+- **A deterministic adapter must reject exactly what the real one rejects.** Its
+  entire value is that a green test suite says something about production. When
+  a contract's rule changes, change the local adapter in the same commit and add
+  the test that would have caught the divergence.
 - Validate all input at the boundary with a schema (Zod on TS, Pydantic on Py).
+  A Soroban `Address` argument is validated as a strkey (`modules/stellar/
+  address.ts`) — never pass an internal user id through to a contract.
+- Convert between ledger minor units and on-chain token amounts only through
+  `modules/stellar/asset.ts`. Integer math, and it refuses to truncate.
+- For a chain-backed money step, the **chain call settles first**, then the
+  ledger posts. Never the other way round.
 - Reconciliation adapters must compare immutable transition identity, chain
   status, and balanced ledger entries. Open mismatches block the affected order.
 - Deterministic/in-memory chain and persistence adapters are local/test-only;
@@ -71,39 +85,69 @@ doubt, choose the safer, more auditable, more reversible option.
 
 ## 4. Approved Libraries
 
+This section lists what is **actually installed**, at the pinned version, plus a
+short "approved but not yet added" list. If a package is not here, adding it is
+a decision that belongs in `Memory.md`.
+
 ### Frontend (`frontend/`)
-- `next`, `react`, `typescript`, `tailwindcss`
-- `@creit.tech/stellar-wallets-kit` (wallet integration)
-- `@tanstack/react-query` (server state), `zod` (validation)
-- `zustand` (light client state) — avoid heavy global state
+| Package | Version | Used for |
+|---|---|---|
+| `next` | 15.5.20 | App Router (pinned — see D16) |
+| `react` / `react-dom` | 19.0.0 | UI |
+| `typescript` | 5 | — |
+| `tailwindcss` | 3 | design tokens in `tailwind.config.ts` |
+| `@creit.tech/stellar-wallets-kit` | 2.5.0 | wallet connect, SEP-10, tx signing |
+| `zod` | 3.23.8 | validation (matches shared) |
+| `@tanstack/react-query` | 5.62.7 | **installed but unused** — remove it or use it |
+
+State is plain React hooks today (`IdentityProvider`, `useEscrowOrders`). No
+global state library is installed; `zustand` remains *approved if needed*, not
+present.
 
 ### Backend (`backend/`)
-- `express`, `typescript`, `zod`
-- `@stellar/stellar-sdk` (Horizon + Soroban RPC)
-- `pg` / Supabase client, `kysely` or `drizzle` (typed SQL) — no heavy ORM magic
-- `bullmq` + `ioredis` (jobs/queues)
-- `pino` (structured logging)
-- KMS SDK for signing (AWS KMS / GCP KMS)
+| Package | Version | Used for |
+|---|---|---|
+| `express` | 5.2.1 | HTTP |
+| `zod` | 3.23.8 | boundary validation + env schema |
+| `@stellar/stellar-sdk` | 16.0.1 | Horizon + Soroban RPC + StrKey |
+| `pg` | 8.22.0 | raw parameterized SQL (no ORM) |
+| `@supabase/supabase-js` | 2.110.7 | Auth/Storage admin adapter |
+| `jose` | 6.2.3 | Supabase JWKS verification |
+| `pino` / `pino-http` | 10.3.1 / 11.0.0 | structured logging |
+| `helmet` | 8.3.0 | security headers |
+| `express-rate-limit` | 8.6.0 | rate limiting |
+| `dotenv` | 17.4.2 | local env loading |
+| `node-fetch` | 2.x | HTTP client (test scripts) |
+| `vitest` | 3.2.4 | test runner (pinned — see D15) |
+
+**Approved but not installed** (add with a Memory.md decision when the need is
+real): `bullmq` + `ioredis` (jobs/queues, cross-instance idempotency), a cloud
+KMS SDK for `KmsSigner`. A typed-SQL layer (`kysely`/`drizzle`) is *not*
+approved — raw parameterized `pg` is the deliberate choice.
 
 ### AI service (`ai/`)
 - `fastapi`, `pydantic`, `uvicorn`
-- OCR/vision + ML libs as needed (documented per engine)
-- HTTP client for provider calls
+- OCR/vision + ML libs are *planned*; the engines are weighted-rule
+  placeholders today and must stay labeled as such.
 
 ### Contracts (`contracts/`)
-- `soroban-sdk` (Rust)
+- `soroban-sdk` 27.0.2 (Rust, edition 2021)
 
 > **Rule:** Pin exact versions. Flag unusual/typosquat-looking package names.
 > Prefer well-maintained, widely-used packages. New library → add here + note in
-> Memory.md.
+> Memory.md. **Do not list a package here that is not installed** — an aspirational
+> entry reads as a fact and misleads the next contributor.
 
 ---
 
 ## 5. Error Handling Standard
 
-- **Typed errors.** Use a shared error taxonomy: `ValidationError`,
-  `AuthError`, `NotFoundError`, `ConflictError`, `ExternalServiceError`,
-  `LedgerError`, `ChainError`.
+- **Typed errors.** Use the taxonomy in `backend/src/lib/errors.ts`, all
+  extending `AppError`: `ValidationError`, `AuthError`, `ForbiddenError`,
+  `NotFoundError`, `ConflictError`, `IdempotencyConflictError`,
+  `ExternalServiceError`, `LedgerError`, `ChainError`. The matching **codes**
+  and their HTTP status mapping live in `shared/src/errors/` (D14) — codes are
+  a wire contract, classes are runtime.
 - **Boundary translation.** Map internal errors to HTTP status + safe message
   at the API edge. Never leak stack traces or internal details to clients.
 - **Fail closed on money.** If a payment/escrow step cannot be verified, do

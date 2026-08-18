@@ -6,8 +6,10 @@ use super::*;
 use soroban_sdk::{
     testutils::Address as _,
     token::{StellarAssetClient, TokenClient},
-    Address, Env,
+    Address, Env, String,
 };
+
+const ORDER_REF: &str = "8b1f0f2e-0b6e-4a1e-9f6b-1f2a3b4c5d6e";
 
 fn create_token<'a>(
     env: &Env,
@@ -36,7 +38,14 @@ fn setup(env: &Env) -> (EscrowContractClient<'_>, Address, Address, Address, Tok
     let contract_id = env.register(EscrowContract, ());
     let client = EscrowContractClient::new(env, &contract_id);
 
-    client.initialize(&buyer, &seller, &arbiter, &token_id, &500);
+    client.initialize(
+        &buyer,
+        &seller,
+        &arbiter,
+        &token_id,
+        &500,
+        &String::from_str(env, ORDER_REF),
+    );
     (client, buyer, seller, arbiter, token)
 }
 
@@ -47,6 +56,39 @@ fn initialize_locks_funds() {
     assert_eq!(client.state(), State::Locked);
     assert_eq!(token.balance(&buyer), 500);
     assert_eq!(token.balance(&client.address), 500);
+}
+
+#[test]
+fn initialize_records_the_order_reference() {
+    let env = Env::default();
+    let (client, _buyer, _seller, _arbiter, _token) = setup(&env);
+    // Reconciliation asserts a contract id really belongs to the order it is
+    // recorded against, so the binding has to survive on-chain.
+    assert_eq!(client.get().order_ref, String::from_str(&env, ORDER_REF));
+}
+
+#[test]
+fn arbiter_can_dispute_then_release_an_unconfirmed_escrow() {
+    let env = Env::default();
+    let (client, _buyer, seller, arbiter, token) = setup(&env);
+    // Compliance settlement path: no buyer confirmation, no counterparty
+    // cooperation — the arbiter freezes the deal and then resolves it.
+    client.dispute(&arbiter);
+    assert_eq!(client.state(), State::Disputed);
+    client.release();
+    assert_eq!(client.state(), State::Released);
+    assert_eq!(token.balance(&seller), 500);
+}
+
+#[test]
+fn dispute_by_a_stranger_fails() {
+    let env = Env::default();
+    let (client, _buyer, _seller, _arbiter, _token) = setup(&env);
+    let stranger = Address::generate(&env);
+    assert_eq!(
+        client.try_dispute(&stranger),
+        Err(Ok(Error::Unauthorized)),
+    );
 }
 
 #[test]

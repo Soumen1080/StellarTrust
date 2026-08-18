@@ -11,7 +11,7 @@
 //! Locked -> Released | Refunded | Disputed.
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, token, Address, Env, String,
 };
 
 // ── Storage TTL management ──────────────────────────────────────────────────
@@ -51,6 +51,11 @@ pub struct Escrow {
     pub state: State,
     /// Buyer-authenticated delivery confirmation required for happy-path release.
     pub delivery_confirmed: bool,
+    /// Off-chain order this custody instance belongs to. Recorded at
+    /// initialization so reconciliation can assert that a contract id found in
+    /// the ledger really is the custody account for that order, rather than
+    /// trusting the server-side mapping alone.
+    pub order_ref: String,
 }
 
 #[contracterror]
@@ -61,6 +66,8 @@ pub enum Error {
     NotInitialized = 2,
     InvalidAmount = 3,
     InvalidState = 4,
+    /// The caller is not a party to this escrow (buyer, seller, or arbiter).
+    Unauthorized = 5,
 }
 
 // ── Contract events (Protocol 23 typed events) ──────────────────────────────
@@ -73,6 +80,7 @@ pub struct Locked {
     pub buyer: Address,
     pub seller: Address,
     pub amount: i128,
+    pub order_ref: String,
 }
 
 /// Buyer confirmed delivery. Topic: ("confirm",); data: buyer.
@@ -115,6 +123,7 @@ impl EscrowContract {
         arbiter: Address,
         token_id: Address,
         amount: i128,
+        order_ref: String,
     ) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Escrow) {
             return Err(Error::AlreadyInitialized);
@@ -136,6 +145,7 @@ impl EscrowContract {
             amount,
             state: State::Locked,
             delivery_confirmed: false,
+            order_ref,
         };
         env.storage().instance().set(&DataKey::Escrow, &escrow);
         Self::extend_ttl(&env);
@@ -143,6 +153,7 @@ impl EscrowContract {
             buyer: escrow.buyer.clone(),
             seller: escrow.seller.clone(),
             amount,
+            order_ref: escrow.order_ref.clone(),
         }
         .publish(&env);
         Ok(())
@@ -222,14 +233,19 @@ impl EscrowContract {
     }
 
     /// Mark the escrow disputed (opens the evidence window off-chain).
-    /// Either the buyer or the seller may raise a dispute.
+    ///
+    /// The buyer or the seller may raise a dispute over their own deal. The
+    /// arbiter may also raise one: compliance needs a way to freeze a deal for
+    /// review when neither counterparty cooperates, and `Disputed` is the only
+    /// state from which the arbiter can settle a locked-but-unconfirmed escrow.
+    /// Without this the arbiter's resolution path is unreachable on-chain.
     pub fn dispute(env: Env, by: Address) -> Result<(), Error> {
         let mut escrow = Self::load(&env)?;
         if escrow.state != State::Locked {
             return Err(Error::InvalidState);
         }
-        if by != escrow.buyer && by != escrow.seller {
-            return Err(Error::InvalidState);
+        if by != escrow.buyer && by != escrow.seller && by != escrow.arbiter {
+            return Err(Error::Unauthorized);
         }
         by.require_auth();
         escrow.state = State::Disputed;

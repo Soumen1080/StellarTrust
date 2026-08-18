@@ -20,6 +20,13 @@ export interface IdentityRepository {
     user: UserProfile;
     wallet: WalletRef;
   }>;
+  /**
+   * The wallet a user signs and receives value with. On-chain escrow needs to
+   * turn the internal user ids on an order into real Stellar addresses; this is
+   * the only sanctioned mapping (the addresses come from a completed SEP-10
+   * proof of key control, never from client-supplied input).
+   */
+  findPrimaryWallet(userId: string): Promise<WalletRef | undefined>;
   updateUserProfile(
     userId: string,
     input: { email: string; legalName: string; kycStatus: KycStatus },
@@ -78,6 +85,11 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     }
 
     return this.createWalletIdentity(stellarPublicKey);
+  }
+
+  async findPrimaryWallet(userId: string): Promise<WalletRef | undefined> {
+    // First wallet is the one the identity was created from (the SEP-10 key).
+    return this.records.get(userId)?.wallets[0];
   }
 
   private createWalletIdentity(

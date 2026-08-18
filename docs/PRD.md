@@ -2,7 +2,10 @@
 
 > **Status:** Living document. Update on any scope, feature, or user change.
 > **Track:** Production (real product for real users).
-> **Last updated:** 2026-07-20
+> **Last updated:** 2026-08-18
+>
+> This document describes the **product**, which has not changed. For what is
+> actually built and verified, see `Memory.md` §1 and `devlopement.md` §0.
 
 ---
 
@@ -129,17 +132,25 @@ working capital.
 
 ### 6.3 Escrow
 - Buyer creates purchase order; seller accepts.
-- Buyer deposits into Soroban escrow contract.
-- States: `Locked → Released | Refunded | Disputed`.
+- Buyer deposits into a Soroban escrow contract — one custody instance per
+  order, deployed by the platform and funded by the buyer's own signature.
+- States: `Pending → Locked → Released | Refunded | Disputed`.
+  (`Pending` = custody contract deployed, buyer has not yet signed the lock.)
 - Delivery evidence upload by seller.
-- Buyer confirms delivery → release. Or opens dispute.
+- Buyer confirms delivery → release. Or either party opens a dispute.
+- Steps the contract gates with a party's own authorization (lock, confirm
+  delivery, dispute) are **signed in that party's wallet**, not by the platform.
+  Release and refund are signed by the platform as the designated arbiter.
 
-**Implementation status (2026-07-20):** The Phase 2 application happy path,
-idempotent APIs, balanced transition ledgering, linked chain records,
-reconciliation/blocking, escrow dashboard, and contract confirmation gate are
-implemented and locally tested. Public-testnet deployment and production
-Postgres/Redis/KMS/Soroban adapters require manual infrastructure setup before
-this can process real funds.
+**Implementation status (2026-08-18):** The full escrow lifecycle is implemented
+end to end, including the on-chain path: custody deploy, wallet-signed
+lock/confirm/dispute, arbiter-signed release/refund, read-back verification
+before any ledger posting, and ledger↔chain reconciliation that asserts on-chain
+custody state. Payments, identity, auth, audit, disputes, and RWA are
+Postgres-backed. **Not yet verified against a live network or database:** the
+contracts are not deployed, the migrations have never been executed, and
+production signing (`KmsSigner`) and cross-instance idempotency (Redis) are not
+implemented. This cannot process real funds yet.
 
 ### 6.4 Dispute Resolution
 - 24-hour evidence window for both parties.

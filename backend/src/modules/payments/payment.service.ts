@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  ChainSigningMode,
   EntryDirection,
   EscrowState,
   OrderStatus,
@@ -12,6 +13,8 @@ import {
   type OrderDetailsResponse,
   type OrderDTO,
   type OrderMutationResponse,
+  type PaymentCapabilitiesResponse,
+  type PreparedTransitionResponse,
 } from "@stellartrust/shared";
 import {
   ConflictError,
@@ -19,8 +22,14 @@ import {
   NotFoundError,
   ValidationError,
 } from "../../lib/errors.js";
+import { config } from "../../config/index.js";
 import type { AuditRepository } from "../audit/audit.repository.js";
-import type { EscrowGateway } from "../escrow/escrow.gateway.js";
+import type {
+  ChainReceipt,
+  ChainTransitionInput,
+  EscrowGateway,
+} from "../escrow/escrow.gateway.js";
+import { networkPassphrase } from "../stellar/stellar.client.js";
 import type { PaymentRepository } from "./payment.repository.js";
 import type { RwaService } from "../rwa/rwa.service.js";
 import { logger } from "../../lib/logger.js";
@@ -33,17 +42,40 @@ const CONTRACT_CUSTODY = "50000000-0000-4000-8000-000000000005";
 const DELIVERY_ASSET = "60000000-0000-4000-8000-000000000006";
 const DELIVERY_LIABILITY = "70000000-0000-4000-8000-000000000007";
 
-const EXPECTED_STATUS: Record<PaymentTransition, OrderStatus | readonly OrderStatus[]> = {
+/**
+ * Transitions that post to the double-entry ledger. `dispute` is deliberately
+ * absent: flagging an escrow moves no money, so it changes custody state and
+ * writes an audit record without a balanced posting to ride along with.
+ */
+export type FinancialTransition = Exclude<
+  PaymentTransition,
+  typeof PaymentTransition.Dispute
+>;
+
+function isFinancial(
+  transition: PaymentTransition,
+): transition is FinancialTransition {
+  return transition !== PaymentTransition.Dispute;
+}
+
+const EXPECTED_STATUS: Record<
+  FinancialTransition,
+  OrderStatus | readonly OrderStatus[]
+> = {
   [PaymentTransition.Create]: OrderStatus.Created,
   [PaymentTransition.Accept]: OrderStatus.Created,
   [PaymentTransition.Deposit]: OrderStatus.Accepted,
   [PaymentTransition.Lock]: OrderStatus.Deposited,
   [PaymentTransition.Confirm]: OrderStatus.Locked,
   [PaymentTransition.Release]: OrderStatus.Confirmed,
-  [PaymentTransition.Refund]: [OrderStatus.Locked, OrderStatus.Confirmed],
+  [PaymentTransition.Refund]: [
+    OrderStatus.Locked,
+    OrderStatus.Confirmed,
+    OrderStatus.Disputed,
+  ],
 };
 
-const NEXT_STATUS: Record<PaymentTransition, OrderStatus> = {
+const NEXT_STATUS: Record<FinancialTransition, OrderStatus> = {
   [PaymentTransition.Create]: OrderStatus.Created,
   [PaymentTransition.Accept]: OrderStatus.Accepted,
   [PaymentTransition.Deposit]: OrderStatus.Deposited,
@@ -52,6 +84,12 @@ const NEXT_STATUS: Record<PaymentTransition, OrderStatus> = {
   [PaymentTransition.Release]: OrderStatus.Released,
   [PaymentTransition.Refund]: OrderStatus.Refunded,
 };
+
+/** Escrow states an order can still be settled or advanced from. */
+const OPEN_ESCROW_STATES: readonly EscrowState[] = [
+  EscrowState.Locked,
+  EscrowState.Disputed,
+];
 
 export interface PaymentActor {
   userId: string;
@@ -102,17 +140,52 @@ export class PaymentService {
     return this.commit(order, null, PaymentTransition.Create, buyerId);
   }
 
+  /**
+   * How each transition reaches the chain in this deployment, so clients can
+   * pick the single-call or the wallet round-trip path without hard-coding a
+   * signing model that changes with `ESCROW_GATEWAY`.
+   */
+  capabilities(): PaymentCapabilitiesResponse {
+    const transitions = Object.values(PaymentTransition);
+    const signingModes: Record<string, ChainSigningMode> = {};
+    const walletSignedTransitions: PaymentTransition[] = [];
+    for (const transition of transitions) {
+      const mode = this.gateway.signingMode(transition);
+      signingModes[transition] = mode;
+      if (mode === ChainSigningMode.Wallet) {
+        walletSignedTransitions.push(transition);
+      }
+    }
+    return {
+      gateway: config.ESCROW_GATEWAY,
+      network: config.STELLAR_NETWORK,
+      networkPassphrase: networkPassphrase(),
+      signingModes,
+      walletSignedTransitions,
+    };
+  }
+
   async transition(
     orderId: string,
     requested: Exclude<PaymentTransition, "create">,
     actor: PaymentActor,
   ): Promise<OrderMutationResponse> {
-    const current = await this.requireOrder(orderId);
-    if (await this.repository.hasUnresolvedMismatch(orderId)) {
+    if (!isFinancial(requested)) {
       throw new ConflictError(
-        "Order is blocked until its ledger-to-chain mismatch is resolved",
+        "A dispute is raised through the prepare/submit endpoints, not as a " +
+          "financial transition",
       );
     }
+    if (this.gateway.signingMode(requested) === ChainSigningMode.Wallet) {
+      throw new ConflictError(
+        `The '${requested}' step must be signed by your wallet. Call ` +
+          `POST /orders/${orderId}/${requested}/prepare, sign the returned ` +
+          "transaction, then submit it.",
+      );
+    }
+
+    const current = await this.requireOrder(orderId);
+    await this.assertNotBlocked(orderId);
     this.authorize(current, requested, actor);
     this.assertState(current, requested);
 
@@ -129,6 +202,139 @@ export class PaymentService {
       await this.recordCompletion(order);
     }
     return result;
+  }
+
+  // ── Wallet-signed transitions (buyer/seller authorized on-chain) ───────────
+
+  /**
+   * Build the unsigned transaction the acting party must sign in their wallet.
+   *
+   * Every authorization and state check runs here, before any chain work, so an
+   * unauthorized caller never causes a contract deploy. For a lock, the
+   * deployed contract id is persisted before returning: if the buyer abandons
+   * the signature, the next attempt reuses that instance rather than leaking a
+   * new one.
+   */
+  async prepareTransition(
+    orderId: string,
+    requested: PaymentTransition,
+    actor: PaymentActor,
+  ): Promise<PreparedTransitionResponse> {
+    if (this.gateway.signingMode(requested) !== ChainSigningMode.Wallet) {
+      throw new ConflictError(
+        `The '${requested}' step does not require a wallet signature here`,
+      );
+    }
+
+    const order = await this.requireOrder(orderId);
+    await this.assertNotBlocked(orderId);
+    this.authorize(order, requested, actor);
+    const escrow = (await this.repository.findEscrow(orderId)) ?? null;
+    this.assertChainPreconditions(order, escrow, requested);
+
+    const prepared = await this.gateway.prepareTransition(
+      this.chainInput(order, escrow, requested, actor.userId),
+    );
+
+    if (requested === PaymentTransition.Lock) {
+      // Custody now exists on-chain but holds nothing until the buyer signs.
+      // The order status stays put: nothing is locked yet.
+      await this.repository.saveCustodyState({
+        order,
+        escrow: escrow
+          ? { ...escrow, contractId: prepared.contractId, updatedAt: nowIso() }
+          : {
+              id: randomUUID(),
+              orderId: order.id,
+              contractId: prepared.contractId,
+              state: EscrowState.Pending,
+              createdAt: nowIso(),
+              updatedAt: nowIso(),
+            },
+      });
+    }
+
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: `payment.${requested}.prepared`,
+      entity: "order",
+      entityId: order.id,
+      metadata: {
+        contractId: prepared.contractId,
+        signerAddress: prepared.signerAddress,
+      },
+    });
+
+    return prepared;
+  }
+
+  /**
+   * Submit a wallet-signed envelope, then record the result.
+   *
+   * The chain call comes first and must settle successfully; only then does the
+   * ledger move. Doing it the other way round would let a rejected transaction
+   * leave the ledger claiming custody that never happened.
+   */
+  async submitSignedTransition(
+    orderId: string,
+    requested: PaymentTransition,
+    actor: PaymentActor,
+    signedXdr: string,
+  ): Promise<OrderMutationResponse | OrderDetailsResponse> {
+    if (this.gateway.signingMode(requested) !== ChainSigningMode.Wallet) {
+      throw new ConflictError(
+        `The '${requested}' step does not require a wallet signature here`,
+      );
+    }
+
+    const current = await this.requireOrder(orderId);
+    await this.assertNotBlocked(orderId);
+    this.authorize(current, requested, actor);
+    const escrow = (await this.repository.findEscrow(orderId)) ?? null;
+    this.assertChainPreconditions(current, escrow, requested);
+
+    const chain = await this.gateway.submitSignedTransition(
+      this.chainInput(current, escrow, requested, actor.userId),
+      signedXdr,
+    );
+
+    if (requested === PaymentTransition.Dispute) {
+      return this.recordDispute(current, escrow, actor);
+    }
+
+    const order: OrderDTO = {
+      ...current,
+      status: NEXT_STATUS[requested as FinancialTransition],
+      updatedAt: nowIso(),
+    };
+    return this.commit(order, escrow, requested as FinancialTransition, actor.userId, {
+      chain,
+    });
+  }
+
+  /**
+   * Record an on-chain dispute. No money moved, so there is no balanced posting
+   * to make — custody state and the audit trail carry it.
+   */
+  private async recordDispute(
+    current: OrderDTO,
+    escrow: EscrowDTO | null,
+    actor: PaymentActor,
+  ): Promise<OrderDetailsResponse> {
+    await this.repository.saveCustodyState({
+      order: { ...current, status: OrderStatus.Disputed, updatedAt: nowIso() },
+      escrow: escrow
+        ? { ...escrow, state: EscrowState.Disputed, updatedAt: nowIso() }
+        : null,
+    });
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: "payment.dispute",
+      entity: "order",
+      entityId: current.id,
+      metadata: { contractId: escrow?.contractId ?? null },
+    });
+    return this.details(current.id, actor.userId);
   }
 
   /** Best-effort positive reputation signal for a completed trade. */
@@ -170,23 +376,33 @@ export class PaymentService {
     }
 
     const current = await this.requireOrder(orderId);
-    if (await this.repository.hasUnresolvedMismatch(orderId)) {
-      throw new ConflictError(
-        "Order is blocked until its ledger-to-chain mismatch is resolved",
-      );
-    }
+    await this.assertNotBlocked(orderId);
     const settleable: readonly OrderStatus[] = [
       OrderStatus.Locked,
       OrderStatus.Confirmed,
+      OrderStatus.Disputed,
     ];
     if (!settleable.includes(current.status)) {
       throw new ConflictError(
         `Cannot settle a dispute for an order in ${current.status} status`,
       );
     }
-    const escrow = (await this.repository.findEscrow(orderId)) ?? null;
-    if (!escrow || escrow.state !== EscrowState.Locked) {
-      throw new ConflictError("Dispute settlement requires a locked escrow");
+    let escrow = (await this.repository.findEscrow(orderId)) ?? null;
+    if (!escrow || !OPEN_ESCROW_STATES.includes(escrow.state)) {
+      throw new ConflictError(
+        "Dispute settlement requires a locked or disputed escrow",
+      );
+    }
+
+    // The contract will only release an escrow the buyer never confirmed once
+    // it is Disputed — arbiter authority alone is not a state the contract
+    // recognises. Escalate first so the settlement the ledger records is one
+    // the chain will actually accept.
+    if (
+      outcome === DisputeResolution.Release &&
+      escrow.state !== EscrowState.Disputed
+    ) {
+      escrow = await this.escalateForArbitration(current, escrow, actor);
     }
 
     const transition =
@@ -232,6 +448,38 @@ export class PaymentService {
     });
   }
 
+  /**
+   * Move a locked escrow into `Disputed` on the arbiter's own authority, so a
+   * deal the buyer never confirmed becomes settleable. The contract accepts the
+   * arbiter as a disputing party for exactly this case; without it, compliance
+   * would be blocked on a signature from the party it is ruling against.
+   */
+  private async escalateForArbitration(
+    order: OrderDTO,
+    escrow: EscrowDTO,
+    actor: PaymentActor,
+  ): Promise<EscrowDTO> {
+    await this.gateway.submitTransition(
+      this.chainInput(order, escrow, PaymentTransition.Dispute, actor.userId, {
+        arbiter: true,
+      }),
+    );
+    const disputed: EscrowDTO = {
+      ...escrow,
+      state: EscrowState.Disputed,
+      updatedAt: nowIso(),
+    };
+    await this.repository.saveCustodyState({ order, escrow: disputed });
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: "payment.dispute.arbiter",
+      entity: "order",
+      entityId: order.id,
+      metadata: { contractId: escrow.contractId },
+    });
+    return disputed;
+  }
+
   async list(userId: string): Promise<OrderDetailsResponse[]> {
     const orders = await this.repository.listOrders(userId);
     return Promise.all(orders.map((order) => this.details(order.id, userId)));
@@ -251,33 +499,110 @@ export class PaymentService {
     };
   }
 
-  private async commit(
+  /** Everything the escrow boundary needs to act on an order. */
+  private chainInput(
     order: OrderDTO,
-    currentEscrow: EscrowDTO | null,
+    escrow: EscrowDTO | null,
     transition: PaymentTransition,
-    actorId: string,
-    options: { arbiter?: boolean; ledger?: LedgerTransactionInput } = {},
-  ): Promise<OrderMutationResponse> {
-    const chain = await this.gateway.submitTransition({
+    actorUserId: string,
+    options: { arbiter?: boolean } = {},
+  ): ChainTransitionInput {
+    return {
       orderId: order.id,
       transition,
       amount: order.amount.amount,
       currency: order.amount.currency,
       buyerId: order.buyerId,
       sellerId: order.sellerId,
-      contractId: currentEscrow?.contractId ?? null,
+      contractId: escrow?.contractId ?? null,
       arbiter: options.arbiter ?? false,
-    });
+      actorUserId,
+    };
+  }
+
+  /**
+   * Custody preconditions for a transition that touches the contract. These
+   * mirror the contract's own guards so a caller gets a clear 409 instead of an
+   * opaque simulation failure — and, for a lock, so we never deploy custody for
+   * an order that already has funded custody.
+   */
+  private assertChainPreconditions(
+    order: OrderDTO,
+    escrow: EscrowDTO | null,
+    transition: PaymentTransition,
+  ): void {
+    if (transition === PaymentTransition.Lock) {
+      this.assertState(order, PaymentTransition.Lock);
+      if (escrow && escrow.state !== EscrowState.Pending) {
+        throw new ConflictError(
+          `Escrow for order ${order.id} is already ${escrow.state}`,
+        );
+      }
+      return;
+    }
+
+    if (!escrow || !escrow.contractId) {
+      throw new ConflictError(
+        `Order ${order.id} has no escrow contract yet; lock it first`,
+      );
+    }
+    if (transition === PaymentTransition.Confirm) {
+      this.assertState(order, PaymentTransition.Confirm);
+      if (escrow.state !== EscrowState.Locked) {
+        throw new ConflictError(
+          `Only a locked escrow can be confirmed (currently ${escrow.state})`,
+        );
+      }
+      return;
+    }
+    if (transition === PaymentTransition.Dispute) {
+      if (escrow.state !== EscrowState.Locked) {
+        throw new ConflictError(
+          `Only a locked escrow can be disputed (currently ${escrow.state})`,
+        );
+      }
+    }
+  }
+
+  private async assertNotBlocked(orderId: string): Promise<void> {
+    if (await this.repository.hasUnresolvedMismatch(orderId)) {
+      throw new ConflictError(
+        "Order is blocked until its ledger-to-chain mismatch is resolved",
+      );
+    }
+  }
+
+  private async commit(
+    order: OrderDTO,
+    currentEscrow: EscrowDTO | null,
+    transition: FinancialTransition,
+    actorId: string,
+    options: {
+      arbiter?: boolean;
+      ledger?: LedgerTransactionInput;
+      /** Receipt from an already-submitted wallet-signed transaction. */
+      chain?: ChainReceipt;
+    } = {},
+  ): Promise<OrderMutationResponse> {
+    const chain =
+      options.chain ??
+      (await this.gateway.submitTransition(
+        this.chainInput(order, currentEscrow, transition, actorId, {
+          arbiter: options.arbiter,
+        }),
+      ));
 
     let escrow = currentEscrow;
     if (transition === PaymentTransition.Lock) {
-      const now = new Date().toISOString();
+      const now = nowIso();
       escrow = {
-        id: randomUUID(),
+        // Reuse the record created when custody was deployed, so the contract
+        // id and its history survive the lock rather than being replaced.
+        id: currentEscrow?.id ?? randomUUID(),
         orderId: order.id,
-        contractId: chain.contractId,
+        contractId: chain.contractId ?? currentEscrow?.contractId ?? null,
         state: EscrowState.Locked,
-        createdAt: now,
+        createdAt: currentEscrow?.createdAt ?? now,
         updatedAt: now,
       };
     } else if (escrow && transition === PaymentTransition.Release) {
@@ -400,7 +725,7 @@ export class PaymentService {
 
   private ledgerPosting(
     order: OrderDTO,
-    transition: PaymentTransition,
+    transition: FinancialTransition,
   ): LedgerTransactionInput {
     const amount = order.amount.amount;
     const currency = order.amount.currency;
@@ -484,9 +809,19 @@ export class PaymentService {
     ) {
       throw new ForbiddenError("Refund requires an authorized arbiter");
     }
+    // Either counterparty may dispute their own deal — and only their own.
+    // The contract enforces the same rule, so letting a stranger past here
+    // would only produce a failed simulation after they had already signed.
+    if (
+      transition === PaymentTransition.Dispute &&
+      actor.userId !== order.buyerId &&
+      actor.userId !== order.sellerId
+    ) {
+      throw new ForbiddenError("Only a party to this order may dispute it");
+    }
   }
 
-  private assertState(order: OrderDTO, transition: PaymentTransition): void {
+  private assertState(order: OrderDTO, transition: FinancialTransition): void {
     const expected = EXPECTED_STATUS[transition];
     const allowed = Array.isArray(expected) ? expected : [expected];
     if (!allowed.includes(order.status)) {
@@ -501,4 +836,8 @@ export class PaymentService {
     if (!order) throw new NotFoundError("Order not found");
     return order;
   }
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
 }

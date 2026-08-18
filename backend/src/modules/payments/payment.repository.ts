@@ -21,10 +21,26 @@ export interface FinancialTransitionCommit {
   chain: ChainReceipt;
 }
 
+/** A custody/status change with no financial effect. */
+export interface CustodyStateCommit {
+  order: OrderDTO;
+  escrow: EscrowDTO | null;
+}
+
 export interface PaymentRepository {
   findOrder(orderId: string): Promise<OrderDTO | undefined>;
   listOrders(userId: string): Promise<OrderDTO[]>;
   findEscrow(orderId: string): Promise<EscrowDTO | undefined>;
+  /**
+   * Persist an order/escrow state change that moves no money.
+   *
+   * Two escrow changes have no balanced ledger posting to ride along with:
+   * recording the deployed contract id before the buyer signs the lock, and
+   * flagging an escrow disputed. Both must still be durable and atomic —
+   * losing the contract id would leak a fresh contract on every retry, and a
+   * half-applied dispute would leave the order and its custody disagreeing.
+   */
+  saveCustodyState(input: CustodyStateCommit): Promise<void>;
   listTransitions(orderId?: string): Promise<PaymentTransitionDTO[]>;
   commitTransition(input: FinancialTransitionCommit): Promise<PaymentTransitionDTO>;
   hasUnresolvedMismatch(orderId: string): Promise<boolean>;
@@ -56,6 +72,11 @@ export class InMemoryPaymentRepository implements PaymentRepository {
 
   async findEscrow(orderId: string): Promise<EscrowDTO | undefined> {
     return this.escrows.get(orderId);
+  }
+
+  async saveCustodyState(input: CustodyStateCommit): Promise<void> {
+    this.orders.set(input.order.id, input.order);
+    if (input.escrow) this.escrows.set(input.order.id, input.escrow);
   }
 
   async listTransitions(orderId?: string): Promise<PaymentTransitionDTO[]> {

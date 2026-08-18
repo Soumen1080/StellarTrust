@@ -82,7 +82,21 @@ export const paymentTransitionSchema = z.enum([
   PaymentTransition.Confirm,
   PaymentTransition.Release,
   PaymentTransition.Refund,
+  PaymentTransition.Dispute,
 ]);
+
+/**
+ * A signed transaction envelope handed back for submission. Bounded because an
+ * escrow envelope is a few kB at most and the body is parsed before any chain
+ * call — an unbounded string here is an easy memory-pressure vector.
+ */
+export const submitSignedTransitionInputSchema = z.object({
+  signedXdr: z
+    .string()
+    .min(1, "signedXdr is required")
+    .max(64_000, "signedXdr is too large to be a transaction envelope")
+    .regex(/^[A-Za-z0-9+/=]+$/, "signedXdr must be base64"),
+});
 
 // ── Phase 1: Identity & Wallet ────────────────────────────────────────────────
 

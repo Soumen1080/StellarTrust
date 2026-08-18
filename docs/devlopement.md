@@ -9,64 +9,121 @@
 > **Read this together with:** `Memory.md` (project memory), `Rules.md`
 > (golden rules), `Phases.md` (roadmap), `Architecture.md` (target design).
 >
-> **Last updated:** 2026-07-22
-> **Audit basis:** full read of `frontend/`, `backend/`, `ai/`, `contracts/`,
-> `shared/`, `infra/`, root config, and all root docs.
+> **Last updated:** 2026-08-18
+> **Audit basis:** re-verified against the repository tree, `package.json`
+> files, and a full local run of `cargo test`, `vitest run`, `tsc`, `eslint`,
+> and `next build` on this date. The 2026-07-22 audit that opened this file is
+> preserved below as history; **most of its blockers are now resolved** and each
+> is marked with what closed it.
 
 ---
 
 ## 0. TL;DR — Where we actually are
 
-| Layer | Code exists | Builds/tests | Works in a live demo | Blocker |
+| Layer | Code exists | Builds/tests | Verified against a real network | Blocker |
 |---|---|---|---|---|
-| Frontend (Next.js) | ✅ | ✅ builds | ⚠️ loads, but every real action fails | depends on backend auth |
-| Backend (Express) | ✅ | ✅ 29 tests pass | ❌ **500 on first auth call** | signer + persistence |
-| Auth (SEP-10) | ✅ | ✅ unit | ❌ **HTTP 500 in prod** | no KMS signer configured |
-| Persistence (DB) | ❌ interfaces only | n/a | ❌ in-memory, resets every request | Postgres adapters not written |
-| Escrow contract | ✅ Rust code | ⚠️ CI-only | ❌ not deployed | testnet deploy not done |
-| AI service | ✅ FastAPI | ⚠️ CI-only | ❌ not deployed | not hosted, not wired |
+| Frontend (Next.js) | ✅ | ✅ typecheck + lint + build, 10 app routes | ⚠️ needs a reachable backend | — |
+| Backend (Express) | ✅ | ✅ **102 tests pass**, 13 files | ⚠️ | Redis; KMS for real money |
+| Auth (SEP-10) | ✅ | ✅ | ⚠️ works via `DEMO_MODE` testnet signer | `KmsSigner` unimplemented |
+| Persistence (DB) | ✅ 6 Postgres repos | ⚠️ code only | ❌ migrations never executed | provision + run `0001`–`0008` |
+| Escrow contract | ✅ Rust, on-chain path wired | ✅ **9 tests pass locally** | ❌ not deployed | funded testnet identity |
+| RWA contract | ✅ Rust + real gateway | ✅ **18 tests pass locally** | ❌ not deployed | funded testnet identity + 3 gaps (§2 I) |
+| AI service | ✅ FastAPI | ⚠️ CI-only (pytest blocked here) | ❌ not deployed | not hosted; engines are placeholders |
 
-**One-line status:** The code is well-architected and passes local checks, but
-**nothing works end-to-end in a deployed environment** because (1) wallet auth
-needs a signing key that is not configured, (2) all data lives in memory and
-disappears between serverless invocations, and (3) the contract and AI service
-are not deployed.
+**One-line status:** The code now has a **complete, tested path from the UI to
+the Soroban contracts**, and the money-critical repositories are Postgres-backed.
+Nothing has yet been executed against a real Stellar network or a real database,
+so every on-chain and persistence claim is *implemented and unit-covered*, not
+*proven*.
 
-**Current decision (this phase):** Get **frontend + backend working properly
-first**. Temporarily **stub out the Soroban contract and the AI engine**, and
-**auto-verify KYC after 10 seconds** so the product flow can be exercised
-smoothly during development. Contract deployment and real AI come back later.
-
----
-
-## 1. Current Build Strategy (this phase)
-
-We are deliberately narrowing scope to unblock development:
-
-1. **Frontend + Backend are the priority.** Make the full user journey work in a
-   deployed environment: connect → authenticate → KYC → create order → escrow
-   lifecycle → dashboard.
-2. **Smart-contract deployment is deferred.** Keep the deterministic escrow
-   gateway as the runtime path for now (it already mirrors the contract state
-   machine). Real Soroban deployment returns in a later step.
-3. **AI engine is deferred / stubbed.** The KYC risk client and dispute engine
-   fall back to a deterministic local decision. No external AI service call is
-   required to complete a flow.
-4. **KYC auto-verifies after ~10 seconds** (temporary dev shortcut). When a user
-   submits verification, the system shows a short "verifying" state and then
-   marks the profile **Verified** automatically, so downstream flows (escrow,
-   dashboard) are reachable without a manual compliance step. See §6 for the
-   exact design and the guardrails that keep this out of production.
-
-> These are **development shortcuts**, tracked here so they are never mistaken
-> for production behavior. Each has a matching "must reverse before production"
-> entry in §7.
+**What changed since the original audit:** the three stacked structural gaps
+that made the demo non-functional (auth can't sign → state doesn't persist →
+chain isn't reachable) have each been addressed in code. What is left is
+provisioning, not architecture.
 
 ---
 
-## 2. Issue Register (everything found in the audit)
+## 1. Current Build Strategy
+
+1. **Ship the operational prerequisites next, not more features.** The highest-
+   value work is now: run the migrations against a real Postgres, fund a testnet
+   identity, deploy both contracts, and set `ESCROW_WASM_HASH`,
+   `RWA_WASM_HASH`, `STELLAR_TOKEN_CONTRACTS`.
+2. **The chain path is real but unproven.** `ESCROW_GATEWAY=soroban-rpc` and
+   `RWA_GATEWAY=soroban-rpc` are fully implemented. Keep `deterministic` as the
+   local/test default — it now mirrors the contract's rules exactly, including
+   the ones it used to get wrong.
+3. **AI engine remains stubbed.** The KYC risk client and dispute engine fall
+   back to a deterministic local decision; no external AI call is required to
+   complete a flow.
+4. **KYC auto-verifies after ~10 seconds** in development (§6), flag-gated and
+   impossible in production.
+
+> Items 3–4 are **development shortcuts**, tracked in §7 so they are never
+> mistaken for production behavior.
+
+---
+
+## 2. Issue Register
 
 Severity: 🔴 blocker · 🟠 major · 🟡 minor / hygiene
+Status: ✅ resolved · 🔧 partially resolved · ⬜ still open
+
+### Status summary (2026-08-18)
+
+| ID | Issue | Status |
+|---|---|---|
+| A1 | Wallet auth 500 in production (no signer) | 🔧 `DemoEnvSigner` unblocks testnet; `KmsSigner` still throws |
+| A2 | Everything in-memory | 🔧 identity/auth/audit/payments/disputes/rwa on Postgres; kyc/reputation/settlement/idempotency still in-memory |
+| A3 | Serverless host vs long-lived scheduler | ⬜ open — pick a persistent host |
+| A4 | Two conflicting serverless entrypoints | ✅ only `backend/api/index.ts` remains; no root `vercel.json` |
+| A5 | Hardcoded env values in source | 🔧 `FRONTEND_ORIGINS` still defaults to a specific Vercel URL; `frontend/src/lib/api.ts` still defaults to a Render URL |
+| B1 | Exposed Supabase secret | ⬜ **open — must still be rotated** |
+| B2 | No real signing boundary | ⬜ open — `KmsSigner` unimplemented |
+| B3 | Single global rate limiter | ⬜ open |
+| C1 | Postgres repositories unimplemented | 🔧 six exist; kyc/reputation/settlement do not |
+| C2 | No Redis idempotency / job state | ⬜ open — Golden Rule #4 is not enforced across instances |
+| C3 | Migrations never validated | ⬜ open — `0001`–`0008` have still never been executed |
+| D1 | Contract not deployed to testnet | ⬜ open — needs a funded identity |
+| D2 | No `SorobanRpcEscrowGateway` | ✅ implemented, with prepare/sign/submit and read-back |
+| D3 | Contract tests Windows-blocked | ✅ **wrong** — `cargo test` runs here; all 27 pass |
+| E1 | AI service not deployed/wired | ⬜ open |
+| E2 | Engines are placeholder heuristics | ⬜ open (acceptable for now — keep them labeled) |
+| F1 | Frontend can't complete a flow | 🔧 unblocked locally and on a `DEMO_MODE` testnet deploy |
+| F2 | Very dense single-line JSX | ⬜ open — `KycOnboarding.tsx`, `EscrowDashboard.tsx` |
+| F3 | Session in `sessionStorage` only | ✅ intentional (D27) |
+| G1 | Scratch file `awsedrfgyhuji.md` | ✅ deleted |
+| G2 | Docs overstate completeness | ✅ addressed by the 2026-08-18 docs pass |
+| G3 | `frontend/` outside the root workspace | ✅ intentional (D9) |
+| G4 | Empty dirs / duplicate entrypoints | ✅ `backend/scripts/` and the duplicate entrypoint are gone |
+| H1 | Golden rules unenforceable at runtime | 🔧 see C2 — idempotency is the remaining hole |
+| **I** | **New: three RWA correctness gaps** | ⬜ open — see below |
+
+### I. RWA gaps (found 2026-08-18, not in the original audit)
+
+- 🔴 **I1 — RWA payouts write no ledger entries.**
+  `RwaService.distributePayout` builds a balanced `LedgerTransactionInput` and
+  discards it (`void this.createPayoutLedger(...)` — the method is synchronous
+  and its return value is dropped), then records a `ledgerTransactionId` from
+  `randomUUID()` that references no row. This is a direct violation of Golden
+  Rule #1 for every RWA payout.
+
+- 🟠 **I2 — The contract's double-payout guard is inert.**
+  `markDistributed` and `getPayoutShares` are implemented on the gateway but
+  have **zero** non-test callers. Shares are computed off-chain and the
+  contract's `distributed` flag is never set.
+
+- 🟠 **I3 — DB user ids are passed where the contract expects an `Address`.**
+  `issuerAddress: actor.userId` and `from: tokenization.issuerUserId`. The
+  Soroban gateway silently substitutes the signer's address, so the
+  deterministic adapter keys balances by UUID while the real one keys by `G…`.
+  `EscrowAddressResolver` already solves this for escrow and should be reused.
+
+---
+
+## 2b. Original audit detail (2026-07-22)
+
+Kept for provenance. Read it with the status table above.
 
 ### A. Deployment & runtime architecture
 
@@ -284,10 +341,13 @@ restart (because it's in Postgres/Redis now).
 
 ### Stage 3 — Real signing, real chain
 
-- Implement `KmsSigner` (AWS/GCP KMS) and retire the demo signer (B2/A1).
-- Implement `SorobanRpcEscrowGateway`; deploy the escrow contract to testnet;
-  store the contract ID in validated config; run the real lock→release flow
-  (D1/D2).
+- ✅ `SorobanRpcEscrowGateway` implemented (2026-08-18), including the
+  prepare → wallet sign → submit round trip the contract's `require_auth()`
+  demands, and read-back verification before any ledger posting.
+- ⬜ Implement `KmsSigner` (AWS/GCP KMS) and retire the demo signer (B2/A1).
+- ⬜ Deploy the escrow contract to testnet and run the real lock→release flow
+  (D1). Note the config takes a **WASM hash**, not a contract id: the backend
+  deploys one custody instance per order.
 
 ### Stage 4 — Real AI + disputes
 
@@ -342,27 +402,47 @@ decision engine → human review) is already implemented and takes over.
 
 ## 7. Development shortcuts currently in effect (must reverse before production)
 
-| # | Shortcut | Reverse by | Tracked issue |
-|---|---|---|---|
-| S1 | Deterministic escrow gateway instead of real Soroban | Implement `SorobanRpcEscrowGateway`, deploy contract | D1/D2 |
-| S2 | AI risk/dispute call skipped (deterministic fallback) | Deploy AI service, wire client | E1 |
-| S3 | KYC auto-verify after 10s | `KYC_AUTO_APPROVE=false`; real provider+AI+human path | §6 |
-| S4 | Testnet demo signer (secret in host secret manager) instead of KMS | Implement `KmsSigner`, remove demo signer | A1/B2 |
-| S5 | (until Stage 1 done) in-memory stores | Postgres/Redis repositories | A2/C1/C2 |
+| # | Shortcut | Status | Reverse by | Issue |
+|---|---|---|---|---|
+| S1 | Deterministic escrow gateway is the default | 🔧 the real gateway now exists and is tested; `deterministic` stays the local/test default | Deploy the contract, set `ESCROW_GATEWAY=soroban-rpc` + `ESCROW_WASM_HASH` + `STELLAR_TOKEN_CONTRACTS` | D1 |
+| S2 | AI risk/dispute call skipped (deterministic fallback) | ⬜ in effect | Deploy AI service, wire client | E1 |
+| S3 | KYC auto-verify after 10s | ⬜ in effect | `KYC_AUTO_APPROVE=false` | §6 |
+| S4 | Testnet demo signer instead of KMS | ⬜ in effect | Implement `KmsSigner`, remove the demo signer | A1/B2 |
+| S5 | In-memory stores | 🔧 six repos on Postgres; kyc/reputation/settlement and **all idempotency stores** remain in memory | Write the rest; Redis for idempotency | A2/C1/C2 |
+| S6 | OpenAI configured but bypassed by auto-approve | ⬜ in effect | Disable S3 | §11 |
+
+> S5's idempotency half is the one with teeth: `InMemoryIdempotencyStore` cannot
+> dedupe across processes, so a multi-instance deployment does not actually
+> satisfy Golden Rule #4. Until Redis lands, run a **single** instance.
 
 ---
 
 ## 8. Immediate next actions (ordered)
 
-1. Delete `awsedrfgyhuji.md` and resolve the duplicate backend entrypoint (A4/G1).
-2. Move hardcoded origins/API URLs to env vars (A5).
-3. Decide backend host (persistent, not serverless) and document it in `infra/`.
-4. Provision Postgres + Redis; implement real repositories; validate migrations.
-5. Add the testnet demo signer behind `DEMO_MODE` + testnet guard (unblock auth).
-6. Implement KYC auto-verify (§6) with config flags + polling frontend.
-7. End-to-end test the full flow on the deployed environment; confirm data
-   survives a restart.
-8. Update `Memory.md` (Current Focus + Changelog) to match this reality.
+Code, in dependency order:
+
+1. **Fix the three RWA gaps (I1–I3).** I1 is a Golden Rule #1 violation and
+   should not survive another release.
+2. **Redis-backed idempotency store** (C2) — this is what makes the golden rule
+   true rather than aspirational in a real deployment.
+3. **Postgres repositories for kyc, reputation, settlement** (C1 remainder), and
+   a forward-only settlement schema.
+4. **Move the remaining hardcoded origins/URLs to env** (A5).
+5. **Implement `KmsSigner`** (B2) — the gate on any real-money path.
+
+Operational, and blocking all on-chain verification:
+
+6. **Provision Postgres and run migrations `0001`–`0008`** (C3). Every
+   persistence claim is unverified until this happens.
+7. **Fund a Stellar testnet identity**, run
+   `contracts/scripts/deploy-testnet.ps1`, and set `ESCROW_WASM_HASH` /
+   `RWA_WASM_HASH`.
+8. **Bind a token per currency** (`STELLAR_TOKEN_CONTRACTS`) and give the test
+   buyer a balance + trustline in it — `initialize` transfers *from the buyer*,
+   so without this the first lock fails no matter how correct the code is.
+9. **Choose a persistent backend host** (A3) so the reconciliation scheduler
+   actually runs. Document it in `infra/`.
+10. **Rotate the exposed Supabase secret** (B1).
 
 ---
 
@@ -641,3 +721,129 @@ User can proceed with orders/escrow
 | Date | Change |
 |---|---|
 | 2026-07-22 | **§11 OpenAI Integration:** Added OpenAI API key to backend configuration with `KYC_RISK_ENGINE=openai`. Currently bypassed by `KYC_AUTO_APPROVE=true` for smooth development (all KYC requests auto-verify after 10s). OpenAI integration is ready and can be activated by disabling auto-approve. Documented production transition plan and safety guardrails. Added new shortcut S6 to track this state. |
+
+
+---
+
+## 12. Implementation Log — On-chain escrow (2026-08-18)
+
+Closes **D2** and the structural half of **A1/A2**. This is the batch that made
+the escrow contract reachable from the product for the first time.
+
+### 12.1 The problem
+
+The escrow contract was written, tested, and completely unreachable:
+
+- `SorobanRpcEscrowGateway.submitTransition()` threw for every transition.
+- `ESCROW_WASM_HASH` was declared in config and read by **no file**.
+- Nothing mapped an internal user id to a Stellar address.
+- `StrKey` was never imported anywhere in the backend — a DB UUID or an empty
+  string could be passed straight into a Soroban `Address` argument.
+- There was no way for a buyer to sign anything, even though the frontend
+  already had a wallet kit (used for SEP-10 only).
+
+The root cause of the last point is structural: the contract gates
+`initialize`, `confirm_delivery`, and `dispute` with the **acting party's**
+`require_auth()`. The server cannot produce those signatures — no amount of
+backend work fixes that. It needs a round trip.
+
+### 12.2 What changed
+
+**Contract (`contracts/escrow/src/lib.rs`)**
+- `initialize` takes and stores `order_ref`, so reconciliation can prove a
+  contract id really is a given order's custody rather than trusting the
+  server-side mapping.
+- `dispute` now also accepts the **arbiter** as a disputing party, with a new
+  `Error::Unauthorized` for strangers. Rationale: `release` accepts only
+  `Disputed` or `delivery_confirmed`, so without this the arbiter's settlement
+  path was unreachable on-chain and compliance was blocked on a signature from
+  the party it was ruling against.
+- 9 tests pass (`cargo test --package escrow`), including the arbiter path and a
+  stranger-rejection case.
+
+**Signing model**
+- `lock` / `confirm` / `dispute`: `POST …/{step}/prepare` returns an unsigned,
+  simulated XDR built with the acting party's account as the transaction source;
+  the wallet signs; `POST …/{step}/submit` submits it. Source-account
+  credentials satisfy `require_auth()` with a single envelope signature —
+  asserted by `toUnsignedTransaction()`, which refuses to hand back a
+  transaction that would need signatures from other addresses.
+- `release` / `refund`: one server-signed call as the arbiter.
+- `GET /api/payments/capabilities` publishes the split.
+
+**New boundaries**
+- `modules/stellar/address.ts` — StrKey validation with named-field 400s.
+- `modules/stellar/asset.ts` — integer-only minor-units ↔ token-amount
+  conversion, per-currency token bindings, refuses to truncate in either
+  direction.
+- `modules/escrow/escrow.addresses.ts` — user id → SEP-10-proven wallet.
+- `IdentityRepository.findPrimaryWallet()` (in-memory + Postgres).
+
+**Correctness**
+- Every submission reads the contract back and verifies state **and**
+  `order_ref` before the ledger posts.
+- `getEscrowSnapshot()` distinguishes `result.isErr()` (the contract answering
+  "not initialized") from a thrown error (RPC down). Conflating them would make
+  an outage look like missing custody and raise false reconciliation mismatches.
+- Reconciliation now asserts on-chain custody state against the books, not just
+  that a transaction hash exists.
+
+**Divergence fixed**
+The deterministic adapter used to allow `arbiter: true` to release a locked,
+unconfirmed escrow — which the real contract rejects with `InvalidState`. Tests
+passing therefore proved nothing about deployment. The adapter now mirrors the
+contract, `settleDisputedOrder` escalates to `Disputed` first, and a regression
+test pins the old behaviour as a failure.
+
+**Schema**
+`EscrowState.Pending` (custody deployed, buyer has not signed) and
+`PaymentTransition.Dispute`, via migration `0008`. Persisting the contract id at
+prepare-time means an abandoned signature costs one idle contract instead of
+leaking a fresh one per retry. A dispute writes custody state + audit and **no**
+ledger entries — no money moves.
+
+**Config**
+`superRefine` now fails the boot when `ESCROW_GATEWAY=soroban-rpc` has no WASM
+hash or no token binding. The comments had claimed this for months; nothing
+checked it, so the failure surfaced mid-payment instead of at startup.
+
+**Frontend**
+`features/escrow/useEscrowOrders.ts` drives prepare → sign → submit with honest
+per-phase status (*Preparing → Confirm in your wallet → Submitting to Stellar*),
+polls every 12s while orders are in flight, pauses on a hidden tab, detects
+wallet cancellation, and re-reads after an error because the step may have
+landed on-chain even if the response did not arrive.
+
+**Tooling**
+`contracts/scripts/deploy-testnet.ps1` ran `contract deploy` (which emits a
+contract *id*) when both gateways need the WASM *hash*. It now runs
+`contract upload` for both contracts and prints the env lines.
+
+### 12.3 Verification
+
+| Check | Before | After |
+|---|---|---|
+| `cargo test` | 6 escrow tests | **9 escrow + 18 rwa_token = 27 pass** |
+| `vitest run` | 16 pass / 9 of 11 files erroring | **102 pass / 13 files** |
+| backend typecheck + eslint | clean | clean |
+| frontend typecheck + eslint + build | clean | clean, 10 app routes |
+
+The test-count jump is mostly a fix, not new coverage: 9 of 11 files were
+failing at import because a placeholder `AUTH_DEMO_WALLET` in the local `.env`
+failed config validation. Blank env vars now mean "unset" (`optionalEnv`) and
+`vitest.config.ts` clears demo/chain vars — extending the isolation that file
+already intended for `KYC_AUTO_APPROVE`.
+
+### 12.4 Still not verified
+
+Nothing here has run against a real Stellar network or a real Postgres. The
+first live `initialize` is where SDK-level surprises would surface, and it needs
+a funded identity, a deployed contract, a token binding, and a buyer holding
+that token. See §8.
+
+### 12.5 Changelog
+
+| Date | Change |
+|---|---|
+| 2026-08-18 | **§12 On-chain escrow wired end to end.** Contract `order_ref` + arbiter dispute; `SorobanRpcEscrowGateway` with prepare/sign/submit and read-back; StrKey + amount-conversion + address-resolution boundaries; deterministic adapter aligned with the contract (regression-tested); `EscrowState.Pending` + `PaymentTransition.Dispute` + migration `0008`; config self-enforcement; wallet-signing frontend with live refresh; deploy script fixed to upload WASM hashes. 27 contract tests, 102 backend tests, frontend build all green. |
+| 2026-08-18 | **Docs accuracy pass.** Audited all seven `docs/` files against the repo. `DESIGN.md` verified valid. Corrected `Architecture.md`, `Rules.md`, `Phases.md`, `Memory.md`, `PRD.md`, and rewrote this file's TL;DR, issue register, shortcuts, and next actions — most original blockers are resolved, and three new RWA gaps (I1–I3) were found and recorded. |

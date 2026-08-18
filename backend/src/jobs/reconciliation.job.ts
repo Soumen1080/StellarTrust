@@ -2,15 +2,26 @@ import { randomUUID } from "node:crypto";
 import {
   ChainTxStatus,
   ReconciliationStatus,
+  type EscrowState,
+  type PaymentTransitionDTO,
   type ReconciliationMismatchDTO,
   type ReconciliationReportDTO,
 } from "@stellartrust/shared";
 import { logger } from "../lib/logger.js";
 import type { AlertSink } from "../lib/alerts.js";
 import type { MetricsRegistry } from "../lib/metrics.js";
-import type { EscrowGateway } from "../modules/escrow/escrow.gateway.js";
+import type {
+  EscrowGateway,
+  EscrowSnapshot,
+} from "../modules/escrow/escrow.gateway.js";
 import { isBalanced } from "../modules/ledger/ledger.balance.js";
 import type { PaymentRepository } from "../modules/payments/payment.repository.js";
+
+/** What the books say about custody, next to what the chain says. */
+interface CustodyComparison {
+  recorded: EscrowState | undefined;
+  onChain: EscrowSnapshot | undefined;
+}
 
 export class ReconciliationJob {
   private timer: NodeJS.Timeout | undefined;
@@ -32,24 +43,15 @@ export class ReconciliationJob {
   async run(): Promise<ReconciliationReportDTO> {
     const transitions = await this.repository.listTransitions();
     const mismatches: ReconciliationMismatchDTO[] = [];
+    // One custody read per order, not per transition: an order's escrow state
+    // is the same fact however many transitions point at it, and each read is
+    // a network round trip against the real gateway.
+    const custody = new Map<string, CustodyComparison>();
 
     for (const transition of transitions) {
-      const observed = transition.stellarTransaction.hash
-        ? await this.gateway.getTransaction(transition.stellarTransaction.hash)
-        : undefined;
-      let reason: string | undefined;
-      if (!isBalanced(transition.ledgerTransaction.entries)) {
-        reason = "ledger transaction is not balanced";
-      } else if (!observed) {
-        reason = "chain transaction was not found";
-      } else if (observed.status !== ChainTxStatus.Success) {
-        reason = `chain transaction status is ${observed.status}`;
-      } else if (
-        observed.orderId !== transition.orderId ||
-        observed.transition !== transition.transition
-      ) {
-        reason = "chain transaction metadata does not match the ledger transition";
-      }
+      const reason =
+        (await this.checkLedgerAndChain(transition)) ??
+        (await this.checkCustody(transition, custody));
 
       if (reason) {
         mismatches.push({
@@ -96,6 +98,76 @@ export class ReconciliationJob {
     });
     this.lastUnresolvedCount = report.unresolved;
     return report;
+  }
+
+  /**
+   * The ledger transaction is balanced and its chain transaction really
+   * succeeded. `orderId`/`transition` attribution is only compared when the
+   * adapter supplies it — a public ledger carries no record of our internal
+   * ids, so demanding it there would flag every healthy on-chain transition.
+   */
+  private async checkLedgerAndChain(
+    transition: PaymentTransitionDTO,
+  ): Promise<string | undefined> {
+    if (!isBalanced(transition.ledgerTransaction.entries)) {
+      return "ledger transaction is not balanced";
+    }
+    const observed = transition.stellarTransaction.hash
+      ? await this.gateway.getTransaction(transition.stellarTransaction.hash)
+      : undefined;
+    if (!observed) return "chain transaction was not found";
+    if (observed.status !== ChainTxStatus.Success) {
+      return `chain transaction status is ${observed.status}`;
+    }
+    if (
+      (observed.orderId !== undefined &&
+        observed.orderId !== transition.orderId) ||
+      (observed.transition !== undefined &&
+        observed.transition !== transition.transition)
+    ) {
+      return "chain transaction metadata does not match the ledger transition";
+    }
+    return undefined;
+  }
+
+  /**
+   * The escrow contract the ledger points at really is this order's custody,
+   * and really is in the state the ledger claims.
+   *
+   * This is the check that has teeth against a live chain: transaction hashes
+   * only prove something happened, whereas custody state proves the funds are
+   * where the books say they are.
+   */
+  private async checkCustody(
+    transition: PaymentTransitionDTO,
+    cache: Map<string, CustodyComparison>,
+  ): Promise<string | undefined> {
+    let pair = cache.get(transition.orderId);
+    if (!pair) {
+      const escrow = await this.repository.findEscrow(transition.orderId);
+      pair = {
+        recorded: escrow?.state,
+        onChain: escrow?.contractId
+          ? await this.gateway.getEscrowSnapshot(escrow.contractId)
+          : undefined,
+      };
+      cache.set(transition.orderId, pair);
+    }
+
+    // No escrow, or a contract the gateway cannot see: the transaction-level
+    // check above already covers whether anything is wrong.
+    if (!pair.onChain || !pair.recorded) return undefined;
+
+    if (
+      pair.onChain.orderId !== null &&
+      pair.onChain.orderId !== transition.orderId
+    ) {
+      return `escrow contract belongs to order ${pair.onChain.orderId}`;
+    }
+    if (pair.onChain.state !== pair.recorded) {
+      return `escrow is ${pair.onChain.state} on-chain but ${pair.recorded} in the ledger`;
+    }
+    return undefined;
   }
 
   start(): void {

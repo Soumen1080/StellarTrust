@@ -146,6 +146,21 @@ export class PgIdentityRepository implements IdentityRepository {
     }
   }
 
+  async findPrimaryWallet(userId: string): Promise<WalletRef | undefined> {
+    // Oldest wallet wins: that is the SEP-10 key the identity was created from,
+    // so the mapping stays stable if a user later links additional wallets.
+    const { rows } = await this.pool.query<WalletRow>(
+      `select id, user_id, stellar_public_key, custody_type
+         from wallets
+        where user_id = $1
+        order by created_at asc, id asc
+        limit 1`,
+      [userId],
+    );
+    const row = rows[0];
+    return row ? this.mapWallet(row) : undefined;
+  }
+
   private async findByWallet(stellarPublicKey: string): Promise<
     | {
         user: UserProfile;

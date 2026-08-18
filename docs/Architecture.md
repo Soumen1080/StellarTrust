@@ -1,7 +1,11 @@
 # StellarTrust — Architecture
 
 > **Status:** Living document. Update on any structural, stack, or data-model change.
-> **Last updated:** 2026-07-20
+> **Last updated:** 2026-08-18
+> **Verified against:** the repository tree, `package.json` files, and
+> `infra/supabase/migrations/` as of this date. Sections 3–6 describe what is
+> **actually built**, not the target design; anything not yet built is marked
+> *planned*.
 
 ---
 
@@ -99,22 +103,51 @@ RWA (opt-in, separate module)
 │ (Sumsub/…)  │  │ path payments · AMM pools  │  │ dispute recommendation (ADVISORY ONLY)   │
 └─────────────┘  │ Soroban escrow · issuance  │  └──────────────────────────────────────────┘
 ┌─────────────┐  │ Anchors (SEP-31/24/6/10/12)│  ┌──────────────────────────────────────────┐
-│ KMS / HSM   │◄─┤                            │  │ Redis + BullMQ (jobs, reconciliation,    │
-│ (key sign)  │  └────────────────────────────┘  │ webhook processing, notifications)       │
+│ KMS / HSM   │◄─┤                            │  │ In-process scheduler (reconciliation)    │
+│ *planned*   │  └────────────────────────────┘  │ Redis + BullMQ are *planned*, not built  │
 └─────────────┘                                   └──────────────────────────────────────────┘
 ```
 
 **Key principles**
 - The blockchain is **not** the accounting system. The **double-entry ledger** in
   Postgres is the system of record; a reconciliation job asserts ledger ↔ chain.
-- Phase 2 models each lifecycle mutation as one financial transition linking the
-  order state, balanced ledger transaction, Stellar transaction record, actor,
-  and audit event. Reconciliation mismatches block subsequent order mutations.
-- Local/test uses `DeterministicEscrowGateway`; staging/production must inject a
-  KMS/HSM-backed Soroban RPC adapter and persistent Postgres/Redis repositories.
+- Every lifecycle mutation is one financial transition linking the order state,
+  balanced ledger transaction, Stellar transaction record, actor, and audit
+  event. Reconciliation mismatches block subsequent order mutations.
+- Every external system sits behind an adapter with **both** a deterministic
+  local implementation and a real one, selected by config and refused outside
+  development (`ESCROW_GATEWAY`, `RWA_GATEWAY`, `ANCHOR_GATEWAY`,
+  `LIQUIDITY_GATEWAY`, `SIGNER_PROVIDER`, `KYC_RISK_ENGINE`).
 - AI is **advisory**; humans gate money movement above thresholds.
-- All secret keys live in **KMS/HSM**, never in DB or env.
+- All signing goes through the `Signer` boundary. KMS/HSM is the production
+  target; today only a local stub and a testnet demo signer are implemented.
 - RWA is a peer module, not part of the escrow happy path.
+
+### Who signs what (escrow)
+
+The contract decides this, not the backend. `initialize`, `confirm_delivery`,
+and `dispute` call the **acting party's** `require_auth()`, so the server
+physically cannot sign them; `release` and `refund` call
+`arbiter.require_auth()`, and the arbiter is the server.
+
+```
+lock · confirm · dispute                    release · refund
+────────────────────────                    ────────────────
+POST …/{step}/prepare  → unsigned XDR       POST …/{step}
+   wallet signs in the browser                 server signs as arbiter
+POST …/{step}/submit   → server submits,       submits, reads contract back
+   reads the contract back, then posts
+   the ledger entries
+```
+
+The party's own account is the transaction source, so one envelope signature
+satisfies `require_auth()` — no separate auth-entry signing. The chain call
+always settles **before** the ledger moves: a rejected transaction can never
+leave the books claiming custody that does not exist.
+
+`GET /api/payments/capabilities` publishes this split at runtime, so the
+frontend never hard-codes a signing model and switching
+`ESCROW_GATEWAY=deterministic → soroban-rpc` needs no frontend change.
 
 ---
 
@@ -130,79 +163,104 @@ never by reaching into each other's internals.
 
 ```
 stellartrust/
-├─ docs/                      # PRD, Architecture, Rules, Phases, Design, Memory
+├─ docs/                      # PRD, Architecture, Rules, Phases, DESIGN, Memory,
+│                             #   devlopement (development log / issue register)
 │
 ├─ frontend/                  # ── Next.js (App Router) + TS + Tailwind ──
 │  ├─ src/
-│  │  ├─ app/
-│  │  │  ├─ (auth)/           # login, register, KYC
-│  │  │  ├─ (dashboard)/      # buyer, seller, investor
-│  │  │  ├─ escrow/
-│  │  │  ├─ disputes/
-│  │  │  ├─ rwa/
-│  │  │  └─ admin/
-│  │  ├─ components/
-│  │  ├─ features/            # one folder per portion: kyc, payments,
-│  │  │                       #   escrow, disputes, rwa, wallet
-│  │  ├─ lib/                 # api client, wallet kit, hooks
-│  │  └─ styles/
-│  ├─ public/
-│  ├─ .env.example
+│  │  ├─ app/                 # route segments (no route groups in use)
+│  │  │  ├─ auth/  dashboard/  escrow/  disputes/
+│  │  │  ├─ rwa/   settlement/ kyc/     admin/kyc/
+│  │  │  ├─ layout.tsx · page.tsx
+│  │  │  └─ globals.css       # design tokens live here + tailwind.config.ts
+│  │  ├─ components/          # AppShell, Icon, StatusPill, IdentityProvider,
+│  │  │                       #   AccountActionLink
+│  │  ├─ features/            # one folder per portion: dashboard, disputes,
+│  │  │                       #   escrow, kyc, rwa, settlement, wallet
+│  │  └─ lib/                 # api.ts (typed client), wallet-auth.ts
+│  ├─ tailwind.config.ts      # the canonical design tokens (see DESIGN.md)
 │  ├─ package.json            # frontend deps only
 │  └─ tsconfig.json
 │
 ├─ backend/                   # ── Node + Express + TS (modular monolith) ──
+│  ├─ api/index.ts            # the single serverless entrypoint
 │  ├─ src/
-│  │  ├─ modules/             # one self-contained folder per portion
-│  │  │  ├─ auth/             #   SEP-10, sessions
+│  │  ├─ modules/             # one self-contained folder per bounded context
+│  │  │  ├─ auth/             #   SEP-10 challenges, opaque sessions, JWKS
+│  │  │  ├─ identity/         #   users, businesses, wallets
 │  │  │  ├─ kyc/              #   provider adapter + risk aggregation
-│  │  │  ├─ payments/         #   orchestration + idempotency
+│  │  │  ├─ payments/         #   order lifecycle + transition commit
 │  │  │  ├─ ledger/           #   double-entry ledger (core)
-│  │  │  ├─ liquidity/        #   routing over path payments/pools
-│  │  │  ├─ escrow/           #   Soroban orchestration
-│  │  │  ├─ disputes/         #   evidence + AI calls + human gate
+│  │  │  ├─ escrow/           #   Soroban escrow gateway + address resolution
+│  │  │  ├─ settlement/       #   corridors, routing, anchor + liquidity
+│  │  │  ├─ disputes/         #   evidence + AI advisory + human gate
 │  │  │  ├─ rwa/              #   tokenization + investor payouts
-│  │  │  └─ stellar/          #   SDK wrappers, anchors, reconciliation
+│  │  │  ├─ reputation/       #   advisory 0..1 prior for disputes
+│  │  │  ├─ audit/            #   append-only audit trail
+│  │  │  └─ stellar/          #   SDK wrappers, signer, addresses, assets
 │  │  │
-│  │  │   # each module folder contains its own:
-│  │  │   #   <module>.routes.ts · <module>.service.ts
-│  │  │   #   <module>.repository.ts · <module>.types.ts · <module>.test.ts
+│  │  │   # a module folder contains the subset it needs of:
+│  │  │   #   <module>.routes.ts · <module>.service.ts · <module>.gateway.ts
+│  │  │   #   <module>.repository.ts · pg-<module>.repository.ts
+│  │  │   #   <module>.types.ts · <module>.test.ts
 │  │  │
-│  │  ├─ middleware/          # auth, rate limit, idempotency, errors
-│  │  ├─ jobs/                # BullMQ workers, reconciliation
-│  │  ├─ db/                  # migrations, schema, queries
-│  │  ├─ config/
-│  │  └─ index.ts
-│  ├─ tests/
-│  ├─ .env.example
+│  │  ├─ middleware/          # auth, authorization, idempotency, errors,
+│  │  │                       #   metrics, requestId
+│  │  ├─ jobs/                # reconciliation.job.ts (in-process scheduler)
+│  │  ├─ lib/                 # logger, errors, metrics, alerts
+│  │  ├─ db/                  # index.ts — pg Pool factory only
+│  │  ├─ config/              # index.ts — the single validated env schema
+│  │  ├─ app.ts               # composition root (all wiring lives here)
+│  │  └─ index.ts             # long-lived server entrypoint
+│  ├─ tests/                  # cross-module integration tests
 │  ├─ package.json            # backend deps only
 │  └─ tsconfig.json
 │
 ├─ ai/                        # ── Python + FastAPI AI Risk Service ──
 │  ├─ app/
-│  │  ├─ routers/             # /kyc-score, /dispute-recommend
-│  │  ├─ engines/             # ocr, fraud, dispute, scoring
+│  │  ├─ routers/risk.py      # POST /kyc-score, POST /dispute-recommend
+│  │  ├─ engines/__init__.py  # aggregate_kyc_risk, recommend_dispute
+│  │  │                       #   (weighted-rule placeholders, not ML models)
 │  │  ├─ schemas/
 │  │  └─ main.py
 │  ├─ tests/
-│  ├─ .env.example
 │  └─ pyproject.toml          # AI deps only
 │
-├─ contracts/                 # ── Soroban (Rust) ──
-│  ├─ escrow/                 # lock/release/refund
+├─ contracts/                 # ── Soroban (Rust) workspace ──
+│  ├─ escrow/                 # lock/confirm/dispute/release/refund
 │  ├─ rwa_token/              # asset tokenization + payout
+│  ├─ scripts/                # deploy-testnet.ps1 (uploads WASM, prints hashes)
 │  └─ Cargo.toml
 │
 ├─ shared/                    # ── shared contracts of record ──
-│  ├─ types/                  # cross-portion TS types (API DTOs)
-│  ├─ constants/              # status enums, currency codes
-│  ├─ validation/             # shared schemas (Zod)
+│  ├─ src/
+│  │  ├─ types/               # cross-portion TS types (API DTOs)
+│  │  ├─ constants/           # status enums, currency codes
+│  │  ├─ validation/          # shared schemas (Zod)
+│  │  └─ errors/              # error CODES only (classes live in backend)
+│  ├─ dist/                   # built output; backend/frontend import from here
 │  └─ package.json
 │
-├─ infra/                     # ── docker, ci, deploy manifests, env templates ──
+├─ infra/
+│  ├─ supabase/migrations/    # 0001–0008, forward-only
+│  ├─ supabase/tests/         # SQL assertions (ledger balance, transitions)
+│  ├─ docker/                 # backend/frontend/ai Dockerfiles
+│  └─ docker-compose.yml
 │
+├─ .github/workflows/ci.yml
 └─ README.md
 ```
+
+**Notes on the tree**
+- `shared/` source lives under `src/` and is consumed from `dist/`. Both
+  frontend and backend depend on it as `file:../shared`, so a shared change
+  needs `npm run build --prefix shared` before it is visible.
+- There is no `liquidity/` module — path-payment and AMM routing live inside
+  `settlement/` (`liquidity.gateway.ts`, `routing.service.ts`).
+- Migrations live in `infra/`, not `backend/src/db/`, which holds only the
+  connection pool.
+- `app.ts` is the only place adapters are chosen and wired; modules never
+  construct their own dependencies.
 
 **Why separate `package.json` per portion:** `frontend` and `backend` deploy
 independently, scale independently, and must not share a dependency tree
@@ -215,42 +273,85 @@ no secrets. `ai/` and `contracts/` use their own language toolchains
 
 ## 5. Tech Stack
 
-| Layer | Choice | Rationale |
-|---|---|---|
-| Frontend | Next.js (App Router) + TypeScript + Tailwind | Modern, typed, fast |
-| Wallet | Stellar Wallets Kit (Freighter/xBull) | Multi-wallet, SEP-10 |
-| Backend | Node.js + Express + TypeScript | Modular monolith |
-| Database | **PostgreSQL via Supabase** | ACID, RLS, auth |
-| Cache/Queue | Redis + BullMQ | Jobs, reconciliation, webhooks |
-| AI service | Python + FastAPI | ML/OCR ecosystem |
-| KYC/liveness | 3rd-party (Sumsub/Onfido/Persona/Veriff) | Compliance; don't build |
-| Blockchain | Stellar SDK (JS) + Soroban RPC | Native |
-| Contracts | Soroban (Rust) | Trustless escrow + RWA |
-| Key mgmt | Cloud KMS / HSM | Secure signing |
-| Infra | Docker + single cloud (AWS/Fly/Render) | Simple ops |
-| Observability | Structured logs + metrics + tracing | Ops visibility |
+Versions are the pinned ones in each `package.json` / `Cargo.toml`.
+
+| Layer | Choice | Status | Rationale |
+|---|---|---|---|
+| Frontend | Next.js 15.5.20 (App Router) + React 19 + TS 5 + Tailwind | built | Modern, typed, fast |
+| Wallet | `@creit.tech/stellar-wallets-kit` 2.5.0 | built | Multi-wallet, SEP-10, tx signing |
+| Backend | Node.js + Express 5 + TypeScript | built | Modular monolith |
+| Database | **PostgreSQL via Supabase**, `pg` 8 with raw parameterized SQL | built | ACID, RLS; no ORM magic |
+| AI service | Python 3.12 + FastAPI | built, not deployed | ML/OCR ecosystem |
+| Blockchain | `@stellar/stellar-sdk` 16.0.1 (Horizon + Soroban RPC) | built | Native |
+| Contracts | Soroban `soroban-sdk` 27.0.2 (Rust) | built, not deployed | Trustless escrow + RWA |
+| Logging | `pino` + `pino-http` | built | Structured, PII-safe |
+| Security | `helmet`, `express-rate-limit`, `jose` (JWKS) | built | Baseline hardening |
+| Validation | `zod` 3.23.8 (shared schemas) | built | One schema, both portions |
+| Observability | In-process Prometheus registry + `/metrics` + health probes | built | No extra dependency |
+| Cache/Queue | Redis + BullMQ | **planned — not installed** | Cross-instance idempotency + workers |
+| KYC/liveness | 3rd-party (Sumsub/Onfido/Persona/Veriff) | **planned** — sandbox adapter today | Compliance; don't build |
+| Key mgmt | Cloud KMS / HSM | **planned** — `KmsSigner` throws | Secure signing |
+| Infra | Docker + Render (backend) / Vercel (frontend) | partial | Simple ops |
+
+> Anything marked *planned* has an interface and a fail-closed factory in place,
+> so adopting it is an adapter swap, not a refactor. Do not describe planned
+> items as working in a demo or README.
 
 ---
 
 ## 6. Core Data Model (essentials)
 
-- `users`, `businesses`, `kyc_verifications`
-- `wallets` (stellar public key, custody_type)
+Defined by the forward-only migrations in `infra/supabase/migrations/`:
+
+| Migration | Adds |
+|---|---|
+| `0001` | Core schema: users, businesses, wallets, orders, escrows, disputes, `ledger_accounts`/`ledger_entries` + balancing trigger, `stellar_transactions`, enums |
+| `0002` | Seeds the system ledger accounts |
+| `0003` | Phase 1 identity: SEP-10 challenges, hashed sessions, KYC results, review queue, audit indexes, RLS |
+| `0004` | Phase 2: `payment_transitions`, chain metadata, `reconciliation_mismatches`, DB-level fail-closed blocking |
+| `0005` | Session roles + `users.latest_verification` snapshot |
+| `0006` | Phase 5 RWA: assets, tokenizations, token_holdings, payout_distributions, payout_records, RWA ledger accounts, over-sell/auto-fund triggers, RLS |
+| `0007` | Durable dispute persistence (`dispute_records`, DTO snapshot) |
+| `0008` | On-chain escrow: `escrow_state` gains `pending`, `payment_transition` gains `dispute` |
+
+Key tables:
+
+- `users`, `businesses`, `wallets` (stellar public key, custody_type) — the
+  wallet is the **only** sanctioned user-id → Stellar-address mapping, and it
+  comes from a completed SEP-10 proof.
 - `orders` (buyer, seller, amount, currency, status)
-- `escrows` (order_id, contract_id, state)
-- `disputes` (escrow_id, evidence[], ai_recommendation, ai_confidence,
-  human_decision, status)
-- `ledger_accounts`, `ledger_entries` — **double-entry**; entries per
-  transaction sum to zero
-- `assets`, `tokenizations`, `token_holdings` — RWA
-- `stellar_transactions` (hash, type, status) — reconciliation
+- `escrows` (order_id, contract_id, state) — `pending` means the custody
+  contract is deployed but the buyer has not yet signed the lock.
 - `payment_transitions` — immutable link between order step, actor, ledger tx,
   and chain tx
+- `ledger_accounts`, `ledger_entries` — **double-entry**; entries per
+  transaction sum to zero, enforced in the service *and* by a DB trigger
+- `stellar_transactions` (hash, type, status) — reconciliation
 - `reconciliation_mismatches` — open/resolved drift; open drift blocks the order
-- `webhook_events` — idempotency + signature-verified
+- `dispute_records`, `assets`, `tokenizations`, `token_holdings`,
+  `payout_distributions`, `payout_records`
+
+*Planned, not yet in a migration:* `webhook_events` (idempotency +
+signature-verified) and settlement quote/transition persistence.
 
 **Rule:** every money movement writes balanced ledger entries **and** a Stellar
-transaction record. A reconciliation job asserts they match.
+transaction record. A reconciliation job asserts they match — both that the
+chain transaction succeeded, and that the escrow contract's own state and
+recorded `order_ref` agree with the books.
+
+### Persistence status
+
+Repositories are selected in `app.ts` by `DATABASE_URL` (and never in tests):
+
+| Context | Postgres | In-memory only |
+|---|---|---|
+| identity, auth, audit, payments, disputes, rwa | ✅ | |
+| kyc, reputation, settlement | | ⚠️ |
+| idempotency stores (all routers) | | ⚠️ per-instance |
+
+The in-memory stores are correct for a single long-lived process and wrong for
+a multi-instance deployment — an idempotency key deduped on one instance is
+unknown to the next. Redis is the planned fix.
 
 ---
 

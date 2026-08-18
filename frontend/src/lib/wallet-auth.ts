@@ -49,6 +49,37 @@ export async function connectWalletAndSignIn(): Promise<AuthSessionResponse> {
   return session;
 }
 
+/**
+ * Sign a server-prepared transaction with the connected wallet.
+ *
+ * Used for the escrow steps the contract gates with the party's own
+ * `require_auth()` — locking funds, confirming delivery, raising a dispute.
+ * The backend builds and submits; the private key never leaves the wallet.
+ *
+ * `expectedAddress` is the account the server assembled the transaction for.
+ * If the user has since switched accounts in their wallet, signing would
+ * produce a signature the contract rejects, so it is checked up front.
+ */
+export async function signPreparedTransaction(
+  unsignedXdr: string,
+  networkPassphrase: string,
+  expectedAddress: string,
+): Promise<string> {
+  const kit = await loadKit();
+  const { address } = await kit.getAddress();
+  if (address !== expectedAddress) {
+    throw new Error(
+      "Your wallet is connected as a different account than this order. " +
+        "Switch back to the account you signed in with, then try again.",
+    );
+  }
+  const { signedTxXdr } = await kit.signTransaction(unsignedXdr, {
+    networkPassphrase,
+    address: expectedAddress,
+  });
+  return signedTxXdr;
+}
+
 export function saveSession(session: AuthSessionResponse): void {
   // sessionStorage limits token lifetime to the current browser tab. The token is
   // never written to logs, URLs, localStorage, or source-controlled config.

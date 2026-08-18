@@ -37,6 +37,14 @@ export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 
 /** Escrow contract states (Architecture 6). */
 export const EscrowState = {
+  /**
+   * Custody contract deployed but not yet funded. Locking is a two-step round
+   * trip on-chain — the server deploys the instance, then the buyer's wallet
+   * signs the `initialize` that moves the funds — and this is the gap between
+   * them. Has no counterpart in the contract's own `State` enum, which only
+   * exists once `initialize` has run.
+   */
+  Pending: "pending",
   Locked: "locked",
   Released: "released",
   Refunded: "refunded",
@@ -53,9 +61,35 @@ export const PaymentTransition = {
   Confirm: "confirm",
   Release: "release",
   Refund: "refund",
+  /**
+   * A party moves a locked escrow into the on-chain `Disputed` state. This is
+   * the only route by which the arbiter can later settle an escrow the buyer
+   * never confirmed — the contract's `release` accepts `Disputed` or
+   * `delivery_confirmed`, nothing else.
+   */
+  Dispute: "dispute",
 } as const;
 export type PaymentTransition =
   (typeof PaymentTransition)[keyof typeof PaymentTransition];
+
+/**
+ * Who must sign the Stellar transaction behind a transition.
+ *
+ * The escrow contract gates `initialize`, `confirm_delivery`, and `dispute`
+ * with the calling party's own `require_auth()`, so the server physically
+ * cannot produce those signatures. Those transitions run a prepare → wallet
+ * sign → submit round trip instead of a single server-side call.
+ */
+export const ChainSigningMode = {
+  /** Server signs with the arbiter key; a single request completes it. */
+  Server: "server",
+  /** The acting party's wallet must sign an unsigned XDR the server builds. */
+  Wallet: "wallet",
+  /** No chain transaction is involved (ledger-only bookkeeping). */
+  None: "none",
+} as const;
+export type ChainSigningMode =
+  (typeof ChainSigningMode)[keyof typeof ChainSigningMode];
 
 /** Ledger-to-chain reconciliation outcome. */
 export const ReconciliationStatus = {

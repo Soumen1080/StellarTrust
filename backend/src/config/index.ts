@@ -15,6 +15,38 @@ try {
   // dotenv is optional at runtime; env may be provided by the platform.
 }
 
+/**
+ * Treat a blank environment variable as unset.
+ *
+ * `FOO=` in a .env file, and an empty value in a hosting dashboard, both mean
+ * "not configured" to a human — but arrive as `""`, which fails a format check
+ * instead of falling through to `.optional()`. Every optional formatted value
+ * goes through this so clearing a variable actually clears it.
+ */
+function optionalEnv<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess(
+    (value) => (value === "" ? undefined : value),
+    schema.optional(),
+  );
+}
+
+/**
+ * Currency → Soroban token contract bindings. Kept here rather than in the
+ * shared package because it is deployment configuration, not a wire contract.
+ * The currency keys are validated loosely (any code) so adding a currency to
+ * `@stellartrust/shared` does not require a config-schema change; resolution
+ * failures surface at `resolveToken()` with the currency named.
+ */
+const tokenContractMapSchema = z.record(
+  z.string().min(1),
+  z.object({
+    contractId: z
+      .string()
+      .regex(/^C[A-Z2-7]{55}$/, "Must be a Stellar contract address"),
+    decimals: z.coerce.number().int().min(0).max(38).default(7),
+  }),
+);
+
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "staging", "production"])
@@ -73,10 +105,9 @@ const envSchema = z.object({
     .transform((value) => value === "true" || value === "1"),
   // Stellar Ed25519 secret seed used ONLY by the demo signer on testnet.
   // Provide via the host secret manager, never commit it.
-  DEMO_SIGNER_SECRET: z
-    .string()
-    .regex(/^S[A-Z2-7]{55}$/, "Must be a Stellar Ed25519 secret seed")
-    .optional(),
+  DEMO_SIGNER_SECRET: optionalEnv(
+    z.string().regex(/^S[A-Z2-7]{55}$/, "Must be a Stellar Ed25519 secret seed"),
+  ),
   // Temporary KYC auto-approval for smooth development. Ignored in production.
   KYC_AUTO_APPROVE: z
     .string()
@@ -103,10 +134,9 @@ const envSchema = z.object({
   OPENAI_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(15_000),
 
   AUTH_DEV_BEARER: z.string().default("dev-local-token"),
-  AUTH_DEMO_WALLET: z
-    .string()
-    .regex(/^G[A-Z2-7]{55}$/, "Must be a Stellar Ed25519 public key")
-    .optional(),
+  AUTH_DEMO_WALLET: optionalEnv(
+    z.string().regex(/^G[A-Z2-7]{55}$/, "Must be a Stellar Ed25519 public key"),
+  ),
   AUTH_DEMO_NAME: z.string().trim().min(1).default("sam"),
 
   // SEP-10 wallet authentication (Phase 1).
@@ -190,17 +220,95 @@ const envSchema = z.object({
   // Hex-encoded WASM hash of the RWA token contract, already uploaded on-chain
   // (via `stellar contract deploy`/`install`). Required when RWA_GATEWAY=
   // soroban-rpc so the gateway can deploy per-tokenization contract instances.
-  RWA_WASM_HASH: z
-    .string()
-    .regex(/^[0-9a-fA-F]{64}$/, "Must be a 32-byte hex WASM hash")
-    .optional(),
+  RWA_WASM_HASH: optionalEnv(
+    z.string().regex(/^[0-9a-fA-F]{64}$/, "Must be a 32-byte hex WASM hash"),
+  ),
   // Hex-encoded WASM hash of the escrow contract (same rationale as above).
   // Required when ESCROW_GATEWAY=soroban-rpc.
-  ESCROW_WASM_HASH: z
+  ESCROW_WASM_HASH: optionalEnv(
+    z.string().regex(/^[0-9a-fA-F]{64}$/, "Must be a 32-byte hex WASM hash"),
+  ),
+  // Soroban token contracts backing each ledger currency, as JSON:
+  //   {"USDC":{"contractId":"C…","decimals":7}}
+  // `decimals` is optional and defaults to 7 (classic Stellar asset contract).
+  // Required for any currency that must reach on-chain escrow.
+  STELLAR_TOKEN_CONTRACTS: z
     .string()
-    .regex(/^[0-9a-fA-F]{64}$/, "Must be a 32-byte hex WASM hash")
-    .optional(),
-});
+    .default("{}")
+    .transform((value, ctx) => {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(value);
+      } catch {
+        ctx.addIssue({ code: "custom", message: "Must be valid JSON" });
+        return z.NEVER;
+      }
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Must be a JSON object keyed by currency code",
+        });
+        return z.NEVER;
+      }
+      const parsed = tokenContractMapSchema.safeParse(raw);
+      if (!parsed.success) {
+        ctx.addIssue({
+          code: "custom",
+          message: parsed.error.issues
+            .map((i) => `${i.path.join(".")}: ${i.message}`)
+            .join("; "),
+        });
+        return z.NEVER;
+      }
+      return parsed.data;
+    }),
+  // On-chain arbiter for new escrows (release/refund authority). Defaults to
+  // the server signer's own address, which is what lets the backend settle
+  // disputes without a counterparty signature. Point it at a multi-sig account
+  // to take that authority out of a single server key.
+  ESCROW_ARBITER_ADDRESS: optionalEnv(
+    z.string().regex(/^G[A-Z2-7]{55}$/, "Must be a Stellar account address"),
+  ),
+  // Seconds a prepared (unsigned) escrow transaction stays submittable. Short
+  // by design: the buyer signs it in the browser within one interaction.
+  ESCROW_PREPARED_TX_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(3_600)
+    .default(300),
+})
+  // A gateway that cannot deploy is a gateway that fails on the first lock.
+  // Catch it at boot rather than mid-payment (Rules.md: never boot the money
+  // system half-configured).
+  .superRefine((env, ctx) => {
+    if (env.ESCROW_GATEWAY === "soroban-rpc" && !env.ESCROW_WASM_HASH) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["ESCROW_WASM_HASH"],
+        message: "Required when ESCROW_GATEWAY=soroban-rpc",
+      });
+    }
+    if (env.RWA_GATEWAY === "soroban-rpc" && !env.RWA_WASM_HASH) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["RWA_WASM_HASH"],
+        message: "Required when RWA_GATEWAY=soroban-rpc",
+      });
+    }
+    if (
+      env.ESCROW_GATEWAY === "soroban-rpc" &&
+      Object.keys(env.STELLAR_TOKEN_CONTRACTS).length === 0
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["STELLAR_TOKEN_CONTRACTS"],
+        message:
+          "At least one currency → token contract binding is required when " +
+          "ESCROW_GATEWAY=soroban-rpc",
+      });
+    }
+  });
 
 const parsed = envSchema.safeParse(process.env);
 

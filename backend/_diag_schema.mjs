@@ -48,6 +48,7 @@ try {
     );
     console.log(`\nsystem ledger_accounts seeded: ${acct[0].n}`);
   }
+
 } catch (err) {
   console.error("QUERY ERROR:", err.message);
 } finally {

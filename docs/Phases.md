@@ -1,8 +1,13 @@
 # StellarTrust — Delivery Phases
 
 > **Status:** Living document. Update as phases progress or scope changes.
-> **Last updated:** 2026-07-20
+> **Last updated:** 2026-08-18
 > **Track:** Production.
+>
+> **Reading the checkboxes:** `[x]` means implemented **and covered by an
+> automated test that runs in this repo**. `[ ]` means not done — most remaining
+> boxes need credentials, funded accounts, or third parties, and no amount of
+> code closes them.
 
 Each phase lists **deliverables** and **acceptance criteria** (done = criteria
 met + build/tests pass + Memory.md updated).
@@ -51,17 +56,28 @@ met + build/tests pass + Memory.md updated).
 
 ## Phase 2 — Core Payment + Escrow (heart of MVP)
 
-**Status:** Application implementation complete; production adapters and live
-Stellar testnet deployment remain manual/operational prerequisites.
+**Status:** Application implementation complete **including the on-chain path**.
+The escrow contract is fully reachable from the backend: custody deploy,
+buyer-signed lock/confirm/dispute via a wallet round trip, and arbiter-signed
+release/refund. Postgres persistence is live for payments. What remains is
+operational: a funded testnet identity, a deployed contract, a token (SAC)
+binding per currency, and a real KMS signer.
 
 **Goal:** Buyer→seller escrow happy path, fully ledgered.
 
 **Deliverables**
-- [x] Soroban **escrow contract** implements lock/release/refund, buyer-authenticated
-  delivery confirmation, arbiter authorization, and unit tests.
+- [x] Soroban **escrow contract**: lock/confirm/dispute/release/refund,
+  buyer-authenticated delivery confirmation, arbiter authorization, an on-chain
+  `order_ref` binding, TTL extension, and 9 unit tests (`cargo test`).
+- [x] `SorobanRpcEscrowGateway` — real deploy + invoke + submit + read-back,
+  with `prepare`/`submit` endpoints for the transitions the contract gates with
+  a counterparty's own signature.
+- [x] User id → Stellar address resolution from the SEP-10-proven wallet, strkey
+  validation, and exact minor-unit ↔ token-amount conversion.
 - [ ] Deploy the contract and run the smoke flow on public Stellar testnet
-  (requires a manually funded testnet identity and Stellar CLI; use
-  `contracts/scripts/deploy-testnet.ps1`).
+  (needs a funded testnet identity + Stellar CLI; use
+  `contracts/scripts/deploy-testnet.ps1`, then set `ESCROW_WASM_HASH` and
+  `STELLAR_TOKEN_CONTRACTS`).
 - [x] Order lifecycle: create → accept → deposit → lock → confirm → release,
   with party/role authorization and an arbiter-only refund path.
 - [x] Double-entry ledger wired into every lifecycle step through one atomic
@@ -69,23 +85,26 @@ Stellar testnet deployment remain manual/operational prerequisites.
 - [x] Authenticated, idempotent payment/escrow endpoints.
 - [x] Scheduled reconciliation job (ledger ↔ chain), unresolved-mismatch report,
   alert logging, and fail-closed order blocking.
-- [x] Buyer/seller escrow dashboard at `/escrow`.
-- [x] Forward-only Phase 2 Postgres schema contract in migration `0004`.
-- [ ] Replace local in-memory/deterministic adapters with validated Postgres,
-  Redis, KMS/HSM, and Soroban RPC adapters for staging/production.
+- [x] Buyer/seller escrow dashboard at `/escrow` with the wallet-signing flow
+  and live refresh while orders are in flight.
+- [x] Forward-only Postgres schema in migrations `0004` and `0008`.
+- [x] `PgPaymentRepository` replaces the in-memory store when `DATABASE_URL` is
+  set.
+- [ ] Redis-backed idempotency (still per-instance in memory) and a real
+  `KmsSigner` for staging/production.
 
 **Acceptance criteria**
-- [x] Contract code requires buyer confirmation before happy-path release and
-  requires arbiter authorization for release/refund; automated unit coverage is
-  present.
+- [x] Contract code requires buyer confirmation *or* a disputed escrow before
+  release, and arbiter authorization for release/refund; unit-covered.
+- [x] The deterministic adapter rejects exactly what the contract rejects —
+  specifically, an arbiter cannot release an unconfirmed escrow without first
+  disputing it (regression-tested in `escrow.chain.test.ts`).
 - [ ] Verify real funds lock and release against the deployed public testnet
   contract (manual credentials/funding required).
-- [x] Every local/application transition produces balanced ledger entries and a
-  linked chain transaction record.
-- [x] Automated happy-path reconciliation reports zero unresolved mismatches
-  (six lifecycle records checked).
-- [ ] Verify the same zero-mismatch result against testnet + production-style
-  Postgres/Redis adapters.
+- [x] Every application transition produces balanced ledger entries and a linked
+  chain transaction record.
+- [x] Automated happy-path reconciliation reports zero unresolved mismatches.
+- [ ] Verify the same zero-mismatch result against testnet + a live Postgres.
 
 ---
 
@@ -169,10 +188,11 @@ compliance-operated escrow/payments arbiter path.
 
 ## Phase 5 — RWA Tokenization (opt-in module)
 
-**Status:** Application implementation complete (Soroban `rwa_token` contract +
-backend `rwa` module + escrow-triggered payout + frontend console). Public
-Stellar testnet contract deployment and production Postgres/KMS-Soroban adapters
-remain manual/operational prerequisites.
+**Status:** Application implementation complete, including a real
+`SorobanRpcRwaGateway` (deploy, transfer, authorize, freeze, reads) and
+`PgRwaRepository`. Public testnet deployment remains an operational
+prerequisite, and two contract capabilities are built but not yet called from
+the service — see the unchecked items below.
 
 **Goal:** Sellers unlock working capital; investors get transparent ownership.
 
@@ -193,14 +213,29 @@ remain manual/operational prerequisites.
   ledger accounts, over-sell/auto-fund triggers, and RLS.
 - [x] Frontend `/rwa` console (marketplace, tokenize, portfolio) + typed API
   client + navigation.
-- [ ] Deploy the `rwa_token` contract to public Stellar testnet and replace the
-  `DeterministicRwaGateway` + in-memory repository with a KMS-backed Soroban RPC
-  adapter and Postgres persistence.
+- [x] `SorobanRpcRwaGateway` (real Soroban writes/reads via the signer
+  boundary) and `PgRwaRepository` (used when `DATABASE_URL` is set).
+- [ ] Deploy the `rwa_token` contract to public Stellar testnet (`RWA_WASM_HASH`
+  from `contracts/scripts/deploy-testnet.ps1`) and verify against it.
+- [ ] **Call the contract's payout path.** `getPayoutShares` and
+  `markDistributed` are implemented on the gateway but never invoked: shares are
+  computed off-chain and the contract's `distributed` idempotency flag is never
+  set, so its double-payout guard is inert.
+- [ ] **Persist the payout ledger.** `RwaService.distributePayout` builds a
+  balanced `LedgerTransactionInput` and discards it (`void
+  this.createPayoutLedger(...)`), then stamps a `ledgerTransactionId` that
+  references no row. RWA payouts currently write no ledger entries.
+- [ ] Resolve issuer/holder identities to real Stellar addresses. The service
+  passes DB user ids where the contract expects an `Address`; the Soroban
+  gateway silently substitutes the signer, so the two adapters key balances
+  differently.
 
 **Acceptance criteria**
 - [x] An invoice can be tokenized, sold fractionally, and pays holders on buyer
-  payment — all reconciled in the ledger (covered by the RWA + escrow-release
-  integration tests; each payout posts a balanced ledger transaction).
+  payment (covered by the RWA + escrow-release integration tests).
+- [ ] ⚠️ *"…all reconciled in the ledger"* was previously checked here and is
+  **not** true: the payout's balanced transaction is computed and discarded. See
+  the unchecked deliverable above.
 - [x] Tokenization is fully separate from the escrow happy path (Rules.md §3):
   RWA is a peer module; the payout is a non-fatal, retryable hook on release and
   never alters the tested Phase 2 money state machine.

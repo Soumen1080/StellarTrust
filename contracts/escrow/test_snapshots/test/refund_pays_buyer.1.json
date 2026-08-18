@@ -71,6 +71,9 @@
                 },
                 {
                   "i128": "500"
+                },
+                {
+                  "string": "8b1f0f2e-0b6e-4a1e-9f6b-1f2a3b4c5d6e"
                 }
               ]
             }
@@ -284,6 +287,14 @@
                             },
                             "val": {
                               "bool": false
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "order_ref"
+                            },
+                            "val": {
+                              "string": "8b1f0f2e-0b6e-4a1e-9f6b-1f2a3b4c5d6e"
                             }
                           },
                           {

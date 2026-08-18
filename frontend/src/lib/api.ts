@@ -17,6 +17,8 @@ import type {
   OpenDisputeInput,
   OrderDetailsResponse,
   OrderMutationResponse,
+  PaymentCapabilitiesResponse,
+  PreparedTransitionResponse,
   ReconciliationReportDTO,
   Sep10ChallengeResponse,
   SettlementDetailsResponse,
@@ -43,6 +45,9 @@ const DEFAULT_API_BASE =
 const API_BASE = (
   process.env.NEXT_PUBLIC_API_BASE_URL ?? DEFAULT_API_BASE
 ).replace(/\/+$/, "");
+
+/** Escrow steps the contract may require the acting party's own signature for. */
+export type WalletSignedAction = "lock" | "confirm" | "dispute";
 
 export class ApiClientError extends Error {
   constructor(
@@ -169,7 +174,7 @@ export const api = {
     orderId: string,
     action: "accept" | "deposit" | "lock" | "confirm" | "release" | "refund",
     idempotencyKey: string,
-  ) =>
+  ): Promise<OrderMutationResponse> =>
     request<OrderMutationResponse>(
       `/api/payments/orders/${orderId}/${action}`,
       {
@@ -177,6 +182,42 @@ export const api = {
         accessToken,
         headers: { "idempotency-key": idempotencyKey },
         body: "{}",
+      },
+    ),
+  /**
+   * How this deployment signs each escrow step. Read once per session so the
+   * UI routes an action to the single-call or the wallet-signing path without
+   * assuming a gateway.
+   */
+  paymentCapabilities: (accessToken: string) =>
+    request<PaymentCapabilitiesResponse>("/api/payments/capabilities", {
+      accessToken,
+    }),
+  /** Ask the server to assemble the transaction this wallet must sign. */
+  prepareTransition: (
+    accessToken: string,
+    orderId: string,
+    action: WalletSignedAction,
+  ) =>
+    request<PreparedTransitionResponse>(
+      `/api/payments/orders/${orderId}/${action}/prepare`,
+      { method: "POST", accessToken, body: "{}" },
+    ),
+  /** Hand the signed envelope back for submission and recording. */
+  submitSignedTransition: (
+    accessToken: string,
+    orderId: string,
+    action: WalletSignedAction,
+    idempotencyKey: string,
+    signedXdr: string,
+  ) =>
+    request<OrderMutationResponse | OrderDetailsResponse>(
+      `/api/payments/orders/${orderId}/${action}/submit`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: JSON.stringify({ signedXdr }),
       },
     ),
   runReconciliation: (accessToken: string, idempotencyKey: string) =>

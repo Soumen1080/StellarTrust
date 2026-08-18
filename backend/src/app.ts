@@ -52,6 +52,7 @@ import { KycService } from "./modules/kyc/kyc.service.js";
 import { createKycProvider } from "./modules/kyc/providers/provider.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
 import { createEscrowGateway } from "./modules/escrow/escrow.gateway.js";
+import { IdentityEscrowAddressResolver } from "./modules/escrow/escrow.addresses.js";
 import { InMemoryPaymentRepository } from "./modules/payments/payment.repository.js";
 import type { PaymentRepository } from "./modules/payments/payment.repository.js";
 import { PgPaymentRepository } from "./modules/payments/pg-payment.repository.js";
@@ -324,7 +325,12 @@ export function createApp(): Express {
   const paymentRepository: PaymentRepository = usePersistentStore
     ? new PgPaymentRepository(getPool())
     : new InMemoryPaymentRepository();
-  const escrowGateway = createEscrowGateway();
+  // The escrow contract takes Stellar addresses, not internal user ids. The
+  // only trustworthy mapping is the wallet each party proved control of during
+  // SEP-10, so resolution goes through the identity store.
+  const escrowGateway = createEscrowGateway(
+    new IdentityEscrowAddressResolver(identities),
+  );
   const payments = new PaymentService(
     paymentRepository,
     escrowGateway,

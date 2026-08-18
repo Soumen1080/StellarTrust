@@ -4,6 +4,7 @@
  */
 import type {
   AiRecommendation,
+  ChainSigningMode,
   ChainTxStatus,
   CurrencyCode,
   DisputeStatus,
@@ -146,6 +147,45 @@ export interface OrderDetailsResponse {
   escrow: EscrowDTO | null;
   transitions: PaymentTransitionDTO[];
   blockedByReconciliation: boolean;
+}
+
+// ── Wallet-signed escrow transitions ─────────────────────────────────────────
+
+/**
+ * How each transition reaches the chain in the current deployment. Clients read
+ * this instead of hard-coding a signing model, so switching
+ * `ESCROW_GATEWAY=deterministic` → `soroban-rpc` needs no frontend change.
+ */
+export interface PaymentCapabilitiesResponse {
+  gateway: "deterministic" | "soroban-rpc";
+  network: "testnet" | "public";
+  networkPassphrase: string;
+  /** Signing mode keyed by transition; absent keys mean the mode is `none`. */
+  signingModes: Record<string, ChainSigningMode>;
+  /** Transitions requiring a wallet round trip, for quick client checks. */
+  walletSignedTransitions: PaymentTransition[];
+}
+
+/**
+ * An unsigned Stellar transaction the acting party's wallet must sign. The
+ * server never sees the party's key; it only assembles and later submits.
+ */
+export interface PreparedTransitionResponse {
+  orderId: string;
+  transition: PaymentTransition;
+  /** Base64 transaction envelope, already simulated and fee-bumped. */
+  unsignedXdr: string;
+  networkPassphrase: string;
+  /** The address the wallet must sign as (the transaction source account). */
+  signerAddress: string;
+  /** Escrow contract instance this transaction targets. */
+  contractId: string;
+  /** Transaction time bound; the client must submit before this. */
+  expiresAt: string;
+}
+
+export interface SubmitSignedTransitionInput {
+  signedXdr: string;
 }
 
 export interface ReconciliationMismatchDTO {

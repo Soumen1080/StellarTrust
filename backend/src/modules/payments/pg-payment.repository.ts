@@ -35,6 +35,7 @@ import {
 import { ConflictError } from "../../lib/errors.js";
 import { assertBalanced } from "../ledger/ledger.balance.js";
 import type {
+  CustodyStateCommit,
   FinancialTransitionCommit,
   PaymentRepository,
 } from "./payment.repository.js";
@@ -146,6 +147,42 @@ export class PgPaymentRepository implements PaymentRepository {
       [orderId],
     );
     return rows[0] ? this.mapEscrow(rows[0]) : undefined;
+  }
+
+  async saveCustodyState(input: CustodyStateCommit): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        `update orders set status = $2, updated_at = $3 where id = $1`,
+        [input.order.id, input.order.status, input.order.updatedAt],
+      );
+      if (input.escrow) {
+        await client.query(
+          `insert into escrows
+             (id, order_id, contract_id, state, created_at, updated_at)
+           values ($1, $2, $3, $4, $5, $6)
+           on conflict (order_id) do update
+             set contract_id = excluded.contract_id,
+                 state = excluded.state,
+                 updated_at = excluded.updated_at`,
+          [
+            input.escrow.id,
+            input.escrow.orderId,
+            input.escrow.contractId,
+            input.escrow.state,
+            input.escrow.createdAt,
+            input.escrow.updatedAt,
+          ],
+        );
+      }
+      await client.query("commit");
+    } catch (err) {
+      await client.query("rollback").catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async listTransitions(orderId?: string): Promise<PaymentTransitionDTO[]> {

@@ -1,4 +1,7 @@
-import { PaymentTransition } from "@stellartrust/shared";
+import {
+  PaymentTransition,
+  submitSignedTransitionInputSchema,
+} from "@stellartrust/shared";
 import { Router } from "express";
 import { ForbiddenError, ValidationError } from "../../lib/errors.js";
 import {
@@ -20,6 +23,18 @@ const transitionByRoute = {
   confirm: PaymentTransition.Confirm,
   release: PaymentTransition.Release,
   refund: PaymentTransition.Refund,
+} as const;
+
+/**
+ * Transitions that can require the acting party's own wallet signature. Which
+ * of them actually do is a runtime property of the configured gateway (see
+ * `GET /capabilities`), so the routes exist either way and answer 409 with a
+ * usable message when a client picks the wrong path.
+ */
+const preparableByRoute = {
+  lock: PaymentTransition.Lock,
+  confirm: PaymentTransition.Confirm,
+  dispute: PaymentTransition.Dispute,
 } as const;
 
 export function createPaymentRouter(
@@ -72,6 +87,73 @@ export function createPaymentRouter(
           const actor = requireActor(req as AuthedRequest);
           res.json(
             await service.transition(String(req.params.orderId), transition, actor),
+          );
+        } catch (err) {
+          next(err);
+        }
+      },
+    );
+  }
+
+  // How this deployment signs each transition. Unauthenticated-safe content,
+  // but kept behind auth so the escrow topology is not public.
+  router.get("/capabilities", requireAuth(verifier), (req, res, next) => {
+    try {
+      requireActor(req as AuthedRequest);
+      res.json(service.capabilities());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  for (const [route, transition] of Object.entries(preparableByRoute)) {
+    // Build the unsigned transaction for the party's wallet. Not idempotency-
+    // keyed: preparing is a read-shaped operation the client may legitimately
+    // repeat (a user re-opening the wallet), and for a lock it reuses the
+    // already-deployed contract rather than creating a second one.
+    router.post(
+      `/orders/:orderId/${route}/prepare`,
+      requireAuth(verifier),
+      async (req, res, next) => {
+        try {
+          const actor = requireActor(req as AuthedRequest);
+          res.json(
+            await service.prepareTransition(
+              String(req.params.orderId),
+              transition,
+              actor,
+            ),
+          );
+        } catch (err) {
+          next(err);
+        }
+      },
+    );
+
+    router.post(
+      `/orders/:orderId/${route}/submit`,
+      requireAuth(verifier),
+      idempotency(mutations),
+      async (req, res, next) => {
+        try {
+          const actor = requireActor(req as AuthedRequest);
+          const parsed = submitSignedTransitionInputSchema.safeParse(req.body);
+          if (!parsed.success) {
+            throw new ValidationError(
+              "Invalid signed transaction",
+              parsed.error.issues.map((issue) => ({
+                path: issue.path.join("."),
+                message: issue.message,
+              })),
+            );
+          }
+          res.json(
+            await service.submitSignedTransition(
+              String(req.params.orderId),
+              transition,
+              actor,
+              parsed.data.signedXdr,
+            ),
           );
         } catch (err) {
           next(err);
