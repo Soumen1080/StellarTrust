@@ -42,7 +42,10 @@ function setup() {
   );
   const disputes = new DisputeService(
     new InMemoryDisputeRepository(),
-    { getOrder: (id) => paymentRepository.findOrder(id) },
+    {
+      getOrder: (id) => paymentRepository.findOrder(id),
+      getEscrow: (id) => paymentRepository.findEscrow(id),
+    },
     new DeterministicDisputeRiskClient(),
     audit,
     reputation,

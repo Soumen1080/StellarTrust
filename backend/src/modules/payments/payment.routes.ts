@@ -95,6 +95,23 @@ export function createPaymentRouter(
     );
   }
 
+  // Raise a dispute on the server-signed path. The wallet-signed deployments
+  // answer 409 here and point at prepare/submit below; having both routes
+  // exist either way means a client never has to encode which model is active.
+  router.post(
+    "/orders/:orderId/dispute",
+    requireAuth(verifier),
+    idempotency(mutations),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        res.json(await service.raiseDispute(String(req.params.orderId), actor));
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
   // How this deployment signs each transition. Unauthenticated-safe content,
   // but kept behind auth so the escrow topology is not public.
   router.get("/capabilities", requireAuth(verifier), (req, res, next) => {

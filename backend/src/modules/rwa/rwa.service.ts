@@ -16,6 +16,10 @@ import {
 } from "../../lib/errors.js";
 import { logger } from "../../lib/logger.js";
 import { assertStellarAddress } from "../stellar/address.js";
+import {
+  RWA_PAYOUT_PAYABLE,
+  RWA_PAYOUT_RESERVE,
+} from "../ledger/system-accounts.js";
 import type { WalletAddressResolver } from "../identity/wallet.resolver.js";
 import type { AuditRepository } from "../audit/audit.repository.js";
 import type { RwaGateway } from "./rwa.gateway.js";
@@ -32,10 +36,6 @@ import type {
   TokenizationDTO,
 } from "./rwa.types.js";
 import { PayoutStatus, TokenizationStatus } from "./rwa.types.js";
-
-// System ledger account IDs (would come from config/database in production).
-const RWA_PAYOUT_PAYABLE = "a0000000-0000-4000-8000-000000000003";
-const RWA_PAYOUT_RESERVE = "a0000000-0000-4000-8000-000000000004";
 
 export interface RwaActor {
   userId: string;
@@ -158,18 +158,25 @@ export class RwaService {
       throw new NotFoundError("Asset not found");
     }
 
-    // The issuer's real Stellar account, from their SEP-10-proven wallet. This
-    // used to pass `actor.userId` — a UUID — straight into a Soroban `Address`
-    // argument, which the on-chain adapter silently replaced with the signer
-    // while the local adapter keyed balances by the UUID. The two adapters then
-    // disagreed about who held anything.
-    const issuerAddress = await this.addresses.resolve(
+    // The issuer must have a SEP-10-proven wallet before their asset can be
+    // tokenized: it is where payouts and any future self-custody transfer go,
+    // and resolving it here surfaces "you have not connected a wallet" at the
+    // one moment the user can still act on it.
+    const issuerWallet = await this.addresses.resolve(
       tokenization.issuerUserId,
       "issuer",
     );
 
+    // The *on-chain* issuer is whichever account the gateway can authorize as
+    // — the server signer under Soroban RPC. That is a custodial arrangement,
+    // not the issuer's own account, so it is asked for explicitly and audited
+    // below rather than assumed. Passing the user's wallet here would have it
+    // silently replaced on-chain while the local adapter kept using it, and
+    // the two would then disagree about who held every unit.
+    const custodian = await this.gateway.custodianAddress();
+
     const contractId = await this.gateway.deployToken({
-      issuerAddress,
+      issuerAddress: custodian,
       assetRef: asset.assetRef,
       assetType: asset.assetType,
       description: asset.description,
@@ -190,7 +197,15 @@ export class RwaService {
       action: "rwa.deploy_tokenization",
       entity: "tokenization",
       entityId: tokenization.id,
-      metadata: { contractId, status: TokenizationStatus.Active },
+      metadata: {
+        contractId,
+        status: TokenizationStatus.Active,
+        // Both addresses are recorded: who the books consider the issuer, and
+        // who actually holds the supply on-chain. A custodial arrangement
+        // should be legible in the audit trail, not implied by code.
+        issuerWallet,
+        onChainIssuer: custodian,
+      },
     });
 
     return updated;
@@ -250,10 +265,10 @@ export class RwaService {
     );
 
     if (tokenization.contractId) {
-      const issuerAddress = await this.addresses.resolve(
-        tokenization.issuerUserId,
-        "issuer",
-      );
+      // Units come out of the account that holds the supply on-chain, which is
+      // the gateway's own custodian — the same account `deployTokenization`
+      // initialized the contract with.
+      const custodian = await this.gateway.custodianAddress();
 
       // When authorization is required, the recipient must be authorized before
       // the transfer — the contract rejects transfers to unauthorized holders.
@@ -266,7 +281,7 @@ export class RwaService {
 
       await this.gateway.transferUnits({
         contractId: tokenization.contractId,
-        from: issuerAddress,
+        from: custodian,
         to: holderAddress,
         units,
       });
@@ -424,6 +439,13 @@ export class RwaService {
       BigInt(tokenization.totalUnits),
       payoutAmount,
     );
+
+    // Recompute the same shares on-chain and require agreement. The contract
+    // owns the unit balances; our holdings table is a mirror of them, and the
+    // two can drift (a holder transferring units directly, a transfer that
+    // failed after the row was written). Paying out against a stale mirror
+    // sends money to the wrong people, so a disagreement stops the payout.
+    await this.assertSharesAgree(tokenization, calculations, payoutAmount);
 
     const now = new Date().toISOString();
     const distribution = await this.repository.createDistribution({
@@ -670,6 +692,67 @@ export class RwaService {
         { contractId },
         "token contract was already marked distributed by a previous attempt",
       );
+    }
+  }
+
+  /**
+   * Check our pro-rata shares against the ones the contract computes.
+   *
+   * The token contract is the authority on who holds what; `holdings` is a
+   * mirror maintained by this service. The contract's own `all_payout_shares`
+   * is therefore the check with teeth — it reads real balances, applies the
+   * same integer division, and needs no trust in our records.
+   *
+   * The custodian's residual balance (unsold supply) appears on-chain and not
+   * in `holdings`, so it is excluded before comparing: unsold units are not
+   * owed a payout.
+   */
+  private async assertSharesAgree(
+    tokenization: TokenizationDTO,
+    calculations: PayoutCalculation[],
+    payoutAmount: bigint,
+  ): Promise<void> {
+    if (!tokenization.contractId) return;
+
+    const custodian = await this.gateway.custodianAddress();
+    const onChain = await this.gateway.getPayoutShares({
+      contractId: tokenization.contractId,
+      payoutAmount,
+    });
+
+    const expected = new Map(
+      calculations.map((c) => [c.holderAddress, BigInt(c.shareAmount)]),
+    );
+    const actual = new Map(
+      onChain
+        .filter((share) => share.holderAddress !== custodian)
+        .map((share) => [share.holderAddress, share.shareAmount]),
+    );
+
+    for (const [address, share] of expected) {
+      const chainShare = actual.get(address);
+      if (chainShare === undefined) {
+        throw new ConflictError(
+          `Tokenization ${tokenization.id} records a holding for ${address} ` +
+            "that the token contract does not; refusing to distribute a payout " +
+            "against unit records the chain disagrees with",
+        );
+      }
+      if (chainShare !== share) {
+        throw new ConflictError(
+          `Payout share for ${address} is ${share} in our records but ` +
+            `${chainShare} on-chain; unit balances have drifted`,
+        );
+      }
+    }
+    for (const address of actual.keys()) {
+      if (!expected.has(address)) {
+        throw new ConflictError(
+          `The token contract reports a holder (${address}) that ` +
+            `tokenization ${tokenization.id} has no record of; refusing to ` +
+            "distribute a payout that would skip them",
+        );
+      }
     }
   }
 

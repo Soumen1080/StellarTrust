@@ -34,29 +34,12 @@ import {
 } from "@stellartrust/shared";
 import { ConflictError } from "../../lib/errors.js";
 import { assertBalanced } from "../ledger/ledger.balance.js";
+import { systemAccountName } from "../ledger/system-accounts.js";
 import type {
   CustodyStateCommit,
   FinancialTransitionCommit,
   PaymentRepository,
 } from "./payment.repository.js";
-
-/**
- * The payment service posts ledger entries against fixed synthetic account
- * ids (one per account "role", currency-agnostic). The real chart of accounts
- * in Postgres is currency-specific (`ledger_accounts` is unique on
- * owner_ref+currency+name), so each synthetic id maps to a system account
- * NAME which is then resolved to the concrete per-currency account id at write
- * time. These names match the seeds in migrations 0002/0004.
- */
-const SYNTHETIC_ACCOUNT_NAME: Readonly<Record<string, string>> = {
-  "10000000-0000-4000-8000-000000000001": "commitment_asset",
-  "20000000-0000-4000-8000-000000000002": "commitment_liability",
-  "30000000-0000-4000-8000-000000000003": "cash_clearing",
-  "40000000-0000-4000-8000-000000000004": "escrow_holding",
-  "50000000-0000-4000-8000-000000000005": "contract_custody",
-  "60000000-0000-4000-8000-000000000006": "delivery_confirmation_asset",
-  "70000000-0000-4000-8000-000000000007": "delivery_confirmation_liability",
-};
 
 /** Postgres timestamptz columns arrive as Date; normalize to ISO strings. */
 function toIso(value: Date | string): string {
@@ -264,10 +247,7 @@ export class PgPaymentRepository implements PaymentRepository {
     syntheticId: string,
     currency: string,
   ): Promise<string> {
-    const name = SYNTHETIC_ACCOUNT_NAME[syntheticId];
-    if (!name) {
-      throw new Error(`Unknown ledger account id ${syntheticId}`);
-    }
+    const name = systemAccountName(syntheticId);
     const cacheKey = `${name}:${currency}`;
     const cached = this.accountIdCache.get(cacheKey);
     if (cached) return cached;

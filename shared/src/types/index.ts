@@ -262,6 +262,17 @@ export interface DisputeDTO {
   id: string;
   orderId: string;
   escrowId: string | null;
+  /**
+   * The Soroban custody instance this dispute is about, captured when the
+   * dispute is opened.
+   *
+   * A dispute record with no link to custody is an argument about money whose
+   * location nobody recorded: resolution moves funds out of a specific
+   * contract, and the audit trail should say which one at the moment the claim
+   * was made, not infer it later from whatever the order points at then. Null
+   * when the order has no escrow yet.
+   */
+  contractId: string | null;
   status: DisputeStatus;
   amount: Money;
   openedBy: string;

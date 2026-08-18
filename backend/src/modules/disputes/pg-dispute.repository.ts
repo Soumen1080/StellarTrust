@@ -24,18 +24,26 @@ export class PgDisputeRepository implements DisputeRepository {
   async save(dispute: DisputeDTO): Promise<void> {
     // Callers build the full next-state snapshot before saving, so a dispute
     // never persists partially updated. `resolved` mirrors resolution != null.
+    // `escrow_id`/`contract_id` (migration 0009) are denormalized out of the
+    // snapshot so the custody a claim is about is a real foreign key and an
+    // indexable column, not a string buried in JSONB.
     await this.pool.query(
       `insert into dispute_records
-         (id, order_id, opened_by, status, resolved, data, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+         (id, order_id, escrow_id, contract_id, opened_by, status, resolved,
+          data, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
        on conflict (id) do update
-         set status = excluded.status,
+         set escrow_id = excluded.escrow_id,
+             contract_id = excluded.contract_id,
+             status = excluded.status,
              resolved = excluded.resolved,
              data = excluded.data,
              updated_at = excluded.updated_at`,
       [
         dispute.id,
         dispute.orderId,
+        dispute.escrowId,
+        dispute.contractId,
         dispute.openedBy,
         dispute.status,
         dispute.resolution !== null,

@@ -51,7 +51,11 @@ import type { KycRiskClient } from "./modules/kyc/kyc-risk.client.js";
 import { KycService } from "./modules/kyc/kyc.service.js";
 import { createKycProvider } from "./modules/kyc/providers/provider.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
-import { InMemoryLedgerRepository } from "./modules/ledger/ledger.repository.js";
+import {
+  InMemoryLedgerRepository,
+  type LedgerRepository,
+} from "./modules/ledger/ledger.repository.js";
+import { PgLedgerRepository } from "./modules/ledger/pg-ledger.repository.js";
 import { LedgerService } from "./modules/ledger/ledger.service.js";
 import { createEscrowGateway } from "./modules/escrow/escrow.gateway.js";
 import { IdentityWalletAddressResolver } from "./modules/identity/wallet.resolver.js";
@@ -85,6 +89,7 @@ import {
 } from "./modules/rwa/rwa.repository.js";
 import { PgRwaRepository } from "./modules/rwa/pg-rwa.repository.js";
 import { RwaService } from "./modules/rwa/rwa.service.js";
+import { RwaReconciliationJob } from "./modules/rwa/rwa.reconciliation.job.js";
 import { createRwaRouter } from "./modules/rwa/rwa.routes.js";
 import { InMemoryReputationRepository } from "./modules/reputation/reputation.repository.js";
 import { ReputationService } from "./modules/reputation/reputation.service.js";
@@ -188,14 +193,19 @@ export function createApp(): Express {
       | undefined;
     const settlementReconciliation = app.locals
       .settlementReconciliationJob as { lastUnresolved?: () => number } | undefined;
+    const rwaReconciliationJob = app.locals.rwaReconciliationJob as
+      | { lastUnresolved?: () => number }
+      | undefined;
     const ledgerUnresolved = reconciliation?.lastUnresolved?.() ?? 0;
     const settlementUnresolved =
       settlementReconciliation?.lastUnresolved?.() ?? 0;
+    const rwaUnresolved = rwaReconciliationJob?.lastUnresolved?.() ?? 0;
 
     const ready =
       (database === true || database === "not_configured") &&
       ledgerUnresolved === 0 &&
-      settlementUnresolved === 0;
+      settlementUnresolved === 0 &&
+      rwaUnresolved === 0;
 
     res.status(ready ? 200 : 503).json({
       status: ready ? "ready" : "degraded",
@@ -203,6 +213,7 @@ export function createApp(): Express {
         database,
         ledgerUnresolvedMismatches: ledgerUnresolved,
         settlementUnresolvedMismatches: settlementUnresolved,
+        rwaUnresolvedMismatches: rwaUnresolved,
       },
       time: new Date().toISOString(),
     });
@@ -318,7 +329,17 @@ export function createApp(): Express {
   // One ledger service for the whole app. RWA payouts post through it, so a
   // payout that cannot write balanced entries fails instead of silently
   // completing (Golden Rule #1).
-  const ledgerService = new LedgerService(new InMemoryLedgerRepository());
+  //
+  // Persisted whenever a database is configured. An in-memory system of record
+  // makes every balance a function of process uptime, and — because payout
+  // idempotency is a lookup by reference id — a restart would turn a completed
+  // payout back into an unposted one, leaving the token contract's one-shot
+  // `distributed` flag as the only thing standing between a retry and paying
+  // twice.
+  const ledgerRepository: LedgerRepository = usePersistentStore
+    ? new PgLedgerRepository(getPool())
+    : new InMemoryLedgerRepository();
+  const ledgerService = new LedgerService(ledgerRepository);
 
   const rwaRepository: RwaRepository = usePersistentStore
     ? new PgRwaRepository(getPool())
@@ -360,6 +381,19 @@ export function createApp(): Express {
   );
   app.locals.reconciliationJob = reconciliation;
 
+  // Tokenization mints transferable property and had no reconciliation loop at
+  // all: a transfer that succeeded on-chain while the holdings write failed, or
+  // a holder moving units directly, went unnoticed until a payout tried to use
+  // the stale records.
+  const rwaReconciliation = new RwaReconciliationJob(
+    rwaRepository,
+    rwaGateway,
+    config.RECONCILIATION_INTERVAL_MS,
+    alerts,
+    metrics,
+  );
+  app.locals.rwaReconciliationJob = rwaReconciliation;
+
   // ── Phase 3: Cross-Border Settlement ─────────────────────────────────────
   const settlementRepository = new InMemorySettlementRepository();
   const liquidityGateway = createLiquidityGateway();
@@ -387,6 +421,7 @@ export function createApp(): Express {
     : new InMemoryDisputeRepository();
   const disputeOrders = {
     getOrder: (orderId: string) => paymentRepository.findOrder(orderId),
+    getEscrow: (orderId: string) => paymentRepository.findEscrow(orderId),
   };
   const disputes = new DisputeService(
     disputeRepository,
@@ -407,6 +442,16 @@ export function createApp(): Express {
           })
           .then(() => undefined),
     },
+    {
+      // Freeze the custody a dispute is about, so the claim binds on-chain and
+      // the arbiter can actually settle it later. Best-effort: where the
+      // contract wants the party's own signature this cannot run server-side,
+      // and the dispute record still stands.
+      markDisputed: ({ orderId, actorUserId }) =>
+        payments
+          .raiseDispute(orderId, { userId: actorUserId, roles: ["user"] })
+          .then(() => undefined),
+    },
   );
 
   // ── Module routers ────────────────────────────────────────────────────────
@@ -424,7 +469,7 @@ export function createApp(): Express {
     createSettlementRouter(settlement, settlementReconciliation, bearerVerifier),
   );
   app.use("/api/disputes", createDisputeRouter(disputes, bearerVerifier));
-  app.use("/api/rwa", createRwaRouter(rwa, bearerVerifier));
+  app.use("/api/rwa", createRwaRouter(rwa, rwaReconciliation, bearerVerifier));
   app.use(
     "/api/reputation",
     createReputationRouter(reputationService, bearerVerifier),

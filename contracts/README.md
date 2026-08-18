@@ -33,6 +33,28 @@ cargo test                 # runs unit tests (soroban-sdk testutils)
 stellar contract build     # produces optimized WASM in target/wasm32v1-none/
 ```
 
+## Binding drift
+
+The backend does not use generated bindings. Both gateways cast the SDK's
+dynamic `contract.Client` to a hand-written TypeScript interface, so nothing in
+`tsc` or `cargo test` notices when a Rust signature changes — the first failure
+would be a real transaction rejected at simulation.
+
+`contract-spec.json` closes that gap. It is the function names and argument
+lists read out of the built WASM's `contractspecv0` section, and the backend
+test `src/modules/stellar/contract-spec.test.ts` asserts the calls its gateways
+make against it. CI regenerates and diffs it on every run.
+
+```bash
+cargo build --release --target wasm32v1-none
+node scripts/check-bindings.mjs            # verify (what CI runs)
+node scripts/check-bindings.mjs --write    # accept a deliberate Rust change
+```
+
+Changing a contract signature is therefore a three-step, visible edit: change
+the Rust, regenerate the manifest, update the TypeScript interface the failing
+test names.
+
 ## Testnet deploy (manual Phase 2 operation)
 
 The contract code and unit tests are implemented. A real public-testnet deploy
@@ -49,6 +71,27 @@ Save the returned **public contract ID** in deployment configuration. Then run
 initialize/confirm/release against testnet using buyer, seller, token, and
 arbiter test identities before checking off the operational criteria in
 `Phases.md`.
+
+### Who the backend can act as
+
+Both contracts gate their privileged entry points with `require_auth()`, and the
+server holds exactly one key. That constrains deployment in ways worth stating
+plainly:
+
+- **Escrow arbiter.** `release` and `refund` call `arbiter.require_auth()`, and
+  the gateway signs them with the server signer. `ESCROW_ARBITER_ADDRESS` must
+  therefore be that signer's account; pointing it at a multi-sig produces
+  escrows nobody can settle. The gateway refuses at lock time rather than
+  discovering this at release time.
+- **RWA issuer.** `initialize` and every admin operation call
+  `issuer.require_auth()`, and `transfer` calls `from.require_auth()`. The
+  on-chain issuer is therefore the server signer, not the user recorded as
+  issuer in the database — a custodial arrangement. The gateway exposes this as
+  `custodianAddress()` and refuses calls naming any other address instead of
+  silently substituting one.
+
+Both are honest limits of a single-key server signer, not contract bugs. Moving
+past them needs a prepare/sign/submit round trip for the account in question.
 
 ## Status
 

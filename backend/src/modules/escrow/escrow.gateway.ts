@@ -30,12 +30,19 @@ import { config } from "../../config/index.js";
 import { logger } from "../../lib/logger.js";
 import { createSigner, type Signer } from "../stellar/signer.js";
 import { networkPassphrase } from "../stellar/stellar.client.js";
-import { resolveToken, toTokenAmount } from "../stellar/asset.js";
+import {
+  fromTokenAmount,
+  resolveToken,
+  toTokenAmount,
+  tokenBindingByContractId,
+} from "../stellar/asset.js";
 import {
   deployFromWasmHash,
   getContractClient,
   getTransactionStatus,
   getUnsignedContractClient,
+  isMissingContractError,
+  signAndSendChecked,
   submitSignedTransaction,
   toUnsignedTransaction,
   type ContractResult,
@@ -86,12 +93,32 @@ export interface ChainTxObservation {
   transition?: PaymentTransition;
 }
 
+/**
+ * What a custody instance says it holds, expressed in ledger terms.
+ *
+ * The contract records a token *address* and an `i128` in that token's own
+ * scale; the books record a currency and minor units. Converting here is what
+ * lets reconciliation compare value at all — comparing only custody *state*
+ * proves an escrow is "locked" while saying nothing about whether it locked
+ * the right amount, or the right asset.
+ */
+export interface CustodyValue {
+  /** Ledger minor units, or null when the token is not one we can express. */
+  amount: string | null;
+  /** Ledger currency the token maps to; null when the token is unrecognised. */
+  currency: CurrencyCode | null;
+  /** The `C…` token contract the custody instance actually holds. */
+  tokenContractId: string | null;
+}
+
 /** On-chain custody state, read back for reconciliation. */
 export interface EscrowSnapshot {
   state: EscrowState;
   /** The order this custody instance was initialized for, per the contract. */
   orderId: string | null;
   deliveryConfirmed: boolean;
+  /** What the contract holds. `null` before `initialize` has run. */
+  value: CustodyValue | null;
 }
 
 /** An unsigned transaction handed to a party's wallet. */
@@ -140,8 +167,15 @@ const SERVER_SIGNED: readonly PaymentTransition[] = [
   PaymentTransition.Refund,
 ];
 
-/** Bookkeeping-only transitions with no chain counterpart. */
-function touchesChain(transition: PaymentTransition): boolean {
+/**
+ * Does this transition have a chain counterpart at all?
+ *
+ * `create`, `accept`, and `deposit` are ledger bookkeeping. They still get a
+ * chain-record row (with a synthetic hash) so every transition has a unique
+ * key, but there is nothing on Stellar to look up — which reconciliation has
+ * to know, or it flags every healthy order as "chain transaction not found".
+ */
+export function touchesChain(transition: PaymentTransition): boolean {
   return (
     WALLET_SIGNED.includes(transition) || SERVER_SIGNED.includes(transition)
   );
@@ -151,6 +185,9 @@ interface ContractSnapshot {
   state: EscrowState;
   orderId: string;
   deliveryConfirmed: boolean;
+  /** Ledger minor units locked at `initialize`, mirroring the contract. */
+  amount: string;
+  currency: CurrencyCode;
 }
 
 /**
@@ -195,6 +232,11 @@ export class DeterministicEscrowGateway implements EscrowGateway {
         orderId: input.orderId,
         state: EscrowState.Locked,
         deliveryConfirmed: false,
+        // The contract stores what it was funded with, and never changes it.
+        // Recording it here is what lets the value checks below run against
+        // this adapter too, rather than only against a live network.
+        amount: input.amount,
+        currency: input.currency,
       });
     }
 
@@ -208,6 +250,18 @@ export class DeterministicEscrowGateway implements EscrowGateway {
       const contract = this.contracts.get(contractId);
       if (!contract || contract.orderId !== input.orderId) {
         throw new ChainError("Escrow contract could not be verified");
+      }
+      // Custody holds a fixed amount of a fixed asset. A transition claiming
+      // different terms is settling against the wrong custody, and the
+      // deployed contract would move its own `amount`, not the caller's.
+      if (
+        contract.amount !== input.amount ||
+        contract.currency !== input.currency
+      ) {
+        throw new ChainError(
+          `Escrow contract holds ${contract.amount} ${contract.currency} but ` +
+            `the transition claims ${input.amount} ${input.currency}`,
+        );
       }
       if (input.transition === PaymentTransition.Confirm) {
         if (contract.state !== EscrowState.Locked || contract.deliveryConfirmed) {
@@ -292,6 +346,13 @@ export class DeterministicEscrowGateway implements EscrowGateway {
           state: contract.state,
           orderId: contract.orderId,
           deliveryConfirmed: contract.deliveryConfirmed,
+          value: {
+            amount: contract.amount,
+            currency: contract.currency,
+            // No token contract exists in this adapter; the currency is the
+            // whole of what it can attest to.
+            tokenContractId: null,
+          },
         }
       : undefined;
   }
@@ -321,6 +382,36 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
     return config.ESCROW_ARBITER_ADDRESS ?? (await this.signer.getPublicKey());
   }
 
+  /**
+   * Refuse to write an arbiter into a contract this server cannot act as.
+   *
+   * `release`, `refund`, and the arbiter's own `dispute` are built with the
+   * server signer as the transaction source, so the contract's
+   * `arbiter.require_auth()` is satisfied only when the arbiter *is* that
+   * signer. Configuring any other account — a multi-sig, say — produces an
+   * escrow nobody can ever settle: the funds lock and stay locked.
+   *
+   * Checked before the arbiter is baked into `initialize`, so the failure
+   * lands at lock time (nothing at stake) instead of at release time (funds
+   * already in custody). Handing settlement to a separate account requires a
+   * prepare/sign/submit round trip for the arbiter, which this adapter does
+   * not implement; until it does, the honest answer is to fail loudly.
+   */
+  private async assertArbiterIsSignable(): Promise<void> {
+    const configured = config.ESCROW_ARBITER_ADDRESS;
+    if (!configured) return;
+    const signerAddress = await this.signer.getPublicKey();
+    if (configured !== signerAddress) {
+      throw new ChainError(
+        `ESCROW_ARBITER_ADDRESS (${configured}) is not the account this server ` +
+          `signs with (${signerAddress}). The escrow contract requires the ` +
+          "arbiter's own signature to release or refund, so an escrow created " +
+          "with that arbiter could never be settled by this server. Either " +
+          "point ESCROW_ARBITER_ADDRESS at the signer's account or unset it.",
+      );
+    }
+  }
+
   // ── Wallet-signed transitions ─────────────────────────────────────────────
 
   async prepareTransition(
@@ -330,6 +421,11 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
       throw new ChainError(
         `The '${input.transition}' transition is signed by the server, not a wallet`,
       );
+    }
+
+    if (input.transition === PaymentTransition.Lock) {
+      // `initialize` writes the arbiter into the contract permanently.
+      await this.assertArbiterIsSignable();
     }
 
     const contractId =
@@ -447,6 +543,10 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
       );
     }
 
+    // The server signs as arbiter here; if the contract names someone else,
+    // the call cannot be authorized and would fail after the fee was paid.
+    await this.assertArbiterIsSignable();
+
     const contractId = this.requireContractId(input);
     const client = (await getContractClient(
       contractId,
@@ -458,13 +558,10 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
       : input.transition === PaymentTransition.Release
         ? await client.release()
         : await client.refund();
-    const sent = await tx.signAndSend();
-    const hash = sent.sendTransactionResponse?.hash;
-    if (!hash) {
-      throw new ChainError(
-        `The escrow ${input.transition} transaction was not accepted by the network`,
-      );
-    }
+    const hash = await signAndSendChecked(
+      `escrow ${input.transition}`,
+      tx as ContractTx<ContractResult<void>>,
+    );
     await this.assertPostState(contractId, input);
     return this.receipt(input, contractId, hash);
   }
@@ -491,13 +588,22 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
   ): Promise<EscrowSnapshot | undefined> {
     let client: EscrowContractClient;
     try {
+      // Read as the server's own account rather than the configured arbiter:
+      // simulation needs a source account that exists on the network, and the
+      // arbiter may be an account this deployment never funded.
       client = (await getUnsignedContractClient(
         contractId,
-        await this.arbiterAddress(),
+        await this.signer.getPublicKey(),
       )) as unknown as EscrowContractClient;
-    } catch {
-      // Unknown/undeployed contract id.
-      return undefined;
+    } catch (err) {
+      // Only a genuinely unknown contract is "nothing to compare against". An
+      // RPC failure is not evidence about custody, and swallowing it here is
+      // what makes a reconciliation run report `matched` during an outage.
+      if (isMissingContractError(err)) return undefined;
+      throw new ChainError(
+        `Could not read escrow contract ${contractId} from the network`,
+        err,
+      );
     }
 
     // Simulation failures (RPC down, bad contract) throw and must propagate: an
@@ -517,6 +623,7 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
         state: EscrowState.Pending,
         orderId: null,
         deliveryConfirmed: false,
+        value: null,
       };
     }
 
@@ -527,6 +634,7 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
       state,
       orderId: escrow.order_ref,
       deliveryConfirmed: escrow.delivery_confirmed,
+      value: toCustodyValue(escrow.token, escrow.amount),
     };
   }
 
@@ -573,6 +681,10 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
           `not ${input.orderId}`,
       );
     }
+    assertCustodyValueMatches(contractId, snapshot.value, {
+      amount: input.amount,
+      currency: input.currency,
+    });
     const expected = expectedStateAfter(input.transition);
     if (expected && snapshot.state !== expected) {
       throw new ChainError(
@@ -605,6 +717,65 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
       amount: input.amount,
       currency: input.currency,
     };
+  }
+}
+
+/**
+ * Express what a custody instance holds in ledger terms.
+ *
+ * A token this deployment has no binding for yields a value with a known
+ * contract id but no amount — deliberately: reporting "unknown" is what lets
+ * callers treat "custody holds something we did not configure" as the finding
+ * it is, rather than silently skipping the value check.
+ */
+export function toCustodyValue(
+  tokenContractId: string,
+  rawAmount: bigint,
+): CustodyValue {
+  const binding = tokenBindingByContractId(tokenContractId);
+  if (!binding) return { amount: null, currency: null, tokenContractId };
+  try {
+    return {
+      amount: fromTokenAmount(rawAmount, binding),
+      currency: binding.currency,
+      tokenContractId,
+    };
+  } catch {
+    // An on-chain amount carrying precision the ledger cannot express. Not
+    // representable is not the same as zero — report it as unknown.
+    return { amount: null, currency: binding.currency, tokenContractId };
+  }
+}
+
+/**
+ * Assert custody holds exactly what a transition claims it does.
+ *
+ * State alone says an escrow is "locked"; it says nothing about whether it
+ * locked the right amount of the right asset. A contract funded with the wrong
+ * token, or with less than the order is worth, would otherwise settle cleanly.
+ */
+export function assertCustodyValueMatches(
+  contractId: string,
+  value: CustodyValue | null,
+  expected: { amount: string; currency: CurrencyCode },
+): void {
+  // No value yet: the instance is deployed but not funded (the deploy→lock
+  // gap). The state check covers that case.
+  if (!value) return;
+
+  if (value.amount === null || value.currency === null) {
+    throw new ChainError(
+      `Escrow contract ${contractId} holds token ` +
+        `${value.tokenContractId ?? "unknown"}, which this deployment cannot ` +
+        "express in ledger units; refusing to settle against custody we " +
+        "cannot value",
+    );
+  }
+  if (value.currency !== expected.currency || value.amount !== expected.amount) {
+    throw new ChainError(
+      `Escrow contract ${contractId} holds ${value.amount} ${value.currency} ` +
+        `but the order is ${expected.amount} ${expected.currency}`,
+    );
   }
 }
 
@@ -672,7 +843,9 @@ interface EscrowContractClient {
   release(): Promise<ContractTx<ContractResult<void>>>;
   refund(): Promise<ContractTx<ContractResult<void>>>;
   dispute(args: { by: string }): Promise<ContractTx<ContractResult<void>>>;
-  state(): Promise<ContractTx<ContractResult<{ tag: string; values: undefined }>>>;
+  // The contract also exposes `state()`, a narrower view of what `get()`
+  // already returns. Every read here needs the amount and order ref too, so
+  // declaring `state()` would be a surface we never call.
   get(): Promise<ContractTx<ContractResult<EscrowContractState>>>;
 }
 

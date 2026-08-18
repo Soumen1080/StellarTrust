@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import {
   fromTokenAmount,
   toTokenAmount,
+  tokenBindingByContractId,
   type TokenBinding,
 } from "./asset.js";
 import { isAccountAddress, isContractAddress, isStellarAddress } from "./address.js";
@@ -65,6 +66,17 @@ describe("fromTokenAmount", () => {
     expect(() => fromTokenAmount(1_250_000_001n, USDC)).toThrow(
       /without losing precision/,
     );
+  });
+});
+
+describe("tokenBindingByContractId", () => {
+  // Reading custody back yields a token address, not a currency. Without this
+  // reverse lookup the amount in an escrow could not be expressed in ledger
+  // units at all, and reconciliation would be left comparing state only.
+  it("returns nothing for a token this deployment has no binding for", () => {
+    // The test environment configures no token contracts, so every lookup is
+    // an unrecognised one — which is itself the signal reconciliation acts on.
+    expect(tokenBindingByContractId(USDC.contractId)).toBeUndefined();
   });
 });
 

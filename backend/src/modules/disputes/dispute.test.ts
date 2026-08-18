@@ -37,6 +37,9 @@ function setup(order: OrderDTO) {
   const audit = new InMemoryAuditRepository();
   const orders: DisputeOrderGateway = {
     getOrder: async (orderId) => (orderId === order.id ? order : undefined),
+    // These cases exercise the advisory/decision path against orders that
+    // never went through the escrow flow, so there is no custody to name.
+    getEscrow: async () => undefined,
   };
   const service = new DisputeService(
     repository,

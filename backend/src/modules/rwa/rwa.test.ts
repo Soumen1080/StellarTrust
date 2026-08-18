@@ -286,15 +286,39 @@ describe("Phase 5 RWA tokenization", () => {
     }
   });
 
-  it("keys on-chain balances by the issuer's real Stellar address", async () => {
-    // The issuer used to be passed as a DB user id, so the local adapter keyed
-    // the issuer's balance by a UUID while the Soroban adapter used the signer.
+  it("holds the supply at the gateway's custodian, not a user id or wallet", async () => {
+    // The on-chain issuer is whichever account the gateway can sign for. The
+    // Soroban adapter can only be the server signer, so a custodial model is
+    // what actually ships — and both adapters must agree on it, or a green
+    // local suite says nothing about the deployed system. Passing the issuer's
+    // own wallet here used to be silently replaced on-chain while the local
+    // adapter kept using it.
     const { service, gateway } = setup();
     const { tokenization } = await createActiveTokenization(service);
-    expect(await gateway.getBalance(tokenization.contractId!, ISSUER_ADDRESS))
+    const custodian = await gateway.custodianAddress();
+
+    expect(await gateway.getBalance(tokenization.contractId!, custodian))
       .toBe(1000n);
+    // Neither the internal user id nor the issuer's personal wallet holds units.
     expect(await gateway.getBalance(tokenization.contractId!, issuer.userId))
       .toBe(0n);
+    expect(await gateway.getBalance(tokenization.contractId!, ISSUER_ADDRESS))
+      .toBe(0n);
+  });
+
+  it("refuses to act as an address it cannot sign for", async () => {
+    // Silently substituting the custodian is exactly the drift this replaced.
+    const { gateway } = setup();
+    await expect(
+      gateway.deployToken({
+        issuerAddress: ISSUER_ADDRESS,
+        assetRef: "invoice:INV-X",
+        assetType: AssetType.Invoice,
+        description: "test",
+        totalUnits: 1000n,
+        requireAuthorization: false,
+      }),
+    ).rejects.toThrow(/own signature, which this server does not hold/);
   });
 
   it("refuses payout distribution from a non-system/non-compliance actor", async () => {
@@ -345,51 +369,87 @@ describe("Phase 5 RWA tokenization", () => {
 });
 
 describe("Phase 5 RWA gateway (deterministic)", () => {
-  it("deploys with issuer holding all units", async () => {
-    const gateway = new DeterministicRwaGateway();
+  /** Deploy a token contract issued by whoever the gateway can sign for. */
+  async function deploy(gateway: DeterministicRwaGateway) {
     const contractId = await gateway.deployToken({
-      issuerAddress: "GISSUER",
+      issuerAddress: await gateway.custodianAddress(),
       assetRef: "invoice:INV-1",
       assetType: AssetType.Invoice,
       description: "test",
       totalUnits: 1000n,
       requireAuthorization: false,
     });
-    expect(await gateway.getBalance(contractId, "GISSUER")).toBe(1000n);
+    return { contractId, custodian: await gateway.custodianAddress() };
+  }
+
+  it("deploys with the custodian holding all units", async () => {
+    const gateway = new DeterministicRwaGateway();
+    const { contractId, custodian } = await deploy(gateway);
+    expect(await gateway.getBalance(contractId, custodian)).toBe(1000n);
   });
 
   it("transfers units and computes pro-rata shares", async () => {
     const gateway = new DeterministicRwaGateway();
-    const contractId = await gateway.deployToken({
-      issuerAddress: "GISSUER",
-      assetRef: "invoice:INV-1",
-      assetType: AssetType.Invoice,
-      description: "test",
-      totalUnits: 1000n,
-      requireAuthorization: false,
+    const { contractId, custodian } = await deploy(gateway);
+    await gateway.transferUnits({
+      contractId,
+      from: custodian,
+      to: INVESTOR1_ADDRESS,
+      units: 250n,
     });
-    await gateway.transferUnits({ contractId, from: "GISSUER", to: "GINV1", units: 250n });
-    expect(await gateway.getBalance(contractId, "GINV1")).toBe(250n);
-    expect(await gateway.getBalance(contractId, "GISSUER")).toBe(750n);
+    expect(await gateway.getBalance(contractId, INVESTOR1_ADDRESS)).toBe(250n);
+    expect(await gateway.getBalance(contractId, custodian)).toBe(750n);
 
     const shares = await gateway.getPayoutShares({ contractId, payoutAmount: 4000n });
     const total = shares.reduce((sum, s) => sum + s.shareAmount, 0n);
     expect(total).toBe(4000n);
   });
 
+  it("reports holder balances for reconciliation", async () => {
+    const gateway = new DeterministicRwaGateway();
+    const { contractId, custodian } = await deploy(gateway);
+    await gateway.transferUnits({
+      contractId,
+      from: custodian,
+      to: INVESTOR1_ADDRESS,
+      units: 250n,
+    });
+
+    const balances = await gateway.getHolderBalances(contractId);
+    expect(balances).toEqual(
+      expect.arrayContaining([
+        { holderAddress: custodian, units: 750n },
+        { holderAddress: INVESTOR1_ADDRESS, units: 250n },
+      ]),
+    );
+  });
+
+  it("refuses a transfer from an address it cannot sign for", async () => {
+    // The contract gates `transfer` with `from.require_auth()`. Accepting a
+    // `from` we hold no key for would green-light a call the chain rejects.
+    const gateway = new DeterministicRwaGateway();
+    const { contractId } = await deploy(gateway);
+    await expect(
+      gateway.transferUnits({
+        contractId,
+        from: INVESTOR1_ADDRESS,
+        to: INVESTOR2_ADDRESS,
+        units: 10n,
+      }),
+    ).rejects.toThrow(/own signature, which this server does not hold/);
+  });
+
   it("blocks transfers when frozen", async () => {
     const gateway = new DeterministicRwaGateway();
-    const contractId = await gateway.deployToken({
-      issuerAddress: "GISSUER",
-      assetRef: "invoice:INV-1",
-      assetType: AssetType.Invoice,
-      description: "test",
-      totalUnits: 1000n,
-      requireAuthorization: false,
-    });
+    const { contractId, custodian } = await deploy(gateway);
     await gateway.freezeToken(contractId);
     await expect(
-      gateway.transferUnits({ contractId, from: "GISSUER", to: "GINV1", units: 10n }),
+      gateway.transferUnits({
+        contractId,
+        from: custodian,
+        to: INVESTOR1_ADDRESS,
+        units: 10n,
+      }),
     ).rejects.toMatchObject({ code: "CHAIN" });
   });
 });

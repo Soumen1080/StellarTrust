@@ -8,12 +8,16 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { Keypair } from "@stellar/stellar-sdk";
 import { ChainError } from "../../lib/errors.js";
 import { config } from "../../config/index.js";
 import { createSigner, type Signer } from "../stellar/signer.js";
 import {
   deployFromWasmHash,
   getContractClient,
+  isMissingContractError,
+  signAndSendChecked,
+  unwrapContractResult,
   type ContractResult,
   type ContractTx,
 } from "../stellar/soroban.client.js";
@@ -50,10 +54,31 @@ export interface PayoutShare {
   shareAmount: bigint;
 }
 
+/** A holder's on-chain unit balance, read back from the token contract. */
+export interface HolderBalance {
+  holderAddress: string;
+  units: bigint;
+}
+
 /**
  * Gateway interface for RWA token contract operations.
  */
 export interface RwaGateway {
+  /**
+   * The Stellar account this gateway can actually authorize as.
+   *
+   * The token contract gates `transfer` with `from.require_auth()` and every
+   * admin operation with `issuer.require_auth()`. A server-side gateway can
+   * only satisfy those for the one account it holds a key for, so that account
+   * is the on-chain issuer and the source of every distributed unit —
+   * regardless of which internal user the tokenization is recorded against.
+   *
+   * Exposed rather than assumed so callers pass the right address instead of
+   * having a different one silently substituted, and so both adapters key
+   * balances by the same value.
+   */
+  custodianAddress(): Promise<string>;
+
   /**
    * Deploy a new RWA token contract to the blockchain.
    * Returns the deployed contract ID.
@@ -89,6 +114,16 @@ export interface RwaGateway {
    * Get balance of units for a holder.
    */
   getBalance(contractId: string, holderAddress: string): Promise<bigint>;
+
+  /**
+   * Every non-zero holder and what they hold, straight from the contract.
+   *
+   * The authority on who owns units is the token contract, not our holdings
+   * table: a holder can transfer units directly on-chain without the backend
+   * ever seeing it. Payout shares computed from stale records would pay the
+   * wrong people, so this is what those records are checked against.
+   */
+  getHolderBalances(contractId: string): Promise<HolderBalance[]>;
 
   /**
    * Calculate payout shares for all holders.
@@ -141,10 +176,29 @@ interface ContractState {
 export class DeterministicRwaGateway implements RwaGateway {
   private readonly contracts = new Map<string, ContractState>();
 
+  /**
+   * A stable, structurally valid `G…` account standing in for the server
+   * signer. Derived rather than hard-coded so it is a real strkey — the same
+   * address-shaped value the Soroban adapter would return, so code paths that
+   * validate addresses behave identically under both.
+   */
+  private readonly custodian = Keypair.fromRawEd25519Seed(
+    Buffer.alloc(32, 7),
+  ).publicKey();
+
+  async custodianAddress(): Promise<string> {
+    return this.custodian;
+  }
+
   async deployToken(input: DeployTokenInput): Promise<string> {
     if (input.totalUnits <= 0n) {
       throw new ChainError("Total units must be positive");
     }
+    assertIsCustodian(
+      input.issuerAddress,
+      this.custodian,
+      "issue a tokenization",
+    );
 
     const contractId = `rwa-contract-${randomUUID()}`;
     const balances = new Map<string, bigint>();
@@ -184,6 +238,11 @@ export class DeterministicRwaGateway implements RwaGateway {
     if (input.units <= 0n) {
       throw new ChainError("Transfer amount must be positive");
     }
+
+    // The contract gates `transfer` with `from.require_auth()`. Only the
+    // custodian's signature exists here, so any other `from` is a call this
+    // adapter must refuse exactly as the deployed contract would.
+    assertIsCustodian(input.from, this.custodian, "transfer units");
 
     // Check authorization if required
     if (contract.requireAuthorization) {
@@ -305,6 +364,13 @@ export class DeterministicRwaGateway implements RwaGateway {
     };
   }
 
+  async getHolderBalances(contractId: string): Promise<HolderBalance[]> {
+    const contract = this.requireContract(contractId);
+    return Array.from(contract.balances.entries())
+      .filter(([, units]) => units > 0n)
+      .map(([holderAddress, units]) => ({ holderAddress, units }));
+  }
+
   private requireContract(contractId: string): ContractState {
     const contract = this.contracts.get(contractId);
     if (!contract) {
@@ -312,15 +378,27 @@ export class DeterministicRwaGateway implements RwaGateway {
     }
     return contract;
   }
+}
 
-  /**
-   * Test helper: get all holder addresses with non-zero balances.
-   */
-  async getHolders(contractId: string): Promise<string[]> {
-    const contract = this.requireContract(contractId);
-    return Array.from(contract.balances.entries())
-      .filter(([_, balance]) => balance > 0n)
-      .map(([address, _]) => address);
+/**
+ * Refuse a call whose authorizing address is not the one this server can sign
+ * for.
+ *
+ * Substituting the custodian silently — which is what the Soroban adapter used
+ * to do — makes the two adapters disagree about who holds units: the local one
+ * keys balances by the address it was handed, the on-chain one by the signer.
+ * A green test suite then says nothing about the deployed system.
+ */
+function assertIsCustodian(
+  address: string,
+  custodian: string,
+  action: string,
+): void {
+  if (address !== custodian) {
+    throw new ChainError(
+      `Only ${custodian} can ${action} through this gateway; the contract ` +
+        `requires ${address}'s own signature, which this server does not hold.`,
+    );
   }
 }
 
@@ -337,9 +415,19 @@ export class DeterministicRwaGateway implements RwaGateway {
  * Only the issuer (this signer) can therefore be the `from`. Secondary/resale
  * transfers, where a non-issuer holder is the `from`, require that holder's own
  * signature (client-side wallet) and are not driven by this server-side gateway.
+ * Callers are told this via {@link RwaGateway.custodianAddress} and refused if
+ * they ask for another address, rather than having one substituted for them.
+ *
+ * Every write is verified before it is reported as done: the contract's
+ * `Result` is unwrapped (a Rust `Err` does not throw on its own) and, for the
+ * operations that move or gate property, the resulting state is read back.
  */
 export class SorobanRpcRwaGateway implements RwaGateway {
   constructor(private readonly signer: Signer) {}
+
+  async custodianAddress(): Promise<string> {
+    return this.signer.getPublicKey();
+  }
 
   private async client(contractId: string): Promise<RwaContractClient> {
     return (await getContractClient(
@@ -359,23 +447,38 @@ export class SorobanRpcRwaGateway implements RwaGateway {
         "RWA_WASM_HASH is not configured; cannot deploy RWA token contract",
       );
     }
+    const issuer = await this.custodianAddress();
+    assertIsCustodian(input.issuerAddress, issuer, "issue a tokenization");
 
-    // The server signer is the on-chain issuer, regardless of the caller's
-    // internal issuer id (which is a DB user id, not a Stellar address).
-    const issuer = await this.signer.getPublicKey();
     const contractId = await deployFromWasmHash(wasmHash, this.signer);
 
     const client = await this.client(contractId);
-    const tx = await client.initialize({
-      issuer,
-      asset_ref: input.assetRef,
-      asset_type: { tag: assetTypeTag(input.assetType), values: undefined },
-      description: input.description,
-      total_units: input.totalUnits,
-      require_authorization: input.requireAuthorization,
-    });
-    await tx.signAndSend();
+    await signAndSendChecked(
+      "rwa initialize",
+      await client.initialize({
+        issuer,
+        asset_ref: input.assetRef,
+        asset_type: { tag: assetTypeTag(input.assetType), values: undefined },
+        description: input.description,
+        total_units: input.totalUnits,
+        require_authorization: input.requireAuthorization,
+      }),
+    );
 
+    // Read the tokenization back. A deploy that initialized with different
+    // terms than we asked for is not a tokenization we can pay out against.
+    const meta = await this.getContractMeta(contractId);
+    if (!meta) {
+      throw new ChainError(
+        `RWA contract ${contractId} could not be read back after deployment`,
+      );
+    }
+    if (meta.issuer !== issuer || meta.totalUnits !== input.totalUnits) {
+      throw new ChainError(
+        `RWA contract ${contractId} initialized as ${meta.totalUnits} units ` +
+          `held by ${meta.issuer}; expected ${input.totalUnits} held by ${issuer}`,
+      );
+    }
     return contractId;
   }
 
@@ -383,42 +486,99 @@ export class SorobanRpcRwaGateway implements RwaGateway {
     if (input.units <= 0n) {
       throw new ChainError("Transfer amount must be positive");
     }
-    // Only the issuer (this signer) can authorize a transfer out of its own
-    // balance; `from` is bound to the signer's on-chain address.
-    const from = await this.signer.getPublicKey();
+    // The contract gates `transfer` with `from.require_auth()`, so the only
+    // `from` this server can authorize is its own account.
+    const from = await this.custodianAddress();
+    assertIsCustodian(input.from, from, "transfer units");
+
     const client = await this.client(input.contractId);
-    const tx = await client.transfer({ from, to: input.to, units: input.units });
-    await tx.signAndSend();
+    const before = await this.getBalance(input.contractId, input.to);
+    await signAndSendChecked(
+      "rwa transfer",
+      await client.transfer({ from, to: input.to, units: input.units }),
+    );
+
+    // Units are property. Recording a purchase the contract did not actually
+    // execute would leave a holder owed units nobody holds.
+    const after = await this.getBalance(input.contractId, input.to);
+    if (after - before !== input.units) {
+      throw new ChainError(
+        `RWA transfer of ${input.units} units to ${input.to} moved ` +
+          `${after - before} units on-chain`,
+      );
+    }
   }
 
   async authorizeHolder(input: AuthorizeHolderInput): Promise<void> {
     const client = await this.client(input.contractId);
-    const tx = await client.authorize({ address: input.holderAddress });
-    await tx.signAndSend();
+    await signAndSendChecked(
+      "rwa authorize",
+      await client.authorize({ address: input.holderAddress }),
+    );
+    // `authorize` is a silent no-op when the contract does not require
+    // authorization, so an unauthorized answer here is a real refusal.
+    if (!(await this.isAuthorized(input.contractId, input.holderAddress))) {
+      throw new ChainError(
+        `RWA contract ${input.contractId} did not authorize ${input.holderAddress}`,
+      );
+    }
   }
 
   async revokeAuthorization(input: AuthorizeHolderInput): Promise<void> {
     const client = await this.client(input.contractId);
-    const tx = await client.revoke_authorization({ address: input.holderAddress });
-    await tx.signAndSend();
+    await signAndSendChecked(
+      "rwa revoke_authorization",
+      await client.revoke_authorization({ address: input.holderAddress }),
+    );
   }
 
   async freezeToken(contractId: string): Promise<void> {
     const client = await this.client(contractId);
-    const tx = await client.freeze();
-    await tx.signAndSend();
+    await signAndSendChecked("rwa freeze", await client.freeze());
+    await this.assertFrozen(contractId, true);
   }
 
   async unfreezeToken(contractId: string): Promise<void> {
     const client = await this.client(contractId);
-    const tx = await client.unfreeze();
-    await tx.signAndSend();
+    await signAndSendChecked("rwa unfreeze", await client.unfreeze());
+    await this.assertFrozen(contractId, false);
+  }
+
+  /** Freezing is a compliance control; confirm the contract actually applied it. */
+  private async assertFrozen(
+    contractId: string,
+    expected: boolean,
+  ): Promise<void> {
+    const meta = await this.getContractMeta(contractId);
+    if (!meta || meta.frozen !== expected) {
+      throw new ChainError(
+        `RWA contract ${contractId} is ${meta ? `frozen=${meta.frozen}` : "unreadable"} ` +
+          `after the ${expected ? "freeze" : "unfreeze"}`,
+      );
+    }
   }
 
   async getBalance(contractId: string, holderAddress: string): Promise<bigint> {
     const client = await this.client(contractId);
     const tx = await client.balance_of({ holder: holderAddress });
-    return tx.result.unwrap();
+    return unwrapContractResult<bigint>("rwa balance_of", tx.result);
+  }
+
+  async getHolderBalances(contractId: string): Promise<HolderBalance[]> {
+    const client = await this.client(contractId);
+    const holdersTx = await client.get_holders();
+    const holders = unwrapContractResult<string[]>(
+      "rwa get_holders",
+      holdersTx.result,
+    );
+    // Balances are read individually rather than inferred from payout shares:
+    // a share is a rounded quotient, and unit counts must be exact.
+    return Promise.all(
+      holders.map(async (holderAddress) => ({
+        holderAddress,
+        units: await this.getBalance(contractId, holderAddress),
+      })),
+    );
   }
 
   async getPayoutShares(input: PayoutSharesInput): Promise<PayoutShare[]> {
@@ -427,21 +587,24 @@ export class SorobanRpcRwaGateway implements RwaGateway {
     }
     const client = await this.client(input.contractId);
     const tx = await client.all_payout_shares({ payout: input.payoutAmount });
-    return tx.result
-      .unwrap()
-      .map(([holderAddress, shareAmount]) => ({ holderAddress, shareAmount }));
+    return unwrapContractResult<Array<readonly [string, bigint]>>(
+      "rwa all_payout_shares",
+      tx.result,
+    ).map(([holderAddress, shareAmount]) => ({ holderAddress, shareAmount }));
   }
 
   async markDistributed(contractId: string): Promise<void> {
     const client = await this.client(contractId);
-    const tx = await client.mark_distributed();
-    await tx.signAndSend();
+    await signAndSendChecked(
+      "rwa mark_distributed",
+      await client.mark_distributed(),
+    );
   }
 
   async isAuthorized(contractId: string, address: string): Promise<boolean> {
     const client = await this.client(contractId);
     const tx = await client.is_authorized({ address });
-    return tx.result.unwrap();
+    return unwrapContractResult<boolean>("rwa is_authorized", tx.result);
   }
 
   async getContractMeta(contractId: string): Promise<
@@ -457,13 +620,21 @@ export class SorobanRpcRwaGateway implements RwaGateway {
     let client: RwaContractClient;
     try {
       client = await this.client(contractId);
-    } catch {
-      // Unknown/undeployed contract id — mirror the deterministic adapter's
-      // "not found" contract rather than surfacing a lookup error.
-      return undefined;
+    } catch (err) {
+      // Only a genuinely unknown contract maps to "not found". An RPC failure
+      // must propagate: callers treat `undefined` as "this tokenization does
+      // not exist on-chain", and an outage is not evidence of that.
+      if (isMissingContractError(err)) return undefined;
+      throw new ChainError(
+        `Could not read RWA contract ${contractId} from the network`,
+        err,
+      );
     }
     const tx = await client.get_meta();
-    const meta = tx.result.unwrap();
+    const meta = unwrapContractResult<RwaContractMeta>(
+      "rwa get_meta",
+      tx.result,
+    );
     return {
       issuer: meta.issuer,
       assetRef: meta.asset_ref,
@@ -520,6 +691,7 @@ interface RwaContractClient {
   is_authorized(args: {
     address: string;
   }): Promise<ContractTx<ContractResult<boolean>>>;
+  get_holders(): Promise<ContractTx<ContractResult<string[]>>>;
   mark_distributed(): Promise<ContractTx<ContractResult<void>>>;
   all_payout_shares(args: {
     payout: bigint;

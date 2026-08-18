@@ -81,18 +81,38 @@ jobs:
         working-directory: ai
         run: pytest -q
 
-  # ── Soroban contracts: build + cargo test ───────────────────────────────────
+  # ── Soroban contracts: build + cargo test + binding drift ───────────────────
   contracts:
-    name: contracts (cargo test)
+    name: contracts (cargo test · bindings)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Test
         working-directory: contracts
         run: cargo test
+
+      # `cargo test` only tests Rust against Rust. The backend calls these
+      # contracts through hand-written TypeScript interfaces, and nothing else
+      # in CI would notice a renamed argument until a real transaction failed
+      # at simulation. Build the WASM, read its contract spec, and diff it
+      # against the manifest the backend's own test asserts against.
+      - name: Build WASM
+        working-directory: contracts
+        run: cargo build --release --target wasm32v1-none
+
+      - name: Install spec reader deps
+        working-directory: backend
+        run: npm ci
+
+      - name: Check contract bindings
+        working-directory: backend
+        run: node ../contracts/scripts/check-bindings.mjs
 
   # ── Database: apply migrations to Postgres + run the ledger-balance smoke test
   #    (proves the DB-level double-entry invariant rejects unbalanced writes) ──

@@ -40,6 +40,7 @@ import type { AuditRepository } from "../audit/audit.repository.js";
 import type { ReputationService } from "../reputation/reputation.service.js";
 import type { DisputeRiskClient } from "./dispute-risk.client.js";
 import type {
+  DisputeChainGateway,
   DisputeOrderGateway,
   DisputeRepository,
   DisputeSettlementGateway,
@@ -61,6 +62,7 @@ export class DisputeService {
     private readonly audit: AuditRepository,
     private readonly reputation?: ReputationService,
     private readonly settlement?: DisputeSettlementGateway,
+    private readonly chain?: DisputeChainGateway,
   ) {}
 
   async open(
@@ -85,11 +87,15 @@ export class DisputeService {
       throw new ConflictError("An open dispute already exists for this order");
     }
 
+    // Name the custody the claim is about, at the moment the claim is made.
+    const escrow = await this.orders.getEscrow(order.id);
+
     const now = new Date();
     const dispute: DisputeDTO = {
       id: randomUUID(),
       orderId: order.id,
-      escrowId: null,
+      escrowId: escrow?.id ?? null,
+      contractId: escrow?.contractId ?? null,
       status: DisputeStatus.EvidenceWindow,
       amount: order.amount,
       openedBy: actor.userId,
@@ -110,9 +116,61 @@ export class DisputeService {
       action: "dispute.opened",
       entity: "dispute",
       entityId: dispute.id,
-      metadata: { orderId: order.id, amountCurrency: order.amount.currency },
+      metadata: {
+        orderId: order.id,
+        amountCurrency: order.amount.currency,
+        escrowId: dispute.escrowId,
+        contractId: dispute.contractId,
+      },
     });
+    await this.freezeCustody(dispute, actor);
     return dispute;
+  }
+
+  /**
+   * Move the escrow contract into `Disputed` so the claim actually binds
+   * on-chain.
+   *
+   * A dispute that exists only in our tables leaves the contract in `Locked`,
+   * from which the arbiter cannot release when the dispute resolves — the
+   * resolution would be recorded and then fail to execute. Doing it at open
+   * time also stops the counterparty from confirming and releasing out from
+   * under an active claim.
+   *
+   * Non-fatal: the dispute record is the authority for the claim, and the
+   * wallet-signed deployments genuinely cannot do this server-side. Failure is
+   * audited so a compliance operator can escalate it explicitly.
+   */
+  private async freezeCustody(
+    dispute: DisputeDTO,
+    actor: DisputeActor,
+  ): Promise<void> {
+    if (!this.chain || !dispute.contractId) return;
+    try {
+      await this.chain.markDisputed({
+        orderId: dispute.orderId,
+        actorUserId: actor.userId,
+      });
+      await this.audit.append({
+        actor: `user:${actor.userId}`,
+        action: "dispute.custody_frozen",
+        entity: "dispute",
+        entityId: dispute.id,
+        metadata: { orderId: dispute.orderId, contractId: dispute.contractId },
+      });
+    } catch (err) {
+      await this.audit.append({
+        actor: "system:dispute-chain",
+        action: "dispute.custody_freeze_failed",
+        entity: "dispute",
+        entityId: dispute.id,
+        metadata: {
+          orderId: dispute.orderId,
+          contractId: dispute.contractId,
+          error: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
   }
 
   async submitEvidence(

@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import {
   ChainTxStatus,
+  OrderStatus,
   ReconciliationStatus,
   type EscrowState,
+  type OrderDTO,
   type PaymentTransitionDTO,
   type ReconciliationMismatchDTO,
   type ReconciliationReportDTO,
@@ -10,9 +12,10 @@ import {
 import { logger } from "../lib/logger.js";
 import type { AlertSink } from "../lib/alerts.js";
 import type { MetricsRegistry } from "../lib/metrics.js";
-import type {
-  EscrowGateway,
-  EscrowSnapshot,
+import {
+  touchesChain,
+  type EscrowGateway,
+  type EscrowSnapshot,
 } from "../modules/escrow/escrow.gateway.js";
 import { isBalanced } from "../modules/ledger/ledger.balance.js";
 import type { PaymentRepository } from "../modules/payments/payment.repository.js";
@@ -21,6 +24,8 @@ import type { PaymentRepository } from "../modules/payments/payment.repository.j
 interface CustodyComparison {
   recorded: EscrowState | undefined;
   onChain: EscrowSnapshot | undefined;
+  /** The order itself, so custody can be checked for value, not just state. */
+  order: OrderDTO | undefined;
 }
 
 export class ReconciliationJob {
@@ -112,6 +117,13 @@ export class ReconciliationJob {
     if (!isBalanced(transition.ledgerTransaction.entries)) {
       return "ledger transaction is not balanced";
     }
+
+    // `create`, `accept`, and `deposit` move no funds on-chain. They still
+    // carry a chain-record row so every transition has a unique key, but its
+    // hash is synthetic — asking the network about it returns NOT_FOUND, which
+    // would mark every healthy order mismatched and block it permanently.
+    if (!touchesChain(transition.transition)) return undefined;
+
     const observed = transition.stellarTransaction.hash
       ? await this.gateway.getTransaction(transition.stellarTransaction.hash)
       : undefined;
@@ -150,6 +162,7 @@ export class ReconciliationJob {
         onChain: escrow?.contractId
           ? await this.gateway.getEscrowSnapshot(escrow.contractId)
           : undefined,
+        order: await this.repository.findOrder(transition.orderId),
       };
       cache.set(transition.orderId, pair);
     }
@@ -166,6 +179,43 @@ export class ReconciliationJob {
     }
     if (pair.onChain.state !== pair.recorded) {
       return `escrow is ${pair.onChain.state} on-chain but ${pair.recorded} in the ledger`;
+    }
+    return this.checkCustodyValue(pair);
+  }
+
+  /**
+   * Custody holds what the order says it is worth, in the asset the order is
+   * denominated in.
+   *
+   * This is the half of reconciliation that state comparison cannot reach. An
+   * escrow funded with the wrong token, or with a fraction of the order value,
+   * is `Locked` on-chain and `locked` in the books — identical states, wholly
+   * different facts about where the money is.
+   */
+  private checkCustodyValue(pair: CustodyComparison): string | undefined {
+    const { onChain, order } = pair;
+    // Nothing funded yet (the deploy→lock gap), or no order to compare to.
+    if (!onChain?.value || !order) return undefined;
+
+    const { amount, currency, tokenContractId } = onChain.value;
+    if (amount === null || currency === null) {
+      return (
+        `escrow custody holds token ${tokenContractId ?? "unknown"}, which ` +
+        "this deployment cannot express in ledger units"
+      );
+    }
+    if (currency !== order.amount.currency || amount !== order.amount.amount) {
+      return (
+        `escrow custody holds ${amount} ${currency} but the order is ` +
+        `${order.amount.amount} ${order.amount.currency}`
+      );
+    }
+
+    // The contract's own `delivery_confirmed` is what gates a happy-path
+    // release. If the books say the buyer confirmed and the contract does not,
+    // the next release will be rejected on-chain — better to know now.
+    if (order.status === OrderStatus.Confirmed && !onChain.deliveryConfirmed) {
+      return "order is confirmed in the ledger but the contract records no delivery confirmation";
     }
     return undefined;
   }

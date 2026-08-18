@@ -33,14 +33,15 @@ import { networkPassphrase } from "../stellar/stellar.client.js";
 import type { PaymentRepository } from "./payment.repository.js";
 import type { RwaService } from "../rwa/rwa.service.js";
 import { logger } from "../../lib/logger.js";
-
-const COMMITMENT_ASSET = "10000000-0000-4000-8000-000000000001";
-const COMMITMENT_LIABILITY = "20000000-0000-4000-8000-000000000002";
-const CASH_CLEARING = "30000000-0000-4000-8000-000000000003";
-const ESCROW_HOLDING = "40000000-0000-4000-8000-000000000004";
-const CONTRACT_CUSTODY = "50000000-0000-4000-8000-000000000005";
-const DELIVERY_ASSET = "60000000-0000-4000-8000-000000000006";
-const DELIVERY_LIABILITY = "70000000-0000-4000-8000-000000000007";
+import {
+  CASH_CLEARING,
+  COMMITMENT_ASSET,
+  COMMITMENT_LIABILITY,
+  CONTRACT_CUSTODY,
+  DELIVERY_ASSET,
+  DELIVERY_LIABILITY,
+  ESCROW_HOLDING,
+} from "../ledger/system-accounts.js";
 
 /**
  * Transitions that post to the double-entry ledger. `dispute` is deliberately
@@ -310,6 +311,49 @@ export class PaymentService {
     return this.commit(order, escrow, requested as FinancialTransition, actor.userId, {
       chain,
     });
+  }
+
+  /**
+   * Raise a dispute as a party to the order, on whichever signing path this
+   * deployment uses.
+   *
+   * Without this, `dispute` was unreachable for a buyer or seller whenever the
+   * gateway signs server-side: `transition()` refuses it as non-financial and
+   * points at prepare/submit, while `prepareTransition()` refuses it because
+   * nothing needs a wallet signature. Both doors shut, and the contract's
+   * `dispute` entry point — the only route to a settleable unconfirmed escrow
+   * — could only ever be reached by the arbiter.
+   *
+   * Wallet deployments still go through prepare → sign → submit, because the
+   * contract wants the party's own signature and the server cannot forge it.
+   */
+  async raiseDispute(
+    orderId: string,
+    actor: PaymentActor,
+  ): Promise<OrderDetailsResponse> {
+    if (
+      this.gateway.signingMode(PaymentTransition.Dispute) ===
+      ChainSigningMode.Wallet
+    ) {
+      throw new ConflictError(
+        "Raising a dispute must be signed by your wallet. Call " +
+          `POST /orders/${orderId}/dispute/prepare, sign the returned ` +
+          "transaction, then submit it.",
+      );
+    }
+
+    const current = await this.requireOrder(orderId);
+    await this.assertNotBlocked(orderId);
+    this.authorize(current, PaymentTransition.Dispute, actor);
+    const escrow = (await this.repository.findEscrow(orderId)) ?? null;
+    this.assertChainPreconditions(current, escrow, PaymentTransition.Dispute);
+
+    // The chain call comes first: custody state is what authorizes the order
+    // status change, not the other way round.
+    await this.gateway.submitTransition(
+      this.chainInput(current, escrow, PaymentTransition.Dispute, actor.userId),
+    );
+    return this.recordDispute(current, escrow, actor);
   }
 
   /**

@@ -193,6 +193,25 @@ export const api = {
     request<PaymentCapabilitiesResponse>("/api/payments/capabilities", {
       accessToken,
     }),
+  /**
+   * Raise a dispute where the server signs as arbiter.
+   *
+   * Deployments whose gateway wants the party's own signature answer 409 here
+   * and take the prepare/sign/submit route instead; `paymentCapabilities`
+   * says which. Both routes exist either way, so the client never has to
+   * encode the signing model.
+   */
+  raiseDispute: (
+    accessToken: string,
+    orderId: string,
+    idempotencyKey: string,
+  ): Promise<OrderDetailsResponse> =>
+    request<OrderDetailsResponse>(`/api/payments/orders/${orderId}/dispute`, {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: "{}",
+    }),
   /** Ask the server to assemble the transaction this wallet must sign. */
   prepareTransition: (
     accessToken: string,

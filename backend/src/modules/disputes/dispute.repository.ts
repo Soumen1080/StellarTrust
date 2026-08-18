@@ -5,7 +5,12 @@
  * adapter). The dispute record is the auditable authority for a resolution;
  * fund movement remains the compliance-operated escrow/payments arbiter path.
  */
-import type { DisputeDTO, DisputeResolution, OrderDTO } from "@stellartrust/shared";
+import type {
+  DisputeDTO,
+  DisputeResolution,
+  EscrowDTO,
+  OrderDTO,
+} from "@stellartrust/shared";
 
 /**
  * Narrow port into the payments bounded context so disputes can validate the
@@ -14,6 +19,27 @@ import type { DisputeDTO, DisputeResolution, OrderDTO } from "@stellartrust/shar
  */
 export interface DisputeOrderGateway {
   getOrder(orderId: string): Promise<OrderDTO | undefined>;
+  /**
+   * The custody instance the order's funds sit in, so a dispute can name the
+   * contract it is about rather than being a purely off-chain record.
+   */
+  getEscrow(orderId: string): Promise<EscrowDTO | undefined>;
+}
+
+/**
+ * Port for moving the escrow contract itself into `Disputed`.
+ *
+ * Opening a dispute in the database and freezing the funds on-chain are two
+ * different acts, and only the second one binds. The contract's `release`
+ * accepts `Disputed` or a buyer confirmation and nothing else, so an escrow
+ * that was never moved to `Disputed` on-chain cannot be settled by the arbiter
+ * when the dispute resolves — the claim would be adjudicated and then stall.
+ *
+ * Best-effort by design: where the contract demands the party's own signature
+ * the server cannot produce it, and the dispute record still stands.
+ */
+export interface DisputeChainGateway {
+  markDisputed(input: { orderId: string; actorUserId: string }): Promise<void>;
 }
 
 /**

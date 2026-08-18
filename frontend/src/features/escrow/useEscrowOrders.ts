@@ -180,11 +180,15 @@ export function useEscrowOrders(session: AuthSessionResponse | null) {
             signedXdr,
           );
         } else if (action === "dispute") {
-          // A dispute has no server-signed route: the contract requires the
-          // disputing party's own signature.
-          throw new Error(
-            "Raising a dispute needs a wallet signature, which this " +
-              "environment is not configured for.",
+          // Server-signed deployments have their own dispute route. It reaches
+          // the same contract call, which is what makes the escrow settleable
+          // later — the contract's `release` accepts `Disputed` or a buyer
+          // confirmation and nothing else.
+          setRunning({ orderId, action, phase: "submitting" });
+          await api.raiseDispute(
+            session.accessToken,
+            orderId,
+            crypto.randomUUID(),
           );
         } else {
           setRunning({ orderId, action, phase: "submitting" });

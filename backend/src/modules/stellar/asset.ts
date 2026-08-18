@@ -49,9 +49,28 @@ export function resolveToken(currency: CurrencyCode): TokenBinding {
   return { currency, ...binding };
 }
 
-/** True when this deployment can put `currency` on-chain at all. */
-export function hasToken(currency: CurrencyCode): boolean {
-  return config.STELLAR_TOKEN_CONTRACTS[currency] !== undefined;
+/**
+ * Reverse lookup: which ledger currency does this token contract back?
+ *
+ * Reading custody back gives us a token *address*, not a currency — the escrow
+ * contract stores what it holds, not what our books call it. Without this the
+ * amount in custody could not be expressed in ledger units at all, and
+ * reconciliation would be left comparing state while ignoring value.
+ *
+ * Returns `undefined` for a token this deployment has no binding for, which is
+ * itself a finding: custody is holding something we did not configure.
+ */
+export function tokenBindingByContractId(
+  contractId: string,
+): TokenBinding | undefined {
+  for (const [currency, binding] of Object.entries(
+    config.STELLAR_TOKEN_CONTRACTS,
+  )) {
+    if (binding.contractId === contractId) {
+      return { currency: currency as CurrencyCode, ...binding };
+    }
+  }
+  return undefined;
 }
 
 /**

@@ -131,6 +131,87 @@ export function toUnsignedTransaction<T>(
   };
 }
 
+/**
+ * Does this error mean "no such contract", as opposed to "we could not ask"?
+ *
+ * `contract.Client.from` fetches the contract spec over RPC, so its failures
+ * cover two very different situations: a contract id that genuinely is not on
+ * the network, and a network that did not answer. Treating the second as the
+ * first is how a reconciliation run reports "matched" during an RPC outage —
+ * it reads every custody instance as unknown and skips the comparison. Only
+ * the first is safe to swallow.
+ */
+export function isMissingContractError(err: unknown): boolean {
+  if (err instanceof ChainError) return false;
+  const message =
+    err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return /not found|no such contract|MissingValue|invalid contract id|could not obtain contract|does not exist/i.test(
+    message,
+  );
+}
+
+/**
+ * Unwrap a contract call's `Result<T, E>`, turning a contract-level `Err` into
+ * a {@link ChainError} naming the call.
+ *
+ * The spec-generated client does NOT throw for a Rust `Err` return: it parses
+ * it into the result. A write whose result is never inspected therefore
+ * "succeeds" in TypeScript while the contract refused it — the books then
+ * record a movement the chain declined.
+ */
+export function unwrapContractResult<T>(label: string, result: unknown): T {
+  if (!isContractResult<T>(result)) {
+    // A non-Result return type (e.g. a plain value): nothing to unwrap.
+    return result as T;
+  }
+  if (result.isErr()) {
+    const error: unknown = result.unwrapErr();
+    const detail =
+      error instanceof Error
+        ? error.message
+        : typeof error === "object" && error !== null && "message" in error
+          ? String((error as { message: unknown }).message)
+          : String(error);
+    throw new ChainError(`The contract rejected ${label}: ${detail}`);
+  }
+  return result.unwrap();
+}
+
+/**
+ * Sign, submit, and *verify* a contract write, returning the transaction hash.
+ *
+ * Three things have to hold before a write may be recorded as having happened:
+ * the simulation did not come back as a contract `Err`, the network accepted
+ * the envelope, and the settled invocation did not itself return `Err`. Any
+ * write that skips these checks can silently no-op.
+ */
+export async function signAndSendChecked<T>(
+  label: string,
+  tx: ContractTx<T>,
+): Promise<string> {
+  // Simulation result: a contract-level rejection is visible here, before any
+  // fee is paid and before the books are told anything happened.
+  unwrapContractResult(label, tx.result);
+
+  const sent = await tx.signAndSend();
+  const hash = sent.sendTransactionResponse?.hash;
+  if (!hash) {
+    throw new ChainError(`The ${label} transaction was not accepted by the network`);
+  }
+  // Settled result: simulation is a prediction, this is what actually ran.
+  unwrapContractResult(label, sent.result);
+  return hash;
+}
+
+function isContractResult<T>(value: unknown): value is contract.Result<T> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "isErr" in value &&
+    typeof (value as { isErr: unknown }).isErr === "function"
+  );
+}
+
 export interface SubmittedTransaction {
   hash: string;
   status: ChainTxStatus;

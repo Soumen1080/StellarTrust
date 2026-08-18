@@ -5,7 +5,7 @@
 
 import { Router } from "express";
 import { CurrencyCode, SUPPORTED_CURRENCIES } from "@stellartrust/shared";
-import { ValidationError } from "../../lib/errors.js";
+import { ForbiddenError, ValidationError } from "../../lib/errors.js";
 import {
   type AuthedRequest,
   type BearerVerifier,
@@ -15,11 +15,13 @@ import {
   idempotency,
   InMemoryIdempotencyStore,
 } from "../../middleware/idempotency.js";
+import type { RwaReconciliationJob } from "./rwa.reconciliation.job.js";
 import type { RwaService } from "./rwa.service.js";
 import { AssetType, TokenizationStatus } from "./rwa.types.js";
 
 export function createRwaRouter(
   service: RwaService,
+  reconciliation: RwaReconciliationJob,
   verifier?: BearerVerifier,
 ): Router {
   const router = Router();
@@ -256,6 +258,31 @@ export function createRwaRouter(
             actor,
           ),
         );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /**
+   * POST /rwa/reconciliation/run — compare holdings against the token
+   * contracts on demand.
+   *
+   * Mirrors the payments equivalent. A compliance operator investigating a
+   * blocked payout needs to be able to ask the question now rather than wait
+   * for the next scheduled pass.
+   */
+  router.post(
+    "/reconciliation/run",
+    requireAuth(verifier),
+    idempotency(mutations),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        if (!actor.roles.includes("compliance")) {
+          throw new ForbiddenError("Reconciliation requires compliance access");
+        }
+        res.json(await reconciliation.run());
       } catch (err) {
         next(err);
       }
