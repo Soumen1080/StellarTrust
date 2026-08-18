@@ -367,3 +367,69 @@ export const PayoutStatus = {
   Failed: "failed",
 } as const;
 export type PayoutStatus = (typeof PayoutStatus)[keyof typeof PayoutStatus];
+
+/**
+ * Who holds the tokenized supply on-chain.
+ *
+ * The RWA token contract gates every admin operation with
+ * `issuer.require_auth()` and every transfer with `from.require_auth()`, so
+ * whoever is named issuer must sign. That makes custody a deployment choice
+ * with real consequences, not an implementation detail.
+ */
+export const RwaCustodyMode = {
+  /**
+   * The platform's signer is the on-chain issuer and holds the supply. Every
+   * operation is a single server-signed call; the issuer never touches a key.
+   */
+  Platform: "platform",
+  /**
+   * The issuer's own SEP-10 wallet is the on-chain issuer and holds the
+   * supply. The platform can no longer move units or change contract state on
+   * their behalf — issuer-gated operations become prepare → sign → submit.
+   */
+  Issuer: "issuer",
+} as const;
+export type RwaCustodyMode =
+  (typeof RwaCustodyMode)[keyof typeof RwaCustodyMode];
+
+/**
+ * RWA contract operations, named so a client can ask who signs each one.
+ *
+ * Mirrors `PaymentTransition` for the escrow module: the set is fixed, but the
+ * signing mode of each is a runtime property of `RWA_CUSTODY`.
+ */
+export const RwaTransition = {
+  /** `initialize` — create the tokenization and mint the supply to the issuer. */
+  Deploy: "deploy",
+  /** `transfer` — deliver purchased units from the issuer to an investor. */
+  Transfer: "transfer",
+  /** `authorize` — admit a holder to a compliance-gated token. */
+  Authorize: "authorize",
+  /** `revoke_authorization` — remove a holder's admission. */
+  Revoke: "revoke",
+  /** `freeze` — halt all transfers. */
+  Freeze: "freeze",
+  /** `unfreeze` — resume transfers. */
+  Unfreeze: "unfreeze",
+  /** `mark_distributed` — set the contract's one-shot payout guard. */
+  Distribute: "distribute",
+} as const;
+export type RwaTransition =
+  (typeof RwaTransition)[keyof typeof RwaTransition];
+
+/**
+ * Delivery state of a recorded holding.
+ *
+ * Under issuer custody the platform cannot move units itself, so a purchase is
+ * recorded before the units exist at the buyer's address. Distinguishing the
+ * two states is what keeps payouts and reconciliation honest: an undelivered
+ * holding has no on-chain balance to match, and is owed no payout.
+ */
+export const TokenHoldingStatus = {
+  /** Units reserved and paid for; the issuer has not yet signed the transfer. */
+  Pending: "pending",
+  /** The contract has moved the units to the holder's address. */
+  Settled: "settled",
+} as const;
+export type TokenHoldingStatus =
+  (typeof TokenHoldingStatus)[keyof typeof TokenHoldingStatus];

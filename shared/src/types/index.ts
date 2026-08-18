@@ -637,6 +637,16 @@ export interface TokenHoldingDTO {
   purchaseCurrency: CurrencyCode;
   purchasedAt: string;
   authorized: boolean;
+  /**
+   * Whether the contract has actually moved these units yet.
+   *
+   * Under platform custody a purchase settles inline and this is always
+   * `settled`. Under issuer custody the platform holds no key for the issuer's
+   * account, so the row is written first and the issuer signs the transfer
+   * afterwards — until then the units are reserved but not delivered, and the
+   * holding earns no payout and matches no on-chain balance.
+   */
+  status: import("../constants/index.js").TokenHoldingStatus;
   updatedAt: string;
 }
 
@@ -709,6 +719,40 @@ export interface InvestorPortfolioResponse {
   }>;
   totalInvested: MinorUnitAmount;
   totalPayoutsReceived: MinorUnitAmount;
+}
+
+/**
+ * How this deployment signs each RWA contract operation.
+ *
+ * Mirrors `PaymentCapabilitiesResponse`: a client asks rather than hard-coding
+ * a signing model that changes with `RWA_CUSTODY`.
+ */
+export interface RwaCapabilitiesResponse {
+  custody: import("../constants/index.js").RwaCustodyMode;
+  network: string;
+  networkPassphrase: string;
+  signingModes: Record<string, ChainSigningMode>;
+  walletSignedTransitions: import("../constants/index.js").RwaTransition[];
+}
+
+/** An unsigned RWA contract transaction handed to the issuer's wallet. */
+export interface PreparedRwaOperationResponse {
+  tokenizationId: string;
+  transition: import("../constants/index.js").RwaTransition;
+  /** Base64 transaction envelope, already simulated. */
+  unsignedXdr: string;
+  networkPassphrase: string;
+  /** The address the wallet must sign as (the transaction source account). */
+  signerAddress: string;
+  /** Token contract this transaction targets. */
+  contractId: string;
+  /**
+   * The holding this operation delivers, for a `transfer`. Null otherwise —
+   * the other operations act on the tokenization as a whole.
+   */
+  holdingId: string | null;
+  /** Transaction time bound; the client must submit before this. */
+  expiresAt: string;
 }
 
 export interface TokenizationListResponse {

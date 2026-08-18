@@ -217,6 +217,15 @@ const envSchema = z.object({
   // Gateway for RWA token contract operations (deterministic for local/test,
   // soroban-rpc for staging/production with KMS-backed signing).
   RWA_GATEWAY: z.enum(["deterministic", "soroban-rpc"]).default("deterministic"),
+  // Who holds the tokenized supply on-chain.
+  //   platform — the server signer is the on-chain issuer and holds every
+  //     unit. Simple, and the only mode where the platform can act alone; the
+  //     issuer's units are custodied by us.
+  //   issuer   — the issuer's own SEP-10 wallet is the on-chain issuer. They
+  //     hold their units and sign every contract operation themselves. The
+  //     platform cannot move units, freeze, or set the payout guard on their
+  //     behalf, which is the point.
+  RWA_CUSTODY: z.enum(["platform", "issuer"]).default("platform"),
   // Hex-encoded WASM hash of the RWA token contract, already uploaded on-chain
   // (via `stellar contract deploy`/`install`). Required when RWA_GATEWAY=
   // soroban-rpc so the gateway can deploy per-tokenization contract instances.

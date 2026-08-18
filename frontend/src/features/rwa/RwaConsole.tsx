@@ -600,9 +600,21 @@ function PortfolioPanel({ portfolio }: { portfolio: InvestorPortfolioResponse | 
               </span>
             </p>
             <p className="mt-xs text-sm text-muted">{asset.description}</p>
+            {holding.status === "pending" ? (
+              // Under issuer custody the units are paid for and reserved, but
+              // the issuer has not signed them over yet. Saying "you own this"
+              // would be untrue, and the investor cannot chase what they are
+              // not told about.
+              <p className="mt-md flex items-start gap-xs rounded-lg bg-surface-strong-dark p-sm text-xs leading-5 text-muted">
+                <Icon name="clock" className="mt-0.5 h-4 w-4 shrink-0" />
+                Awaiting delivery — the issuer holds these units until they sign
+                the transfer. Payouts start once they do.
+              </p>
+            ) : null}
             <dl className="mt-md grid grid-cols-2 gap-md border-t border-hairline-dark pt-md sm:grid-cols-3">
               <Detail label="Invested" value={`${formatMinor(holding.purchaseAmount, holding.purchaseCurrency)} ${holding.purchaseCurrency}`} />
               <Detail label="Ownership" value={`${Number((BigInt(holding.units) * 10000n) / BigInt(tokenization.totalUnits)) / 100}%`} />
+              <Detail label="Delivery" value={holding.status === "pending" ? "Pending" : "Settled"} />
               <Detail label="Authorized" value={holding.authorized ? "Yes" : "Pending"} />
             </dl>
           </article>

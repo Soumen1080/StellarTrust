@@ -75,23 +75,38 @@ arbiter test identities before checking off the operational criteria in
 ### Who the backend can act as
 
 Both contracts gate their privileged entry points with `require_auth()`, and the
-server holds exactly one key. That constrains deployment in ways worth stating
-plainly:
+server holds one key. Whether that key is the authority is a deployment choice,
+and both contracts support either answer.
 
-- **Escrow arbiter.** `release` and `refund` call `arbiter.require_auth()`, and
-  the gateway signs them with the server signer. `ESCROW_ARBITER_ADDRESS` must
-  therefore be that signer's account; pointing it at a multi-sig produces
-  escrows nobody can settle. The gateway refuses at lock time rather than
-  discovering this at release time.
-- **RWA issuer.** `initialize` and every admin operation call
-  `issuer.require_auth()`, and `transfer` calls `from.require_auth()`. The
-  on-chain issuer is therefore the server signer, not the user recorded as
-  issuer in the database — a custodial arrangement. The gateway exposes this as
-  `custodianAddress()` and refuses calls naming any other address instead of
-  silently substituting one.
+**Escrow arbiter** — `release` and `refund` call `arbiter.require_auth()`.
 
-Both are honest limits of a single-key server signer, not contract bugs. Moving
-past them needs a prepare/sign/submit round trip for the account in question.
+| `ESCROW_ARBITER_ADDRESS` | How settlement works |
+| --- | --- |
+| unset (default) | The server signer is the arbiter. Release and refund are a single server-signed call, and a resolved dispute auto-executes. |
+| a separate account | The server cannot sign. Release and refund become `POST /orders/:id/{release,refund}/prepare` → sign → `/submit`, and dispute resolution stops and hands the transaction to the key holders. |
+
+For a multi-sig arbiter, collect signatures on the returned XDR and submit the
+fully-signed envelope; Stellar enforces the account's thresholds. The tradeoff
+is deliberate — no single compromised process can move custodied funds, and the
+cost is that settlement is no longer automatic.
+
+**RWA issuer** — `initialize`, `freeze`, `authorize`, and `mark_distributed`
+call `issuer.require_auth()`; `transfer` calls `from.require_auth()`.
+
+| `RWA_CUSTODY` | Who holds the supply |
+| --- | --- |
+| `platform` (default) | The server signer is the on-chain issuer and holds every unit. One call per operation. Entirely custodial: the issuer in our tables owns nothing on-chain. |
+| `issuer` | The issuer's own SEP-10 wallet is the on-chain issuer and holds the supply. Operations go through `POST /rwa/tokenizations/:id/<op>/prepare` → sign → `/submit`. |
+
+Under `issuer`, three things follow from the contract and are handled rather
+than hidden: a purchase is a **pending** holding until the issuer signs the
+transfer (it earns no payout and is reported as outstanding); compliance cannot
+freeze the token on-chain, only platform-side; and the one-shot payout guard is
+left for the issuer to arm. Each divergence is surfaced by the RWA
+reconciliation job instead of passing silently.
+
+Ask `GET /api/payments/capabilities` and `GET /api/rwa/capabilities` rather than
+assuming a mode — both report the signing model per operation.
 
 ## Status
 

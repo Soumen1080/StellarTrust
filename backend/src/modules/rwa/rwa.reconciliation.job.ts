@@ -17,7 +17,12 @@
  * payout is ever attempted.
  */
 import { randomUUID } from "node:crypto";
-import { ReconciliationStatus } from "@stellartrust/shared";
+import {
+  PayoutStatus,
+  ReconciliationStatus,
+  RwaCustodyMode,
+  TokenHoldingStatus,
+} from "@stellartrust/shared";
 import { logger } from "../../lib/logger.js";
 import type { AlertSink } from "../../lib/alerts.js";
 import type { MetricsRegistry } from "../../lib/metrics.js";
@@ -145,11 +150,34 @@ export class RwaReconciliationJob {
     if (meta.frozen !== tokenization.frozen) {
       // Direction matters for the operator reading this: "frozen in the books,
       // live on-chain" means transfers a compliance hold was meant to stop are
-      // still executing.
+      // still executing. Under issuer custody that is the expected shape of a
+      // compliance freeze the issuer has not countersigned — still a finding,
+      // because someone has to chase it, but a different one.
+      const issuerCustody =
+        this.gateway.custody() === RwaCustodyMode.Issuer;
       reasons.push(
         meta.frozen
           ? "contract transfers are frozen but our records say they are not"
-          : "our records say transfers are frozen but the contract still allows them",
+          : issuerCustody
+            ? "our records say transfers are frozen but the contract still " +
+              "allows them; under issuer custody only the issuer can sign the freeze"
+            : "our records say transfers are frozen but the contract still allows them",
+      );
+    }
+
+    // The contract's `distributed` flag is the on-chain double-payout guard.
+    // Under issuer custody the platform cannot set it, so a completed payout
+    // can leave it unclaimed — which means the guard is not actually armed.
+    const distributions = await this.repository.listDistributions(
+      tokenization.id,
+    );
+    const completed = distributions.some(
+      (distribution) => distribution.status === PayoutStatus.Completed,
+    );
+    if (completed && !meta.distributed) {
+      reasons.push(
+        "a payout has been distributed in our records but the contract's " +
+          "one-shot payout guard is unset; it needs the issuer's signature",
       );
     }
 
@@ -163,15 +191,36 @@ export class RwaReconciliationJob {
     contractId: string,
   ): Promise<string[]> {
     const reasons: string[] = [];
-    const custodian = await this.gateway.custodianAddress();
-    const holdings = await this.repository.listHoldings(tokenization.id);
+    const onChainIssuer = await this.gateway.issuerAddress(
+      tokenization.issuerUserId,
+    );
+    const allHoldings = await this.repository.listHoldings(tokenization.id);
+    // A pending holding is a purchase the issuer has not signed over yet. It
+    // deliberately has no on-chain balance, so comparing it would report the
+    // normal state of an undelivered purchase as drift.
+    const holdings = allHoldings.filter(
+      (holding) => holding.status === TokenHoldingStatus.Settled,
+    );
 
     const onChain = new Map(
       (await this.gateway.getHolderBalances(contractId))
-        // Unsold supply sits with the custodian and is not a holding.
-        .filter((balance) => balance.holderAddress !== custodian)
+        // Undistributed supply sits with the issuer and is not a holding.
+        .filter((balance) => balance.holderAddress !== onChainIssuer)
         .map((balance) => [balance.holderAddress, balance.units]),
     );
+
+    // A purchase left waiting too long is an operational problem, not drift:
+    // the investor has paid and holds nothing. Surface it as its own finding.
+    for (const pending of allHoldings) {
+      if (pending.status !== TokenHoldingStatus.Pending) continue;
+      reasons.push(
+        `${pending.holderAddress} has paid for ${pending.units} units that ` +
+          "the issuer has not yet signed over",
+      );
+      // Their address may legitimately hold units from an earlier settled
+      // purchase; only the undelivered ones are outstanding.
+      onChain.delete(pending.holderAddress);
+    }
 
     for (const holding of holdings) {
       const units = onChain.get(holding.holderAddress);

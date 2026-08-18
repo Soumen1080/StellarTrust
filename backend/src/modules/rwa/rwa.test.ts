@@ -295,7 +295,7 @@ describe("Phase 5 RWA tokenization", () => {
     // adapter kept using it.
     const { service, gateway } = setup();
     const { tokenization } = await createActiveTokenization(service);
-    const custodian = await gateway.custodianAddress();
+    const custodian = await gateway.issuerAddress("issuer-1");
 
     expect(await gateway.getBalance(tokenization.contractId!, custodian))
       .toBe(1000n);
@@ -311,6 +311,7 @@ describe("Phase 5 RWA tokenization", () => {
     const { gateway } = setup();
     await expect(
       gateway.deployToken({
+        issuerUserId: "issuer-1",
         issuerAddress: ISSUER_ADDRESS,
         assetRef: "invoice:INV-X",
         assetType: AssetType.Invoice,
@@ -372,14 +373,15 @@ describe("Phase 5 RWA gateway (deterministic)", () => {
   /** Deploy a token contract issued by whoever the gateway can sign for. */
   async function deploy(gateway: DeterministicRwaGateway) {
     const contractId = await gateway.deployToken({
-      issuerAddress: await gateway.custodianAddress(),
+      issuerUserId: "issuer-1",
+      issuerAddress: await gateway.issuerAddress("issuer-1"),
       assetRef: "invoice:INV-1",
       assetType: AssetType.Invoice,
       description: "test",
       totalUnits: 1000n,
       requireAuthorization: false,
     });
-    return { contractId, custodian: await gateway.custodianAddress() };
+    return { contractId, custodian: await gateway.issuerAddress("issuer-1") };
   }
 
   it("deploys with the custodian holding all units", async () => {
@@ -393,6 +395,7 @@ describe("Phase 5 RWA gateway (deterministic)", () => {
     const { contractId, custodian } = await deploy(gateway);
     await gateway.transferUnits({
       contractId,
+      issuerUserId: "issuer-1",
       from: custodian,
       to: INVESTOR1_ADDRESS,
       units: 250n,
@@ -410,6 +413,7 @@ describe("Phase 5 RWA gateway (deterministic)", () => {
     const { contractId, custodian } = await deploy(gateway);
     await gateway.transferUnits({
       contractId,
+      issuerUserId: "issuer-1",
       from: custodian,
       to: INVESTOR1_ADDRESS,
       units: 250n,
@@ -432,6 +436,7 @@ describe("Phase 5 RWA gateway (deterministic)", () => {
     await expect(
       gateway.transferUnits({
         contractId,
+        issuerUserId: "issuer-1",
         from: INVESTOR1_ADDRESS,
         to: INVESTOR2_ADDRESS,
         units: 10n,
@@ -446,6 +451,7 @@ describe("Phase 5 RWA gateway (deterministic)", () => {
     await expect(
       gateway.transferUnits({
         contractId,
+        issuerUserId: "issuer-1",
         from: custodian,
         to: INVESTOR1_ADDRESS,
         units: 10n,

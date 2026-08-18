@@ -6,8 +6,20 @@
  * (pro-rata shares, capacity checks) converts to `bigint` locally.
  */
 
-import { EntryDirection, type CurrencyCode } from "@stellartrust/shared";
+import {
+  ChainSigningMode,
+  EntryDirection,
+  RwaTransition,
+  TokenHoldingStatus,
+  type CurrencyCode,
+  type PreparedRwaOperationResponse,
+  type RwaCapabilitiesResponse,
+  type TokenHoldingDTO,
+} from "@stellartrust/shared";
 import type { LedgerTransactionInput } from "@stellartrust/shared";
+import { config } from "../../config/index.js";
+import { networkPassphrase } from "../stellar/stellar.client.js";
+import type { RwaOperationInput } from "./rwa.gateway.js";
 import {
   ConflictError,
   ForbiddenError,
@@ -158,25 +170,35 @@ export class RwaService {
       throw new NotFoundError("Asset not found");
     }
 
+    if (
+      (await this.gateway.signingMode(RwaTransition.Deploy)) ===
+      ChainSigningMode.Wallet
+    ) {
+      throw new ConflictError(
+        "Under issuer custody you hold your own units, so the tokenization " +
+          `must be signed by your wallet. Call POST /rwa/tokenizations/${tokenizationId}` +
+          "/deploy/prepare, sign the returned transaction, then submit it.",
+      );
+    }
+
     // The issuer must have a SEP-10-proven wallet before their asset can be
-    // tokenized: it is where payouts and any future self-custody transfer go,
-    // and resolving it here surfaces "you have not connected a wallet" at the
-    // one moment the user can still act on it.
+    // tokenized: it is where payouts go, and resolving it here surfaces "you
+    // have not connected a wallet" at the one moment the user can act on it.
     const issuerWallet = await this.addresses.resolve(
       tokenization.issuerUserId,
       "issuer",
     );
 
-    // The *on-chain* issuer is whichever account the gateway can authorize as
-    // — the server signer under Soroban RPC. That is a custodial arrangement,
-    // not the issuer's own account, so it is asked for explicitly and audited
-    // below rather than assumed. Passing the user's wallet here would have it
-    // silently replaced on-chain while the local adapter kept using it, and
-    // the two would then disagree about who held every unit.
-    const custodian = await this.gateway.custodianAddress();
+    // The *on-chain* issuer under platform custody is the server signer, not
+    // the issuer's own account. That is a custodial arrangement, so it is
+    // asked for explicitly and audited below rather than assumed.
+    const onChainIssuer = await this.gateway.issuerAddress(
+      tokenization.issuerUserId,
+    );
 
     const contractId = await this.gateway.deployToken({
-      issuerAddress: custodian,
+      issuerUserId: tokenization.issuerUserId,
+      issuerAddress: onChainIssuer,
       assetRef: asset.assetRef,
       assetType: asset.assetType,
       description: asset.description,
@@ -204,7 +226,8 @@ export class RwaService {
         // who actually holds the supply on-chain. A custodial arrangement
         // should be legible in the audit trail, not implied by code.
         issuerWallet,
-        onChainIssuer: custodian,
+        onChainIssuer,
+        custody: this.gateway.custody(),
       },
     });
 
@@ -264,11 +287,19 @@ export class RwaService {
       "holderAddress",
     );
 
-    if (tokenization.contractId) {
-      // Units come out of the account that holds the supply on-chain, which is
-      // the gateway's own custodian — the same account `deployTokenization`
-      // initialized the contract with.
-      const custodian = await this.gateway.custodianAddress();
+    // Under issuer custody the platform holds no key for the issuer's account,
+    // so it cannot deliver the units itself. The purchase is still real — the
+    // units are reserved and paid for — but delivery waits for the issuer's
+    // signature, and the holding says so rather than claiming units that have
+    // not moved.
+    const walletSigned =
+      (await this.gateway.signingMode(RwaTransition.Transfer)) ===
+      ChainSigningMode.Wallet;
+
+    if (tokenization.contractId && !walletSigned) {
+      const onChainIssuer = await this.gateway.issuerAddress(
+        tokenization.issuerUserId,
+      );
 
       // When authorization is required, the recipient must be authorized before
       // the transfer — the contract rejects transfers to unauthorized holders.
@@ -281,7 +312,8 @@ export class RwaService {
 
       await this.gateway.transferUnits({
         contractId: tokenization.contractId,
-        from: custodian,
+        issuerUserId: tokenization.issuerUserId,
+        from: onChainIssuer,
         to: holderAddress,
         units,
       });
@@ -297,6 +329,9 @@ export class RwaService {
       purchaseCurrency: tokenization.pricePerUnitCurrency,
       purchasedAt: now,
       authorized: true,
+      status: walletSigned
+        ? TokenHoldingStatus.Pending
+        : TokenHoldingStatus.Settled,
       updatedAt: now,
     });
 
@@ -313,6 +348,261 @@ export class RwaService {
     });
 
     return this.getTokenizationDetails(tokenizationId);
+  }
+
+  // ── Issuer-signed operations (RWA_CUSTODY=issuer) ─────────────────────────
+
+  /**
+   * How each contract operation is signed here, so a client can pick the
+   * single-call or the wallet round-trip path without hard-coding a custody
+   * model that changes with configuration.
+   */
+  async capabilities(): Promise<RwaCapabilitiesResponse> {
+    const signingModes: Record<string, ChainSigningMode> = {};
+    const walletSignedTransitions: RwaTransition[] = [];
+    for (const transition of Object.values(RwaTransition)) {
+      const mode = await this.gateway.signingMode(transition);
+      signingModes[transition] = mode;
+      if (mode === ChainSigningMode.Wallet) {
+        walletSignedTransitions.push(transition);
+      }
+    }
+    return {
+      custody: this.gateway.custody(),
+      network: config.STELLAR_NETWORK,
+      networkPassphrase: networkPassphrase(),
+      signingModes,
+      walletSignedTransitions,
+    };
+  }
+
+  /**
+   * Build the unsigned contract transaction the issuer must sign.
+   *
+   * Authorization and state checks all run here, before any chain work, so an
+   * unauthorized caller never causes a contract deploy. For a deploy the
+   * contract id is persisted before returning: an abandoned signature then
+   * costs one idle contract rather than one per retry.
+   */
+  async prepareOperation(
+    tokenizationId: string,
+    transition: RwaTransition,
+    actor: RwaActor,
+    args: { holdingId?: string; holderAddress?: string } = {},
+  ): Promise<PreparedRwaOperationResponse> {
+    if (
+      (await this.gateway.signingMode(transition)) !== ChainSigningMode.Wallet
+    ) {
+      throw new ConflictError(
+        `The '${transition}' operation does not require a wallet signature here`,
+      );
+    }
+    const tokenization = await this.requireTokenization(tokenizationId);
+    this.authorizeIssuerOperation(tokenization, transition, actor);
+
+    const holding = args.holdingId
+      ? await this.requirePendingHolding(tokenizationId, args.holdingId)
+      : undefined;
+
+    const prepared = await this.gateway.prepareOperation(
+      await this.operationInput(tokenization, transition, {
+        holding,
+        holderAddress: args.holderAddress,
+      }),
+    );
+
+    if (transition === RwaTransition.Deploy && !tokenization.contractId) {
+      // The instance exists on-chain but holds nothing until the issuer signs.
+      // Status stays Draft: nothing is tokenized yet.
+      await this.repository.updateTokenization({
+        ...tokenization,
+        contractId: prepared.contractId,
+      });
+    }
+
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: `rwa.${transition}.prepared`,
+      entity: "tokenization",
+      entityId: tokenization.id,
+      metadata: {
+        contractId: prepared.contractId,
+        signerAddress: prepared.signerAddress,
+        holdingId: holding?.id ?? null,
+      },
+    });
+
+    return {
+      tokenizationId,
+      transition,
+      unsignedXdr: prepared.unsignedXdr,
+      networkPassphrase: prepared.networkPassphrase,
+      signerAddress: prepared.signerAddress,
+      contractId: prepared.contractId,
+      holdingId: holding?.id ?? null,
+      expiresAt: prepared.expiresAt,
+    };
+  }
+
+  /**
+   * Submit an issuer-signed envelope, then apply what it did to our records.
+   *
+   * The chain call comes first and must settle; only then do the records move.
+   * The other order would let a rejected transaction leave us claiming units
+   * were delivered, or a token frozen, when nothing happened.
+   */
+  async submitSignedOperation(
+    tokenizationId: string,
+    transition: RwaTransition,
+    actor: RwaActor,
+    signedXdr: string,
+    args: { holdingId?: string; holderAddress?: string } = {},
+  ): Promise<TokenizationDetailsResponse> {
+    if (
+      (await this.gateway.signingMode(transition)) !== ChainSigningMode.Wallet
+    ) {
+      throw new ConflictError(
+        `The '${transition}' operation does not require a wallet signature here`,
+      );
+    }
+    const tokenization = await this.requireTokenization(tokenizationId);
+    this.authorizeIssuerOperation(tokenization, transition, actor);
+
+    const holding = args.holdingId
+      ? await this.requirePendingHolding(tokenizationId, args.holdingId)
+      : undefined;
+
+    await this.gateway.submitSignedOperation(
+      await this.operationInput(tokenization, transition, {
+        holding,
+        holderAddress: args.holderAddress,
+      }),
+      signedXdr,
+    );
+
+    await this.applyOperationToRecords(tokenization, transition, holding);
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: `rwa.${transition}`,
+      entity: "tokenization",
+      entityId: tokenization.id,
+      metadata: {
+        contractId: tokenization.contractId,
+        holdingId: holding?.id ?? null,
+      },
+    });
+
+    return this.getTokenizationDetails(tokenizationId);
+  }
+
+  /** Everything the gateway needs to build one issuer-authorized call. */
+  private async operationInput(
+    tokenization: TokenizationDTO,
+    transition: RwaTransition,
+    context: { holding?: TokenHoldingDTO; holderAddress?: string },
+  ): Promise<RwaOperationInput> {
+    const asset = await this.repository.findAsset(tokenization.assetId);
+    if (!asset) throw new NotFoundError("Asset not found");
+
+    return {
+      transition,
+      issuerUserId: tokenization.issuerUserId,
+      contractId: tokenization.contractId,
+      deploy:
+        transition === RwaTransition.Deploy
+          ? {
+              assetRef: asset.assetRef,
+              assetType: asset.assetType,
+              description: asset.description,
+              totalUnits: BigInt(tokenization.totalUnits),
+              requireAuthorization: tokenization.requireAuthorization,
+            }
+          : undefined,
+      transfer:
+        transition === RwaTransition.Transfer && context.holding
+          ? {
+              to: context.holding.holderAddress,
+              units: BigInt(context.holding.units),
+            }
+          : undefined,
+      holderAddress:
+        context.holderAddress ?? context.holding?.holderAddress ?? undefined,
+    };
+  }
+
+  /** Move our records to match what the signed operation just did on-chain. */
+  private async applyOperationToRecords(
+    tokenization: TokenizationDTO,
+    transition: RwaTransition,
+    holding?: TokenHoldingDTO,
+  ): Promise<void> {
+    switch (transition) {
+      case RwaTransition.Deploy:
+        await this.repository.updateTokenization({
+          ...tokenization,
+          contractDeployedAt: new Date().toISOString(),
+          status: TokenizationStatus.Active,
+        });
+        return;
+      case RwaTransition.Transfer:
+        if (!holding) return;
+        // The units exist at the holder's address now, so the holding stops
+        // being a claim and becomes a balance reconciliation can check.
+        await this.repository.updateHolding({
+          ...holding,
+          status: TokenHoldingStatus.Settled,
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      case RwaTransition.Freeze:
+      case RwaTransition.Unfreeze:
+        await this.repository.updateTokenization({
+          ...tokenization,
+          frozen: transition === RwaTransition.Freeze,
+        });
+        return;
+      case RwaTransition.Authorize:
+      case RwaTransition.Revoke:
+      case RwaTransition.Distribute:
+        // Authorization lives on the contract, and the payout guard is the
+        // contract's own flag; neither has a record of its own to update.
+        return;
+    }
+  }
+
+  /**
+   * Only the issuer may authorize their own contract — because only they can.
+   *
+   * Compliance can still freeze the *record* (see {@link freezeTokenization}),
+   * but the contract will not accept a freeze it did not sign, so offering
+   * compliance a prepare here would produce an envelope nobody can sign.
+   */
+  private authorizeIssuerOperation(
+    tokenization: TokenizationDTO,
+    transition: RwaTransition,
+    actor: RwaActor,
+  ): void {
+    if (tokenization.issuerUserId !== actor.userId) {
+      throw new ForbiddenError(
+        `Only the issuer can sign the '${transition}' operation for this ` +
+          "tokenization; the contract requires their account's authorization",
+      );
+    }
+  }
+
+  private async requirePendingHolding(
+    tokenizationId: string,
+    holdingId: string,
+  ): Promise<TokenHoldingDTO> {
+    const holdings = await this.repository.listHoldings(tokenizationId);
+    const holding = holdings.find((h) => h.id === holdingId);
+    if (!holding) throw new NotFoundError("Holding not found");
+    if (holding.status !== TokenHoldingStatus.Pending) {
+      throw new ConflictError(
+        `Holding ${holdingId} is already ${holding.status}`,
+      );
+    }
+    return holding;
   }
 
   /** Get detailed tokenization information. */
@@ -413,9 +703,15 @@ export class RwaService {
       throw new ForbiddenError("Only authorized systems can trigger payouts");
     }
 
-    const holdings = await this.repository.listHoldings(tokenizationId);
+    // Only delivered holdings earn a payout. A pending one is a claim on units
+    // the issuer has not signed over yet: there is no on-chain balance behind
+    // it, and paying against it would take money from the holders who do have
+    // one.
+    const holdings = (await this.repository.listHoldings(tokenizationId)).filter(
+      (holding) => holding.status === TokenHoldingStatus.Settled,
+    );
     if (holdings.length === 0) {
-      throw new ConflictError("No holdings to distribute to");
+      throw new ConflictError("No settled holdings to distribute to");
     }
 
     // The payout is identified by what caused it, so a retry of the same
@@ -492,8 +788,31 @@ export class RwaService {
     // Now claim the on-chain guard. A retry finds it already set, which is the
     // expected outcome once the ledger posting above has been recognised as a
     // repeat — the contract, not this code, is the authority on it.
+    //
+    // Under issuer custody we cannot set it: the contract requires the
+    // issuer's signature. The money has still moved (that is this ledger
+    // posting, which is platform-side), so the payout completes — but the
+    // guard stays unclaimed until the issuer signs, and the reconciliation job
+    // reports that gap rather than letting it pass unnoticed.
     if (tokenization.contractId) {
-      await this.markDistributedOnce(tokenization.contractId);
+      if (
+        (await this.gateway.signingMode(RwaTransition.Distribute)) ===
+        ChainSigningMode.Wallet
+      ) {
+        await this.audit.append({
+          actor: `user:${actor.userId}`,
+          action: "rwa.distribute.guard_pending",
+          entity: "tokenization",
+          entityId: tokenization.id,
+          metadata: {
+            contractId: tokenization.contractId,
+            reason:
+              "mark_distributed requires the issuer's signature under issuer custody",
+          },
+        });
+      } else {
+        await this.markDistributedOnce(tokenization.contractId);
+      }
     }
 
     const completed = await this.repository.updateDistribution({
@@ -535,9 +854,7 @@ export class RwaService {
       );
     }
 
-    if (tokenization.contractId) {
-      await this.gateway.freezeToken(tokenization.contractId);
-    }
+    const onChain = await this.applyFreeze(tokenization, true, actor);
 
     const updated = await this.repository.updateTokenization({
       ...tokenization,
@@ -549,10 +866,58 @@ export class RwaService {
       action: "rwa.freeze_tokenization",
       entity: "tokenization",
       entityId: tokenization.id,
-      metadata: { frozen: true },
+      metadata: { frozen: true, appliedOnChain: onChain },
     });
 
     return updated;
+  }
+
+  /**
+   * Apply a freeze to the contract if this deployment can, and say whether it
+   * did.
+   *
+   * Under issuer custody it cannot: the contract accepts `freeze` only from
+   * the issuer, so a self-custodied token is not something compliance can halt
+   * unilaterally. That is a real property of handing issuers their own keys,
+   * not a bug to paper over. The platform-side freeze still takes effect
+   * immediately — no further purchases are mediated — and the divergence is
+   * left visible for reconciliation to report until the issuer signs.
+   *
+   * @returns whether the contract itself was frozen.
+   */
+  private async applyFreeze(
+    tokenization: TokenizationDTO,
+    frozen: boolean,
+    actor: RwaActor,
+  ): Promise<boolean> {
+    if (!tokenization.contractId) return false;
+
+    const transition = frozen
+      ? RwaTransition.Freeze
+      : RwaTransition.Unfreeze;
+    if (
+      (await this.gateway.signingMode(transition)) === ChainSigningMode.Wallet
+    ) {
+      await this.audit.append({
+        actor: `user:${actor.userId}`,
+        action: `rwa.${transition}.requires_issuer`,
+        entity: "tokenization",
+        entityId: tokenization.id,
+        metadata: {
+          contractId: tokenization.contractId,
+          reason:
+            "the token contract accepts this only from the issuer under issuer custody",
+        },
+      });
+      return false;
+    }
+
+    if (frozen) {
+      await this.gateway.freezeToken(tokenization.contractId);
+    } else {
+      await this.gateway.unfreezeToken(tokenization.contractId);
+    }
+    return true;
   }
 
   /** Unfreeze tokenization transfers. */
@@ -571,9 +936,7 @@ export class RwaService {
       );
     }
 
-    if (tokenization.contractId) {
-      await this.gateway.unfreezeToken(tokenization.contractId);
-    }
+    const onChain = await this.applyFreeze(tokenization, false, actor);
 
     const updated = await this.repository.updateTokenization({
       ...tokenization,
@@ -585,7 +948,7 @@ export class RwaService {
       action: "rwa.unfreeze_tokenization",
       entity: "tokenization",
       entityId: tokenization.id,
-      metadata: { frozen: false },
+      metadata: { frozen: false, appliedOnChain: onChain },
     });
 
     return updated;
@@ -714,7 +1077,9 @@ export class RwaService {
   ): Promise<void> {
     if (!tokenization.contractId) return;
 
-    const custodian = await this.gateway.custodianAddress();
+    const onChainIssuer = await this.gateway.issuerAddress(
+      tokenization.issuerUserId,
+    );
     const onChain = await this.gateway.getPayoutShares({
       contractId: tokenization.contractId,
       payoutAmount,
@@ -725,7 +1090,7 @@ export class RwaService {
     );
     const actual = new Map(
       onChain
-        .filter((share) => share.holderAddress !== custodian)
+        .filter((share) => share.holderAddress !== onChainIssuer)
         .map((share) => [share.holderAddress, share.shareAmount]),
     );
 

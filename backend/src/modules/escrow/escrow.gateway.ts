@@ -133,8 +133,15 @@ export interface PreparedTransition {
 }
 
 export interface EscrowGateway {
-  /** Who must sign this transition in the current deployment. */
-  signingMode(transition: PaymentTransition): ChainSigningMode;
+  /**
+   * Who must sign this transition in the current deployment.
+   *
+   * Asynchronous because the answer depends on the signer's own address: when
+   * `ESCROW_ARBITER_ADDRESS` names an account this server holds no key for (a
+   * multi-sig, say), `release` and `refund` stop being server-signable and
+   * join the prepare → sign → submit path.
+   */
+  signingMode(transition: PaymentTransition): Promise<ChainSigningMode>;
   /** Execute a server-signable transition end to end. */
   submitTransition(input: ChainTransitionInput): Promise<ChainReceipt>;
   /**
@@ -161,8 +168,15 @@ const WALLET_SIGNED: readonly PaymentTransition[] = [
   PaymentTransition.Dispute,
 ];
 
-/** Transitions the arbiter (this server) signs. */
-const SERVER_SIGNED: readonly PaymentTransition[] = [
+/**
+ * Transitions the contract gates with `arbiter.require_auth()`.
+ *
+ * Who signs them depends on configuration, not on the transition: with the
+ * default arbiter (this server) they are a single server-signed call; with an
+ * external arbiter they take the same prepare → sign → submit route the
+ * counterparty-signed transitions do.
+ */
+const ARBITER_SIGNED: readonly PaymentTransition[] = [
   PaymentTransition.Release,
   PaymentTransition.Refund,
 ];
@@ -177,7 +191,7 @@ const SERVER_SIGNED: readonly PaymentTransition[] = [
  */
 export function touchesChain(transition: PaymentTransition): boolean {
   return (
-    WALLET_SIGNED.includes(transition) || SERVER_SIGNED.includes(transition)
+    WALLET_SIGNED.includes(transition) || ARBITER_SIGNED.includes(transition)
   );
 }
 
@@ -203,7 +217,7 @@ export class DeterministicEscrowGateway implements EscrowGateway {
    * Everything is server-driven here: there is no wallet and no `require_auth`
    * to satisfy, so tests and local development keep the single-call flow.
    */
-  signingMode(transition: PaymentTransition): ChainSigningMode {
+  async signingMode(transition: PaymentTransition): Promise<ChainSigningMode> {
     return touchesChain(transition)
       ? ChainSigningMode.Server
       : ChainSigningMode.None;
@@ -371,9 +385,15 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
     private readonly addresses: WalletAddressResolver,
   ) {}
 
-  signingMode(transition: PaymentTransition): ChainSigningMode {
+  async signingMode(transition: PaymentTransition): Promise<ChainSigningMode> {
     if (WALLET_SIGNED.includes(transition)) return ChainSigningMode.Wallet;
-    if (SERVER_SIGNED.includes(transition)) return ChainSigningMode.Server;
+    if (ARBITER_SIGNED.includes(transition)) {
+      // The contract wants the arbiter's signature. Whether this server can
+      // produce it is a deployment question, not a property of the transition.
+      return (await this.hasExternalArbiter())
+        ? ChainSigningMode.Wallet
+        : ChainSigningMode.Server;
+    }
     return ChainSigningMode.None;
   }
 
@@ -383,33 +403,26 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
   }
 
   /**
-   * Refuse to write an arbiter into a contract this server cannot act as.
+   * Is settlement authority held by an account this server has no key for?
    *
-   * `release`, `refund`, and the arbiter's own `dispute` are built with the
-   * server signer as the transaction source, so the contract's
-   * `arbiter.require_auth()` is satisfied only when the arbiter *is* that
-   * signer. Configuring any other account — a multi-sig, say — produces an
-   * escrow nobody can ever settle: the funds lock and stay locked.
+   * That is the whole point of pointing `ESCROW_ARBITER_ADDRESS` at a separate
+   * account: a multi-sig or a hardware-held key means no single compromised
+   * server can move custodied funds. The cost is that release and refund
+   * become a prepare → sign → submit round trip, exactly like the transitions
+   * the buyer authorizes.
    *
-   * Checked before the arbiter is baked into `initialize`, so the failure
-   * lands at lock time (nothing at stake) instead of at release time (funds
-   * already in custody). Handing settlement to a separate account requires a
-   * prepare/sign/submit round trip for the arbiter, which this adapter does
-   * not implement; until it does, the honest answer is to fail loudly.
+   * Cached: the signer's address is fixed for the process, and this is
+   * consulted on every capability lookup.
    */
-  private async assertArbiterIsSignable(): Promise<void> {
-    const configured = config.ESCROW_ARBITER_ADDRESS;
-    if (!configured) return;
-    const signerAddress = await this.signer.getPublicKey();
-    if (configured !== signerAddress) {
-      throw new ChainError(
-        `ESCROW_ARBITER_ADDRESS (${configured}) is not the account this server ` +
-          `signs with (${signerAddress}). The escrow contract requires the ` +
-          "arbiter's own signature to release or refund, so an escrow created " +
-          "with that arbiter could never be settled by this server. Either " +
-          "point ESCROW_ARBITER_ADDRESS at the signer's account or unset it.",
-      );
+  private externalArbiter: boolean | undefined;
+  private async hasExternalArbiter(): Promise<boolean> {
+    if (this.externalArbiter === undefined) {
+      const configured = config.ESCROW_ARBITER_ADDRESS;
+      this.externalArbiter =
+        configured !== undefined &&
+        configured !== (await this.signer.getPublicKey());
     }
+    return this.externalArbiter;
   }
 
   // ── Wallet-signed transitions ─────────────────────────────────────────────
@@ -417,15 +430,10 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
   async prepareTransition(
     input: ChainTransitionInput,
   ): Promise<PreparedTransition> {
-    if (!WALLET_SIGNED.includes(input.transition)) {
+    if ((await this.signingMode(input.transition)) !== ChainSigningMode.Wallet) {
       throw new ChainError(
         `The '${input.transition}' transition is signed by the server, not a wallet`,
       );
-    }
-
-    if (input.transition === PaymentTransition.Lock) {
-      // `initialize` writes the arbiter into the contract permanently.
-      await this.assertArbiterIsSignable();
     }
 
     const contractId =
@@ -484,6 +492,19 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
         return { ...toUnsignedTransaction(tx, buyer), signerAddress: buyer };
       }
       case PaymentTransition.Dispute: {
+        // The arbiter may also raise a dispute, to freeze a deal for review
+        // when neither counterparty cooperates. With an external arbiter that
+        // is a signature this server cannot produce either, so it takes the
+        // same route.
+        if (input.arbiter === true) {
+          const by = await this.arbiterAddress();
+          const client = (await getUnsignedContractClient(
+            contractId,
+            by,
+          )) as unknown as EscrowContractClient;
+          const tx = await client.dispute({ by });
+          return { ...toUnsignedTransaction(tx, by), signerAddress: by };
+        }
         // Either counterparty may raise a dispute over their own deal; the
         // contract checks the caller is a party, so `by` must be whoever signs.
         const actorUserId = input.actorUserId ?? input.buyerId;
@@ -495,6 +516,27 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
         )) as unknown as EscrowContractClient;
         const tx = await client.dispute({ by });
         return { ...toUnsignedTransaction(tx, by), signerAddress: by };
+      }
+      case PaymentTransition.Release:
+      case PaymentTransition.Refund: {
+        // Settlement under an external arbiter. The arbiter's account is the
+        // transaction source, so `arbiter.require_auth()` is satisfied by the
+        // envelope signature — and for a multi-sig account, by however many
+        // signatures its thresholds demand. Collecting them is the operator's
+        // business; Stellar rejects the submission until they are present.
+        const arbiter = await this.arbiterAddress();
+        const client = (await getUnsignedContractClient(
+          contractId,
+          arbiter,
+        )) as unknown as EscrowContractClient;
+        const tx =
+          input.transition === PaymentTransition.Release
+            ? await client.release()
+            : await client.refund();
+        return {
+          ...toUnsignedTransaction(tx, arbiter),
+          signerAddress: arbiter,
+        };
       }
       default:
         throw new ChainError(
@@ -531,7 +573,7 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
     const arbiterDispute =
       input.transition === PaymentTransition.Dispute && input.arbiter === true;
 
-    if (!SERVER_SIGNED.includes(input.transition) && !arbiterDispute) {
+    if (!ARBITER_SIGNED.includes(input.transition) && !arbiterDispute) {
       if (!touchesChain(input.transition)) {
         // Create/accept/deposit are ledger bookkeeping with no chain step; the
         // receipt records that fact rather than inventing a transaction.
@@ -543,9 +585,15 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
       );
     }
 
-    // The server signs as arbiter here; if the contract names someone else,
-    // the call cannot be authorized and would fail after the fee was paid.
-    await this.assertArbiterIsSignable();
+    // Settlement authority may live outside this server. Signing here would
+    // produce an envelope the contract rejects, after the fee was paid.
+    if (await this.hasExternalArbiter()) {
+      throw new ChainError(
+        `The '${input.transition}' transition must be signed by the arbiter ` +
+          `account (${await this.arbiterAddress()}), which this server holds ` +
+          "no key for. Use the prepare/submit endpoints.",
+      );
+    }
 
     const contractId = this.requireContractId(input);
     const client = (await getContractClient(

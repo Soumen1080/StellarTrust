@@ -26,15 +26,22 @@ const transitionByRoute = {
 } as const;
 
 /**
- * Transitions that can require the acting party's own wallet signature. Which
+ * Transitions that can require a signature this server cannot produce. Which
  * of them actually do is a runtime property of the configured gateway (see
  * `GET /capabilities`), so the routes exist either way and answer 409 with a
  * usable message when a client picks the wrong path.
+ *
+ * `release` and `refund` are here because settlement authority is
+ * configurable: with `ESCROW_ARBITER_ADDRESS` pointing at an external account
+ * (a multi-sig, say), the contract's `arbiter.require_auth()` is satisfied by
+ * signatures the operator collects, not by the server key.
  */
 const preparableByRoute = {
   lock: PaymentTransition.Lock,
   confirm: PaymentTransition.Confirm,
   dispute: PaymentTransition.Dispute,
+  release: PaymentTransition.Release,
+  refund: PaymentTransition.Refund,
 } as const;
 
 export function createPaymentRouter(
@@ -114,10 +121,10 @@ export function createPaymentRouter(
 
   // How this deployment signs each transition. Unauthenticated-safe content,
   // but kept behind auth so the escrow topology is not public.
-  router.get("/capabilities", requireAuth(verifier), (req, res, next) => {
+  router.get("/capabilities", requireAuth(verifier), async (req, res, next) => {
     try {
       requireActor(req as AuthedRequest);
-      res.json(service.capabilities());
+      res.json(await service.capabilities());
     } catch (err) {
       next(err);
     }

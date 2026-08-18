@@ -344,7 +344,9 @@ export function createApp(): Express {
   const rwaRepository: RwaRepository = usePersistentStore
     ? new PgRwaRepository(getPool())
     : new InMemoryRwaRepository();
-  const rwaGateway = createRwaGateway();
+  // Under issuer custody the on-chain issuer is the user's own SEP-10 wallet,
+  // so the gateway needs the same identity-backed resolver escrow uses.
+  const rwaGateway = createRwaGateway(walletAddresses);
   const rwa = new RwaService(
     rwaRepository,
     rwaGateway,

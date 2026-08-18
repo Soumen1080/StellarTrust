@@ -146,12 +146,12 @@ export class PaymentService {
    * pick the single-call or the wallet round-trip path without hard-coding a
    * signing model that changes with `ESCROW_GATEWAY`.
    */
-  capabilities(): PaymentCapabilitiesResponse {
+  async capabilities(): Promise<PaymentCapabilitiesResponse> {
     const transitions = Object.values(PaymentTransition);
     const signingModes: Record<string, ChainSigningMode> = {};
     const walletSignedTransitions: PaymentTransition[] = [];
     for (const transition of transitions) {
-      const mode = this.gateway.signingMode(transition);
+      const mode = await this.gateway.signingMode(transition);
       signingModes[transition] = mode;
       if (mode === ChainSigningMode.Wallet) {
         walletSignedTransitions.push(transition);
@@ -177,7 +177,7 @@ export class PaymentService {
           "financial transition",
       );
     }
-    if (this.gateway.signingMode(requested) === ChainSigningMode.Wallet) {
+    if ((await this.gateway.signingMode(requested)) === ChainSigningMode.Wallet) {
       throw new ConflictError(
         `The '${requested}' step must be signed by your wallet. Call ` +
           `POST /orders/${orderId}/${requested}/prepare, sign the returned ` +
@@ -221,7 +221,7 @@ export class PaymentService {
     requested: PaymentTransition,
     actor: PaymentActor,
   ): Promise<PreparedTransitionResponse> {
-    if (this.gateway.signingMode(requested) !== ChainSigningMode.Wallet) {
+    if ((await this.gateway.signingMode(requested)) !== ChainSigningMode.Wallet) {
       throw new ConflictError(
         `The '${requested}' step does not require a wallet signature here`,
       );
@@ -282,7 +282,7 @@ export class PaymentService {
     actor: PaymentActor,
     signedXdr: string,
   ): Promise<OrderMutationResponse | OrderDetailsResponse> {
-    if (this.gateway.signingMode(requested) !== ChainSigningMode.Wallet) {
+    if ((await this.gateway.signingMode(requested)) !== ChainSigningMode.Wallet) {
       throw new ConflictError(
         `The '${requested}' step does not require a wallet signature here`,
       );
@@ -303,14 +303,35 @@ export class PaymentService {
       return this.recordDispute(current, escrow, actor);
     }
 
+    const transition = requested as FinancialTransition;
     const order: OrderDTO = {
       ...current,
-      status: NEXT_STATUS[requested as FinancialTransition],
+      status: NEXT_STATUS[transition],
       updatedAt: nowIso(),
     };
-    return this.commit(order, escrow, requested as FinancialTransition, actor.userId, {
-      chain,
-    });
+
+    // Settling a *disputed* escrow posts differently from a happy-path
+    // settlement: the delivery-confirmation legs never posted, so the standard
+    // release posting would reverse entries that do not exist.
+    const settlingDispute =
+      current.status === OrderStatus.Disputed ||
+      escrow?.state === EscrowState.Disputed;
+    const ledger =
+      settlingDispute && isSettlement(transition)
+        ? disputeSettlementLedger(order, transition)
+        : undefined;
+
+    const result = await this.commit(
+      order,
+      escrow,
+      transition,
+      actor.userId,
+      { chain, ledger },
+    );
+    if (transition === PaymentTransition.Release && !settlingDispute) {
+      await this.recordCompletion(order);
+    }
+    return result;
   }
 
   /**
@@ -332,7 +353,7 @@ export class PaymentService {
     actor: PaymentActor,
   ): Promise<OrderDetailsResponse> {
     if (
-      this.gateway.signingMode(PaymentTransition.Dispute) ===
+      (await this.gateway.signingMode(PaymentTransition.Dispute)) ===
       ChainSigningMode.Wallet
     ) {
       throw new ConflictError(
@@ -419,6 +440,25 @@ export class PaymentService {
       );
     }
 
+    const transitionFor =
+      outcome === DisputeResolution.Refund
+        ? PaymentTransition.Refund
+        : PaymentTransition.Release;
+    if (
+      (await this.gateway.signingMode(transitionFor)) === ChainSigningMode.Wallet
+    ) {
+      // Settlement authority lives outside this server (an external or
+      // multi-sig arbiter). That is the entire point of configuring one: no
+      // single compromised process can move custodied funds, not even to
+      // execute a correctly resolved dispute. The resolution stands as the
+      // authorization; a human carries it to the key holders.
+      throw new ConflictError(
+        `Settling this dispute requires the arbiter account's signature. Call ` +
+          `POST /orders/${orderId}/${transitionFor}/prepare, collect the ` +
+          "required signatures, then submit it.",
+      );
+    }
+
     const current = await this.requireOrder(orderId);
     await this.assertNotBlocked(orderId);
     const settleable: readonly OrderStatus[] = [
@@ -462,33 +502,9 @@ export class PaymentService {
       updatedAt: new Date().toISOString(),
     };
 
-    // Dispute settlement moves funds out of escrow holding into contract
-    // custody in one balanced transaction. The outcome (release→seller vs
-    // refund→buyer) is recorded by the transition type + audit, so both use the
-    // same balanced core legs (avoids reversing delivery-confirmation entries
-    // that never posted when releasing a still-locked escrow).
-    const ledger: LedgerTransactionInput = {
-      referenceId: `dispute-settle:${order.id}:${transition}`,
-      description: `Dispute-authorized ${transition} (${order.id})`,
-      entries: [
-        {
-          accountId: ESCROW_HOLDING,
-          direction: EntryDirection.Debit,
-          amount: order.amount.amount,
-          currency: order.amount.currency,
-        },
-        {
-          accountId: CONTRACT_CUSTODY,
-          direction: EntryDirection.Credit,
-          amount: order.amount.amount,
-          currency: order.amount.currency,
-        },
-      ],
-    };
-
     return this.commit(order, escrow, transition, actor.userId, {
       arbiter: true,
-      ledger,
+      ledger: disputeSettlementLedger(order, transition),
     });
   }
 
@@ -603,6 +619,32 @@ export class PaymentService {
       if (escrow.state !== EscrowState.Locked) {
         throw new ConflictError(
           `Only a locked escrow can be disputed (currently ${escrow.state})`,
+        );
+      }
+      return;
+    }
+    if (
+      transition === PaymentTransition.Release ||
+      transition === PaymentTransition.Refund
+    ) {
+      // Reached only when settlement is signed by an external arbiter, which
+      // covers both the happy path and dispute resolution — so the status rule
+      // is the union of what `transition()` and `settleDisputedOrder()` accept
+      // rather than either alone.
+      const settleable: readonly OrderStatus[] =
+        transition === PaymentTransition.Release
+          ? [OrderStatus.Confirmed, OrderStatus.Disputed]
+          : [OrderStatus.Locked, OrderStatus.Confirmed, OrderStatus.Disputed];
+      if (!settleable.includes(order.status)) {
+        throw new ConflictError(
+          `Cannot ${transition} an order in ${order.status} status`,
+        );
+      }
+      // Mirrors the contract: `release` accepts `Disputed` or a buyer
+      // confirmation, `refund` accepts either.
+      if (!OPEN_ESCROW_STATES.includes(escrow.state)) {
+        throw new ConflictError(
+          `Cannot ${transition} an escrow that is ${escrow.state}`,
         );
       }
     }
@@ -843,7 +885,14 @@ export class PaymentService {
     ];
     if (
       buyerTransitions.includes(transition) &&
-      actor.userId !== order.buyerId
+      actor.userId !== order.buyerId &&
+      // A release is the buyer's call, but the *signature* may belong to an
+      // external arbiter account. Someone has to assemble that transaction and
+      // carry it to the key holders, and compliance is who operates that key.
+      !(
+        transition === PaymentTransition.Release &&
+        actor.roles.includes("compliance")
+      )
     ) {
       throw new ForbiddenError("Only the buyer may advance this payment");
     }
@@ -884,4 +933,50 @@ export class PaymentService {
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/** The two transitions that move funds out of custody. */
+function isSettlement(
+  transition: PaymentTransition,
+): transition is typeof PaymentTransition.Release | typeof PaymentTransition.Refund {
+  return (
+    transition === PaymentTransition.Release ||
+    transition === PaymentTransition.Refund
+  );
+}
+
+/**
+ * The balanced posting for settling a *disputed* escrow.
+ *
+ * Funds move out of escrow holding into contract custody in one transaction.
+ * The outcome (release→seller vs refund→buyer) is recorded by the transition
+ * type and the audit trail, so both use the same core legs — which avoids
+ * reversing delivery-confirmation entries that never posted when the escrow
+ * being settled was never confirmed.
+ *
+ * Shared by the single-call arbiter path and the external-arbiter
+ * prepare/submit path, so the books do not depend on which key signed.
+ */
+function disputeSettlementLedger(
+  order: OrderDTO,
+  transition: PaymentTransition,
+): LedgerTransactionInput {
+  return {
+    referenceId: `dispute-settle:${order.id}:${transition}`,
+    description: `Dispute-authorized ${transition} (${order.id})`,
+    entries: [
+      {
+        accountId: ESCROW_HOLDING,
+        direction: EntryDirection.Debit,
+        amount: order.amount.amount,
+        currency: order.amount.currency,
+      },
+      {
+        accountId: CONTRACT_CUSTODY,
+        direction: EntryDirection.Credit,
+        amount: order.amount.amount,
+        currency: order.amount.currency,
+      },
+    ],
+  };
 }

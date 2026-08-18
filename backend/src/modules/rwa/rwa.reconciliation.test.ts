@@ -81,12 +81,13 @@ describe("RWA reconciliation", () => {
   it("flags units moved on-chain without a matching holding", async () => {
     const { service, gateway, job } = setup();
     const tokenization = await tokenizationWithHolder(service);
-    const custodian = await gateway.custodianAddress();
+    const custodian = await gateway.issuerAddress("issuer-1");
 
     // A direct on-chain transfer the backend never saw. Nothing in our tables
     // changes; the contract now disagrees with every one of them.
     await gateway.transferUnits({
       contractId: tokenization.contractId as string,
+      issuerUserId: "issuer-1",
       from: custodian,
       to: INVESTOR2_ADDRESS,
       units: 100n,
@@ -140,12 +141,13 @@ describe("payouts refuse to run against drifted unit records", () => {
   it("stops when a holder's on-chain balance no longer matches", async () => {
     const { service, gateway } = setup();
     const tokenization = await tokenizationWithHolder(service);
-    const custodian = await gateway.custodianAddress();
+    const custodian = await gateway.issuerAddress("issuer-1");
 
     // The holder sells half their units on-chain. Our holdings row still says
     // 250, so a pro-rata payout would overpay them and underpay everyone else.
     await gateway.transferUnits({
       contractId: tokenization.contractId as string,
+      issuerUserId: "issuer-1",
       from: custodian,
       to: INVESTOR1_ADDRESS,
       units: 250n,
@@ -166,10 +168,11 @@ describe("payouts refuse to run against drifted unit records", () => {
   it("stops when the contract reports a holder we have no record of", async () => {
     const { service, gateway } = setup();
     const tokenization = await tokenizationWithHolder(service);
-    const custodian = await gateway.custodianAddress();
+    const custodian = await gateway.issuerAddress("issuer-1");
 
     await gateway.transferUnits({
       contractId: tokenization.contractId as string,
+      issuerUserId: "issuer-1",
       from: custodian,
       to: INVESTOR2_ADDRESS,
       units: 100n,

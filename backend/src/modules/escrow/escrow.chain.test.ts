@@ -184,9 +184,9 @@ describe("arbiter dispute settlement", () => {
 });
 
 describe("signing capabilities", () => {
-  it("advertises server signing for every chain step under the local adapter", () => {
+  it("advertises server signing for every chain step under the local adapter", async () => {
     const { service } = setup();
-    const capabilities = service.capabilities();
+    const capabilities = await service.capabilities();
 
     expect(capabilities.walletSignedTransitions).toEqual([]);
     expect(capabilities.signingModes[PaymentTransition.Lock]).toBe(

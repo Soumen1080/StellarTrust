@@ -4,7 +4,11 @@
  */
 
 import { Router } from "express";
-import { CurrencyCode, SUPPORTED_CURRENCIES } from "@stellartrust/shared";
+import {
+  CurrencyCode,
+  RwaTransition,
+  SUPPORTED_CURRENCIES,
+} from "@stellartrust/shared";
 import { ForbiddenError, ValidationError } from "../../lib/errors.js";
 import {
   type AuthedRequest,
@@ -18,6 +22,36 @@ import {
 import type { RwaReconciliationJob } from "./rwa.reconciliation.job.js";
 import type { RwaService } from "./rwa.service.js";
 import { AssetType, TokenizationStatus } from "./rwa.types.js";
+
+/**
+ * Contract operations that can require the issuer's own wallet signature.
+ * Which of them actually do is a runtime property of `RWA_CUSTODY` (see
+ * `GET /rwa/capabilities`), so the routes exist either way and answer 409 with
+ * a usable message when a client picks the wrong path.
+ */
+const preparableByRoute = {
+  deploy: RwaTransition.Deploy,
+  transfer: RwaTransition.Transfer,
+  authorize: RwaTransition.Authorize,
+  revoke: RwaTransition.Revoke,
+  freeze: RwaTransition.Freeze,
+  unfreeze: RwaTransition.Unfreeze,
+  distribute: RwaTransition.Distribute,
+} as const;
+
+/** The optional targets an operation can act on, read off the request body. */
+function operationArgs(body: unknown): {
+  holdingId?: string;
+  holderAddress?: string;
+} {
+  if (typeof body !== "object" || body === null) return {};
+  const { holdingId, holderAddress } = body as Record<string, unknown>;
+  return {
+    holdingId: typeof holdingId === "string" ? holdingId : undefined,
+    holderAddress:
+      typeof holderAddress === "string" ? holderAddress : undefined,
+  };
+}
 
 export function createRwaRouter(
   service: RwaService,
@@ -263,6 +297,76 @@ export function createRwaRouter(
       }
     },
   );
+
+  // ── Issuer-signed operations (RWA_CUSTODY=issuer) ─────────────────────────
+
+  /**
+   * GET /rwa/capabilities — who signs each contract operation here.
+   *
+   * Mirrors the payments equivalent so a client reads the custody model rather
+   * than assuming one.
+   */
+  router.get("/capabilities", requireAuth(verifier), async (req, res, next) => {
+    try {
+      requireActor(req as AuthedRequest);
+      res.json(await service.capabilities());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  for (const [route, transition] of Object.entries(preparableByRoute)) {
+    // Preparing is read-shaped and legitimately repeatable (a user reopening
+    // their wallet), so it is not idempotency-keyed. For a deploy it reuses
+    // the already-created contract rather than making a second one.
+    router.post(
+      `/tokenizations/:id/${route}/prepare`,
+      requireAuth(verifier),
+      async (req, res, next) => {
+        try {
+          const actor = requireActor(req as AuthedRequest);
+          res.json(
+            await service.prepareOperation(
+              String(req.params.id),
+              transition,
+              { userId: actor.userId, roles: actor.roles },
+              operationArgs(req.body),
+            ),
+          );
+        } catch (err) {
+          next(err);
+        }
+      },
+    );
+
+    router.post(
+      `/tokenizations/:id/${route}/submit`,
+      requireAuth(verifier),
+      idempotency(mutations),
+      async (req, res, next) => {
+        try {
+          const actor = requireActor(req as AuthedRequest);
+          const signedXdr = req.body?.signedXdr;
+          if (typeof signedXdr !== "string" || signedXdr.length === 0) {
+            throw new ValidationError("A signed transaction is required", [
+              { path: "signedXdr", message: "expected a base64 XDR envelope" },
+            ]);
+          }
+          res.json(
+            await service.submitSignedOperation(
+              String(req.params.id),
+              transition,
+              { userId: actor.userId, roles: actor.roles },
+              signedXdr,
+              operationArgs(req.body),
+            ),
+          );
+        } catch (err) {
+          next(err);
+        }
+      },
+    );
+  }
 
   /**
    * POST /rwa/reconciliation/run — compare holdings against the token

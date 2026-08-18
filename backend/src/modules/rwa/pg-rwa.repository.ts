@@ -97,6 +97,7 @@ interface HoldingRow {
   purchase_currency: string;
   purchased_at: Date | string;
   authorized: boolean;
+  status: string;
   updated_at: Date | string;
 }
 
@@ -175,6 +176,7 @@ export class PgRwaRepository implements RwaRepository {
       purchaseCurrency: row.purchase_currency as CurrencyCode,
       purchasedAt: toIso(row.purchased_at),
       authorized: row.authorized,
+      status: row.status as TokenHoldingDTO["status"],
       updatedAt: toIso(row.updated_at),
     };
   }
@@ -406,8 +408,9 @@ export class PgRwaRepository implements RwaRepository {
       const { rows } = await this.pool.query<HoldingRow>(
         `insert into token_holdings
            (tokenization_id, holder_user_id, holder_address, units,
-            purchase_amount, purchase_currency, purchased_at, authorized, updated_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            purchase_amount, purchase_currency, purchased_at, authorized,
+            status, updated_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          returning *`,
         [
           holding.tokenizationId,
@@ -418,6 +421,7 @@ export class PgRwaRepository implements RwaRepository {
           holding.purchaseCurrency,
           holding.purchasedAt,
           holding.authorized,
+          holding.status,
           holding.updatedAt,
         ],
       );
@@ -441,7 +445,8 @@ export class PgRwaRepository implements RwaRepository {
          units = $3,
          purchase_amount = $4,
          purchase_currency = $5,
-         authorized = $6
+         authorized = $6,
+         status = $7
        where id = $1
        returning *`,
       [
@@ -451,6 +456,7 @@ export class PgRwaRepository implements RwaRepository {
         holding.purchaseAmount,
         holding.purchaseCurrency,
         holding.authorized,
+        holding.status,
       ],
     );
     const row = rows[0];

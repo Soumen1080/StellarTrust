@@ -47,7 +47,20 @@ const API_BASE = (
 ).replace(/\/+$/, "");
 
 /** Escrow steps the contract may require the acting party's own signature for. */
-export type WalletSignedAction = "lock" | "confirm" | "dispute";
+/**
+ * Steps that may need a signature the server cannot produce.
+ *
+ * `lock`/`confirm`/`dispute` are gated on a counterparty's own key. `release`
+ * and `refund` are gated on the arbiter's, which is the server by default but
+ * can be an external or multi-sig account — so which of these actually need a
+ * wallet is a runtime answer from `paymentCapabilities`, not a fixed list.
+ */
+export type WalletSignedAction =
+  | "lock"
+  | "confirm"
+  | "dispute"
+  | "release"
+  | "refund";
 
 export class ApiClientError extends Error {
   constructor(
