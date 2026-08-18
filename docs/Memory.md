@@ -31,7 +31,7 @@
 | Check | Result |
 |---|---|
 | `contracts` — `cargo test` | ✅ **27 pass** (escrow 9, rwa_token 18) |
-| `backend` — `vitest run` | ✅ **102 pass**, 13 files, 0 failures |
+| `backend` — `vitest run` | ✅ **107 pass**, 13 files, 0 failures |
 | `backend` — typecheck + eslint | ✅ clean |
 | `frontend` — typecheck + eslint + `next build` | ✅ clean, 10 app routes |
 | `shared` — `tsc` build | ✅ clean |
@@ -65,14 +65,45 @@
 
 ## 2. Current Focus
 
-- **Currently working on:** documentation accuracy pass (this update). The last
-  code work was the **on-chain escrow wiring** (below).
-- **Immediately next (code):** the three RWA gaps in §4 — the discarded payout
-  ledger, the uninvoked `markDistributed`/`getPayoutShares`, and DB user ids
-  passed as Stellar addresses.
+- **Currently working on:** nothing in flight. The last two batches were the
+  **on-chain escrow wiring** and the **RWA payout correctness fixes** (both
+  below).
+- **Immediately next (code):** Redis-backed idempotency — the last place a
+  golden rule (#4) is aspirational rather than enforced in a multi-instance
+  deployment. Then Postgres repositories for kyc/reputation/settlement.
 - **Blocked on you (operational):** funded testnet identity → deploy contracts →
   set `ESCROW_WASM_HASH`, `RWA_WASM_HASH`, `STELLAR_TOKEN_CONTRACTS`. Nothing
   on-chain can be verified end to end until that exists.
+
+- **What was built (RWA payout correctness — 2026-08-18):**
+  - **I1 — payouts now post to the ledger.** `distributePayout` computed a
+    balanced `LedgerTransactionInput` and threw it away (`void` on a
+    *synchronous* method), then stored a `randomUUID()` as its
+    `ledgerTransactionId`. Every RWA payout wrote nothing to the system of
+    record. It now awaits `LedgerService.record()` and stores the real id.
+  - **Idempotency.** The reference id is `rwa-payout:{tokenization}:{order}:
+    {transition}` — derived from what caused the payout, not a timestamp — so
+    the retryable escrow-release hook converges on one posting. A collision
+    recovers the existing id rather than failing.
+  - **I2 — the contract's double-payout guard is engaged.** `markDistributed`
+    is called, and `getContractMeta` verifies on-chain unit totals before shares
+    are computed against them.
+  - **Ordering bug caught by a test I wrote for it:** marking the contract
+    distributed *before* the ledger post deadlocks a retry — the one-shot flag
+    is set, the money was never recorded, and no later attempt can finish. The
+    ledger posts first; `markDistributed` follows and tolerates "already
+    distributed", while a genuinely *different* payout is still refused.
+  - **I3 — real addresses.** Issuer and holder resolve through
+    `WalletAddressResolver` (moved from `escrow` to `identity`, since escrow and
+    RWA both need it); holder addresses are StrKey-validated. Previously a DB
+    UUID went straight into a Soroban `Address`, and the local adapter keyed
+    balances by UUID while the Soroban one substituted the signer.
+  - **Wiring:** one `LedgerService` for the whole app, shared by RWA payouts and
+    `/api/ledger` — the route previously had its own empty store, so a payout
+    could never have been read back even if it had posted.
+  - `RwaService` now *requires* its ledger recorder. An optional one is an
+    invitation to skip the system of record.
+  - 5 new tests (21 in the RWA file, 107 backend total).
 
 - **What was built (on-chain escrow — 2026-08-18):**
   - **Root problem:** the escrow contract was written and tested but
@@ -378,6 +409,9 @@
 | D53 | 2026-08-18 | Ledger minor units ↔ on-chain token amounts convert through one integer-only module that refuses to truncate; token bindings are explicit per currency (`STELLAR_TOKEN_CONTRACTS`) and fail closed | An off-by-10⁵ locks the wrong amount of real value and both numbers look like valid integers (extends D12) |
 | D54 | 2026-08-18 | Config cross-field checks fail the boot when a selected adapter is unconfigured (`superRefine`) | "Required when …" in a comment enforced nothing; the failure surfaced mid-payment instead of at startup |
 | D55 | 2026-08-18 | A blank environment variable means "unset" (`optionalEnv`), and `vitest.config.ts` clears demo/chain vars | A placeholder in one developer's `.env` was failing config validation at import and taking down 9 of 11 test files |
+| D56 | 2026-08-18 | A payout's ledger reference is derived from its **cause** (tokenization + order + transition), never a timestamp or a fresh row id; a collision recovers the existing transaction instead of failing | The escrow-release payout hook is best-effort and retryable, so the same payout legitimately arrives twice. A cause-derived key makes the retry converge on one posting; a time-derived one posts the money again |
+| D57 | 2026-08-18 | The ledger posts **before** the contract's one-shot `distributed` flag is set, and `markDistributed` tolerates an already-set flag | The reverse order deadlocks: the flag is set, the money was never recorded, and no retry can complete it. A second *different* payout is still refused, by the pre-flight check |
+| D58 | 2026-08-18 | `RwaService` takes its ledger recorder as a **required** dependency | An optional system-of-record writer is an invitation to skip Golden Rule #1 — which is exactly what had happened |
 
 ---
 
@@ -401,9 +435,7 @@
 | Escrow chain path unverified live | `SorobanRpcEscrowGateway` is implemented and unit-covered, but has never run against a real network here | Deploy to testnet with a funded identity; the first real `initialize` is where SDK-level surprises would surface |
 | Buyer must hold the token | The contract's `initialize` transfers from the buyer, so the buyer needs a balance and trustline in the configured SAC | No onboarding/trustline flow exists yet |
 | Local database tooling | Docker and psql are unavailable on this machine | Validate migrations in CI or after installing Docker Desktop/Postgres client |
-| RWA payout ledger | `distributePayout` computes a balanced ledger transaction and **discards** it, then records a fabricated `ledgerTransactionId` | Real violation of Golden Rule #1 for RWA payouts — fix before any RWA money is real |
-| RWA on-chain idempotency | The contract's `distributed` flag is never set (`markDistributed` has no caller), so its double-payout guard is inert | Call it as part of the payout, inside the same commit |
-| RWA addresses | DB user ids are passed where the contract expects an `Address`; the Soroban gateway substitutes the signer, so the two adapters key balances differently | Reuse `EscrowAddressResolver` for issuer/holder resolution |
+| RWA duplicate distribution rows | A retried payout reuses the same ledger transaction (correct — money posts once) but still writes a second `payout_distributions` row | Cosmetic against the ledger, which is the system of record; dedupe the distribution row when the repository gains an upsert |
 | Phase 3 anchor adapter | Sandbox anchor settles synchronously and holds no real fiat | Behind `AnchorGateway`; implement a live per-corridor SEP-6/24/31 client (async status/webhooks) before staging |
 | Phase 3 liquidity adapter | Deterministic route economics are not live Horizon path-finding/AMM quotes | Behind `LiquidityGateway`; implement a Horizon path-finding + AMM adapter (`LIQUIDITY_GATEWAY=horizon`) before staging |
 | Phase 3 persistence | Settlement quotes/transitions/mismatches are in-memory | Author a forward-only settlement Postgres schema and implement/transaction-test the adapter |
@@ -462,6 +494,7 @@
 | 2026-07-22 | **Phase 3 application implementation completed (D35–D40).** Added shared settlement contracts (enums, `CURRENCY_SCALE`, corridor/quote/route/settlement/anchor DTOs, quote/execute schemas); new `settlement` bounded context — `SandboxAnchorGateway` (SEP-6/24/31 + SEP-12, opaque customer id), `DeterministicLiquidityGateway` (path-payment + AMM economics, exact BigInt conversion), `RoutingService` (best-route + fail-closed fee/slippage limits), `SettlementService` (deposit→convert→payout with per-currency-balanced ledger via `FX_CONVERSION`, PII-safe audit, quote idempotency), and `SettlementReconciliationJob` (ledger↔anchor/chain, blocks on mismatch); authenticated idempotent `/api/settlement` routes; config `ANCHOR_GATEWAY`/`LIQUIDITY_GATEWAY`/`SETTLEMENT_QUOTE_TTL_SECONDS`/`SETTLEMENT_DEFAULT_MAX_SLIPPAGE_BPS`; frontend `/settlement` console + nav link + typed API client. Validated shared build, backend lint/typecheck/**41 tests**, and frontend production build. Live anchor client, Horizon path-finding/AMM adapter, Phase 3 settlement persistence schema, and live-corridor verification remain manual/operational prerequisites. |
 | 2026-07-22 | **Phase 4 application implementation completed (D41–D44).** Added shared dispute contracts (`EvidenceKind`, `DisputeResolution`, `DisputeDecisionMaker`, expanded `DisputeDTO`, evidence/decision schemas); new `disputes` bounded context — `HttpDisputeRiskClient`/`DeterministicDisputeRiskClient` (advisory `/dispute-recommend`, outage→manual review), `DisputeService` (open → bounded evidence window → advisory → threshold-gated auto-resolve or compliance human sign-off, append-only audit of AI + human decisions), `InMemoryDisputeRepository` + `DisputeOrderGateway` port; authenticated idempotent `/api/disputes` routes; config `DISPUTE_EVIDENCE_WINDOW_HOURS`/`DISPUTE_AI_TIMEOUT_MS`. Corrected advisory `conflicting` to use raw evidence (backend + Python engine). Frontend `/disputes` console + nav link + typed API client. Validated shared build, backend lint/typecheck/**48 tests**, and frontend production build. Auto-execution of the resolved outcome and a reputation store are deferred; AI pytest is CI-only. |
 | 2026-07-22 | **Phase 5 (RWA Tokenization) application implementation completed.** Extended the Soroban `rwa_token` contract (asset metadata, freeze/authorization compliance controls, `all_payout_shares`/`get_holders`, expanded tests). Added shared RWA contracts of record (`AssetType`/`TokenizationStatus`/`PayoutStatus` + asset/tokenization/holding/distribution/record DTOs, all integer-string amounts for JSON safety). New `rwa` bounded context — `DeterministicRwaGateway` (+ `SorobanRpcRwaGateway` placeholder, fail-closed `RWA_GATEWAY` factory), `RwaService` (asset→tokenize→deploy→purchase→pro-rata payout, freeze/unfreeze, portfolio; exact BigInt math, append-only audit), `InMemoryRwaRepository` (units-sold tracking, over-sell guard, auto-fund); authenticated idempotent `/api/rwa` routes. Wired `PaymentService` to auto-distribute RWA payouts on escrow `Release` for `linkedOrderId` tokenizations (non-fatal, retryable). Forward-only migration `0006_phase5_rwa_tokenization.sql`. Frontend `/rwa` console (marketplace/tokenize/portfolio) + nav link + `StatusPill` statuses + typed API client. Tests caught and fixed an authorize-before-transfer bug. Validated shared build, backend lint/typecheck/**16 new RWA tests (61 pass; 3 pre-existing KYC failures unrelated)**, and frontend production build. Public-testnet contract deploy and prod Postgres/KMS-Soroban adapters remain operational prerequisites. |
+| 2026-08-18 | **RWA payout correctness (D56–D58).** Fixed the three gaps found in the docs audit. I1: `distributePayout` awaits a real `LedgerService.record()` instead of discarding the transaction and fabricating an id — RWA payouts previously wrote nothing to the ledger. Idempotent by a cause-derived reference (`rwa-payout:{tokenization}:{order}:{transition}`) with collision recovery. I2: `markDistributed` + `getContractMeta` now engage the contract's double-payout guard and verify unit totals; ordering matters — marking before the ledger post deadlocks a retry, so the ledger posts first and `markDistributed` tolerates "already distributed" while a different payout is still refused. I3: issuer/holder resolve through `WalletAddressResolver` (moved `escrow` → `identity`) and holder addresses are StrKey-validated. One shared `LedgerService` across the app and `/api/ledger`. 5 new tests; **107 backend tests, 27 contract tests, frontend clean**. |
 | 2026-08-18 | **Docs accuracy pass.** Audited all seven files in `docs/` against the repository. `DESIGN.md` verified valid (matches `tailwind.config.ts` token-for-token). Corrected `Architecture.md` (folder tree, module list, stack table — Redis/BullMQ and KMS were listed as if built), `Rules.md` (approved-libraries list named four packages that are not installed and omitted eight that are; bounded-context list; error taxonomy), `Phases.md` (Phase 2 on-chain now done; Phase 5's "reconciled in the ledger" criterion was checked but untrue), `Memory.md` (test counts, persistence, toolchain), and rewrote `devlopement.md` (most of its issue register described fixed problems). |
 | 2026-08-18 | **On-chain escrow wired end to end (D45–D55).** Contract: on-chain `order_ref` binding, arbiter-may-dispute, `Error::Unauthorized`. Backend: `SorobanRpcEscrowGateway` with real deploy/invoke/submit/read-back; prepare→sign→submit endpoints + `GET /api/payments/capabilities`; new `stellar/address.ts` (StrKey — nothing validated addresses before), `stellar/asset.ts` (exact minor-unit ↔ token conversion), `escrow/escrow.addresses.ts` (SEP-10 wallet resolution); `IdentityRepository.findPrimaryWallet`; `saveCustodyState` for money-less custody changes; reconciliation now asserts on-chain custody state and order binding, not just a tx hash. Aligned the deterministic adapter with the contract (arbiter release of an unconfirmed escrow now correctly rejected) and made `settleDisputedOrder` escalate first. Added `EscrowState.Pending`, `PaymentTransition.Dispute`, migration `0008`. Config now fails boot on unconfigured adapters; blank env vars mean unset. Frontend: `useEscrowOrders` (prepare→sign→submit, 12s live refresh, visibility-aware). Fixed the deploy script to `contract upload` (WASM hash) instead of `contract deploy`. **27 contract tests, 102 backend tests, frontend build — all green** (backend was 16 passing before, due to a `.env` placeholder breaking config import in 9 of 11 files). |
 | 2026-07-22 | **Phase 6 (Hardening) application layer completed.** Observability: `lib/metrics.ts` dependency-free Prometheus registry (HTTP count/latency, reconciliation unresolved gauge + run counter, alerts counter), `middleware/metrics.ts` bounded-cardinality per-route recorder, and `/metrics` + `/health/live` + `/health/ready` (DB ping + reconciliation drift → 503) endpoints. Alerting: `lib/alerts.ts` `AlertSink`/`LoggingAlertSink`/`RecordingAlertSink` wired into both reconciliation jobs (critical alert on drift, metrics, `lastUnresolved()` for readiness). Reputation store (`modules/reputation`, Phase 4 deferral): bounded 0..1 Laplace-smoothed advisory score from completed orders + resolved disputes, `ReputationService` (audited) + `InMemoryReputationRepository` + read-only `/api/reputation` routes; wired into the dispute advisory prior and updated on resolutions/completions. Dispute auto-execution (Phase 4 deferral): `PaymentService.settleDisputedOrder` arbiter path (escrow-gateway `arbiter` flag lets a resolved dispute release a locked escrow without buyer confirmation; balanced escrow→custody ledger; release fires linked RWA payout), auto-invoked by `DisputeService.resolve` via a `DisputeSettlementGateway` port — best-effort, audited, retryable. Advisory-only guardrails upheld (AI + reputation never gate money). Added **17 tests** (metrics 7, reputation 5, dispute-settlement 5); fixed a histogram cumulative-bucket double-count bug. Backend lint + full build clean; suite **78 pass, 3 pre-existing KYC failures (unrelated)**. Remaining Phase 6 items (independent security audit, MSB licensing, real anchors, mainnet deploy) are external/operational. |

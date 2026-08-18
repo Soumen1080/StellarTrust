@@ -41,7 +41,7 @@ import {
   type ContractResult,
   type ContractTx,
 } from "../stellar/soroban.client.js";
-import type { EscrowAddressResolver } from "./escrow.addresses.js";
+import type { WalletAddressResolver } from "../identity/wallet.resolver.js";
 
 export interface ChainTransitionInput {
   orderId: string;
@@ -307,7 +307,7 @@ export class DeterministicEscrowGateway implements EscrowGateway {
 export class SorobanRpcEscrowGateway implements EscrowGateway {
   constructor(
     private readonly signer: Signer,
-    private readonly addresses: EscrowAddressResolver,
+    private readonly addresses: WalletAddressResolver,
   ) {}
 
   signingMode(transition: PaymentTransition): ChainSigningMode {
@@ -689,7 +689,7 @@ interface EscrowContractState {
 
 /** Fail closed rather than running a synthetic chain adapter outside local/test. */
 export function createEscrowGateway(
-  addresses: EscrowAddressResolver,
+  addresses: WalletAddressResolver,
 ): EscrowGateway {
   if (config.ESCROW_GATEWAY === "deterministic") {
     if (config.NODE_ENV === "staging" || config.NODE_ENV === "production") {

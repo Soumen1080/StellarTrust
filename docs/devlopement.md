@@ -97,9 +97,14 @@ Status: ✅ resolved · 🔧 partially resolved · ⬜ still open
 | G3 | `frontend/` outside the root workspace | ✅ intentional (D9) |
 | G4 | Empty dirs / duplicate entrypoints | ✅ `backend/scripts/` and the duplicate entrypoint are gone |
 | H1 | Golden rules unenforceable at runtime | 🔧 see C2 — idempotency is the remaining hole |
-| **I** | **New: three RWA correctness gaps** | ⬜ open — see below |
+| I1 | RWA payouts write no ledger entries | ✅ fixed — posts through `LedgerService`, idempotent by cause-derived reference |
+| I2 | Contract double-payout guard inert | ✅ fixed — `markDistributed` + `getContractMeta` engaged (ledger posts first) |
+| I3 | DB user ids passed as Stellar `Address` | ✅ fixed — `WalletAddressResolver` + StrKey validation |
 
-### I. RWA gaps (found 2026-08-18, not in the original audit)
+### I. RWA gaps (found 2026-08-18, **all three fixed the same day** — §13)
+
+> Kept in full because the *shape* of these bugs is instructive: each was
+> invisible to the type system and to a green test suite.
 
 - 🔴 **I1 — RWA payouts write no ledger entries.**
   `RwaService.distributePayout` builds a balanced `LedgerTransactionInput` and
@@ -421,14 +426,16 @@ decision engine → human review) is already implemented and takes over.
 
 Code, in dependency order:
 
-1. **Fix the three RWA gaps (I1–I3).** I1 is a Golden Rule #1 violation and
-   should not survive another release.
-2. **Redis-backed idempotency store** (C2) — this is what makes the golden rule
-   true rather than aspirational in a real deployment.
+1. ~~Fix the three RWA gaps (I1–I3).~~ ✅ done — see §13.
+2. **Redis-backed idempotency store** (C2) — this is what makes Golden Rule #4
+   true rather than aspirational in a real deployment. Highest-value item left.
 3. **Postgres repositories for kyc, reputation, settlement** (C1 remainder), and
    a forward-only settlement schema.
-4. **Move the remaining hardcoded origins/URLs to env** (A5).
-5. **Implement `KmsSigner`** (B2) — the gate on any real-money path.
+4. **Include `*.test.ts` in the typecheck.** `backend/tsconfig.json` excludes
+   them, so a constructor signature change compiled clean and only failed at
+   runtime. Cheap fix, real safety.
+5. **Move the remaining hardcoded origins/URLs to env** (A5).
+6. **Implement `KmsSigner`** (B2) — the gate on any real-money path.
 
 Operational, and blocking all on-chain verification:
 

@@ -6,7 +6,6 @@
  * (pro-rata shares, capacity checks) converts to `bigint` locally.
  */
 
-import { randomUUID } from "node:crypto";
 import { EntryDirection, type CurrencyCode } from "@stellartrust/shared";
 import type { LedgerTransactionInput } from "@stellartrust/shared";
 import {
@@ -15,6 +14,9 @@ import {
   NotFoundError,
   ValidationError,
 } from "../../lib/errors.js";
+import { logger } from "../../lib/logger.js";
+import { assertStellarAddress } from "../stellar/address.js";
+import type { WalletAddressResolver } from "../identity/wallet.resolver.js";
 import type { AuditRepository } from "../audit/audit.repository.js";
 import type { RwaGateway } from "./rwa.gateway.js";
 import type { RwaRepository } from "./rwa.repository.js";
@@ -40,11 +42,35 @@ export interface RwaActor {
   roles: string[];
 }
 
+/**
+ * The ledger write a payout must go through. Structurally satisfied by
+ * `LedgerService`; declared here as a narrow port so the RWA module depends on
+ * the capability rather than on the ledger module's class.
+ */
+export interface PayoutLedgerRecorder {
+  record(input: LedgerTransactionInput): Promise<{ id: string }>;
+  getByReference(
+    referenceId: string,
+  ): Promise<{ id: string } | undefined>;
+}
+
 export class RwaService {
+  /**
+   * @param ledger - required, not optional. A payout that cannot post balanced
+   *   ledger entries must fail rather than quietly complete: the ledger is the
+   *   system of record (Golden Rule #1), and an optional recorder is an
+   *   invitation to skip it.
+   * @param addresses - resolves issuer/holder user ids to the Stellar accounts
+   *   the token contract expects. Without it, internal ids reach a Soroban
+   *   `Address` argument and the local and on-chain adapters key balances
+   *   differently.
+   */
   constructor(
     private readonly repository: RwaRepository,
     private readonly gateway: RwaGateway,
     private readonly audit: AuditRepository,
+    private readonly ledger: PayoutLedgerRecorder,
+    private readonly addresses: WalletAddressResolver,
   ) {}
 
   /** Create a new asset for tokenization. */
@@ -132,8 +158,18 @@ export class RwaService {
       throw new NotFoundError("Asset not found");
     }
 
+    // The issuer's real Stellar account, from their SEP-10-proven wallet. This
+    // used to pass `actor.userId` — a UUID — straight into a Soroban `Address`
+    // argument, which the on-chain adapter silently replaced with the signer
+    // while the local adapter keyed balances by the UUID. The two adapters then
+    // disagreed about who held anything.
+    const issuerAddress = await this.addresses.resolve(
+      tokenization.issuerUserId,
+      "issuer",
+    );
+
     const contractId = await this.gateway.deployToken({
-      issuerAddress: actor.userId, // Would be a Stellar address in production.
+      issuerAddress,
       assetRef: asset.assetRef,
       assetType: asset.assetType,
       description: asset.description,
@@ -205,20 +241,33 @@ export class RwaService {
       );
     }
 
+    // The recipient is a Soroban `Address`, so it must be a real strkey — an
+    // empty string or a UUID reaching the contract produces an opaque host
+    // error at simulation, or binds the units to nothing.
+    const holderAddress = assertStellarAddress(
+      input.holderAddress,
+      "holderAddress",
+    );
+
     if (tokenization.contractId) {
+      const issuerAddress = await this.addresses.resolve(
+        tokenization.issuerUserId,
+        "issuer",
+      );
+
       // When authorization is required, the recipient must be authorized before
       // the transfer — the contract rejects transfers to unauthorized holders.
       if (tokenization.requireAuthorization) {
         await this.gateway.authorizeHolder({
           contractId: tokenization.contractId,
-          holderAddress: input.holderAddress,
+          holderAddress,
         });
       }
 
       await this.gateway.transferUnits({
         contractId: tokenization.contractId,
-        from: tokenization.issuerUserId,
-        to: input.holderAddress,
+        from: issuerAddress,
+        to: holderAddress,
         units,
       });
     }
@@ -227,7 +276,7 @@ export class RwaService {
     await this.repository.createHolding({
       tokenizationId,
       holderUserId: actor.userId,
-      holderAddress: input.holderAddress,
+      holderAddress,
       units: units.toString(),
       purchaseAmount: purchaseAmount.toString(),
       purchaseCurrency: tokenization.pricePerUnitCurrency,
@@ -354,6 +403,18 @@ export class RwaService {
       throw new ConflictError("No holdings to distribute to");
     }
 
+    // The payout is identified by what caused it, so a retry of the same
+    // release converges instead of paying twice. Whether the ledger already
+    // holds this posting is also what tells a retry apart from a second,
+    // genuinely different payout.
+    const ledgerReferenceId = `rwa-payout:${tokenizationId}:${orderId}:${transition}`;
+    const priorPosting = await this.ledger.getByReference(ledgerReferenceId);
+
+    // Assert our unit records still agree with the deployed contract before
+    // paying anyone. If they have drifted, the pro-rata shares below are
+    // computed against the wrong denominator.
+    await this.assertContractAgrees(tokenization, priorPosting !== undefined);
+
     const calculations = this.calculatePayoutShares(
       holdings.map((h) => ({
         holderUserId: h.holderUserId,
@@ -389,15 +450,35 @@ export class RwaService {
       })),
     );
 
-    // Post balanced ledger entries for the payout. In production the returned
-    // transaction is committed atomically and linked to the payout records.
-    void this.createPayoutLedger(tokenization, payoutRecords, payoutCurrency);
+    // Post the balanced ledger entries first. The distribution stays
+    // `Processing` if this throws, which is exactly right: the payout is then
+    // retryable and the books never claim a distribution that did not post.
+    //
+    // Order matters. Setting the contract's one-shot `distributed` flag before
+    // the ledger post would deadlock a retry: the flag would already be set,
+    // the money would never have been recorded, and no later attempt could
+    // complete it.
+    const ledgerTransaction =
+      priorPosting ??
+      (await this.recordPayoutLedger(
+        ledgerReferenceId,
+        tokenization,
+        payoutRecords,
+        payoutCurrency,
+      ));
+
+    // Now claim the on-chain guard. A retry finds it already set, which is the
+    // expected outcome once the ledger posting above has been recognised as a
+    // repeat — the contract, not this code, is the authority on it.
+    if (tokenization.contractId) {
+      await this.markDistributedOnce(tokenization.contractId);
+    }
 
     const completed = await this.repository.updateDistribution({
       ...distribution,
       status: PayoutStatus.Completed,
       completedAt: new Date().toISOString(),
-      ledgerTransactionId: randomUUID(),
+      ledgerTransactionId: ledgerTransaction.id,
     });
 
     await this.audit.append({
@@ -506,37 +587,126 @@ export class RwaService {
     });
   }
 
-  /** Create balanced ledger entries for a payout distribution. */
-  private createPayoutLedger(
+  /**
+   * Persist the balanced ledger entries for a payout distribution.
+   *
+   * The reference id is derived from what *caused* the payout — tokenization,
+   * order, and transition — not from a timestamp or a fresh distribution id. A
+   * retry therefore collides with the existing transaction instead of posting
+   * the money a second time, and we recover its id rather than failing: the
+   * ledger already holds the truth, so the only thing left to do is finish
+   * recording it.
+   */
+  private async recordPayoutLedger(
+    referenceId: string,
     tokenization: TokenizationDTO,
     payoutRecords: Array<{ shareAmount: string }>,
     currency: string,
-  ): LedgerTransactionInput {
+  ): Promise<{ id: string }> {
     const totalAmount = payoutRecords.reduce(
       (sum, r) => sum + BigInt(r.shareAmount),
       0n,
     );
+    if (totalAmount <= 0n) {
+      // Every holder rounded to zero. Posting a zero-amount entry is rejected
+      // by the ledger schema, and there is genuinely nothing to record.
+      throw new ConflictError(
+        "Payout is too small to distribute: every holder's share rounds to zero",
+      );
+    }
 
-    const entries = [
-      {
-        accountId: RWA_PAYOUT_RESERVE,
-        direction: EntryDirection.Debit,
-        amount: totalAmount.toString(),
-        currency: currency as CurrencyCode,
-      },
-      {
-        accountId: RWA_PAYOUT_PAYABLE,
-        direction: EntryDirection.Credit,
-        amount: totalAmount.toString(),
-        currency: currency as CurrencyCode,
-      },
-    ];
-
-    return {
-      referenceId: `rwa-payout:${tokenization.id}:${Date.now()}`,
+    const input: LedgerTransactionInput = {
+      referenceId,
       description: `RWA payout distribution for tokenization ${tokenization.id}`,
-      entries,
+      entries: [
+        {
+          accountId: RWA_PAYOUT_RESERVE,
+          direction: EntryDirection.Debit,
+          amount: totalAmount.toString(),
+          currency: currency as CurrencyCode,
+        },
+        {
+          accountId: RWA_PAYOUT_PAYABLE,
+          direction: EntryDirection.Credit,
+          amount: totalAmount.toString(),
+          currency: currency as CurrencyCode,
+        },
+      ],
     };
+
+    try {
+      return await this.ledger.record(input);
+    } catch (err) {
+      if (!(err instanceof ConflictError)) throw err;
+      // Lost a race with a concurrent attempt at the same payout. The ledger
+      // already holds the truth; recover its id rather than failing.
+      const existing = await this.ledger.getByReference(referenceId);
+      if (!existing) throw err;
+      logger.info(
+        { tokenizationId: tokenization.id, ledgerTransactionId: existing.id },
+        "RWA payout ledger transaction already posted; reusing it",
+      );
+      return existing;
+    }
+  }
+
+  /**
+   * Set the contract's one-shot `distributed` flag, tolerating the case where
+   * it is already set.
+   *
+   * By the time this runs the ledger posting has been established as
+   * authoritative for this payout, so an "already distributed" answer means a
+   * previous attempt got this far — not that we are double-paying. A second,
+   * genuinely different payout is refused earlier, by
+   * {@link assertContractAgrees}.
+   */
+  private async markDistributedOnce(contractId: string): Promise<void> {
+    try {
+      await this.gateway.markDistributed(contractId);
+    } catch (err) {
+      const meta = await this.gateway.getContractMeta(contractId);
+      if (!meta?.distributed) throw err;
+      logger.info(
+        { contractId },
+        "token contract was already marked distributed by a previous attempt",
+      );
+    }
+  }
+
+  /**
+   * Verify the deployed contract still describes the tokenization we are about
+   * to pay out on. Two failures matter: a unit total that no longer matches
+   * (every pro-rata share would be wrong), and a contract that already recorded
+   * a distribution (the on-chain double-payout guard has fired).
+   */
+  private async assertContractAgrees(
+    tokenization: TokenizationDTO,
+    isRetry: boolean,
+  ): Promise<void> {
+    if (!tokenization.contractId) return;
+
+    const meta = await this.gateway.getContractMeta(tokenization.contractId);
+    if (!meta) {
+      throw new ConflictError(
+        `Token contract ${tokenization.contractId} could not be read; refusing ` +
+          "to distribute a payout against custody we cannot verify",
+      );
+    }
+    if (meta.totalUnits !== BigInt(tokenization.totalUnits)) {
+      throw new ConflictError(
+        `Tokenization ${tokenization.id} records ${tokenization.totalUnits} ` +
+          `units but the contract holds ${meta.totalUnits}; payout shares ` +
+          "would be computed against the wrong total",
+      );
+    }
+    // The contract allows one distribution per tokenization. A repeat of the
+    // *same* payout is fine — the ledger already holds it, and we are just
+    // finishing the record. A different one is not.
+    if (meta.distributed && !isRetry) {
+      throw new ConflictError(
+        `Token contract ${tokenization.contractId} has already distributed a payout`,
+      );
+    }
   }
 
   private async requireTokenization(

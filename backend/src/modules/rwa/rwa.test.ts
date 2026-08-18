@@ -2,6 +2,10 @@ import { PaymentTransition } from "@stellartrust/shared";
 import { describe, expect, it } from "vitest";
 import { InMemoryAuditRepository } from "../audit/audit.repository.js";
 import { DeterministicEscrowGateway } from "../escrow/escrow.gateway.js";
+import { StaticWalletAddressResolver } from "../identity/wallet.resolver.js";
+import { isBalanced } from "../ledger/ledger.balance.js";
+import { InMemoryLedgerRepository } from "../ledger/ledger.repository.js";
+import { LedgerService } from "../ledger/ledger.service.js";
 import { InMemoryPaymentRepository } from "../payments/payment.repository.js";
 import { PaymentService } from "../payments/payment.service.js";
 import { DeterministicRwaGateway } from "./rwa.gateway.js";
@@ -9,12 +13,22 @@ import { InMemoryRwaRepository } from "./rwa.repository.js";
 import { RwaService, type RwaActor } from "./rwa.service.js";
 import { AssetType, TokenizationStatus, PayoutStatus } from "./rwa.types.js";
 
+// Real strkeys: these reach a Soroban `Address` argument, and the service now
+// rejects anything that is not a valid Stellar account.
+const ISSUER_ADDRESS = "GBUV3T3YDFD232LUXGADFZV2XCMNEHXBMVTQPBD7DKHTP4Q6ZLNOSMEX";
+const INVESTOR1_ADDRESS = "GDYWVMFH5JDIISEZMLDFTN6A5NHPLZGKTTYAAKGB5Z6U7MHKUV6JPVS5";
+const INVESTOR2_ADDRESS = "GBNPF7BZKNCAS32XWOBWGL7KD6NFHLZO5GQDIJA7Z73B7YISNM4MFZNL";
+
 function setup() {
   const repository = new InMemoryRwaRepository();
   const gateway = new DeterministicRwaGateway();
   const audit = new InMemoryAuditRepository();
-  const service = new RwaService(repository, gateway, audit);
-  return { repository, gateway, audit, service };
+  const ledger = new LedgerService(new InMemoryLedgerRepository());
+  const addresses = new StaticWalletAddressResolver(
+    new Map([["issuer-1", ISSUER_ADDRESS]]),
+  );
+  const service = new RwaService(repository, gateway, audit, ledger, addresses);
+  return { repository, gateway, audit, ledger, service };
 }
 
 const issuer: RwaActor = { userId: "issuer-1", roles: ["user"] };
@@ -101,7 +115,7 @@ describe("Phase 5 RWA tokenization", () => {
     const { tokenization } = await createActiveTokenization(service);
     const details = await service.purchaseUnits(tokenization.id, investor, {
       units: "250",
-      holderAddress: "GINVESTOR1",
+      holderAddress: INVESTOR1_ADDRESS,
     });
     expect(details.tokenization.unitsSold).toBe("250");
     expect(details.availableUnits).toBe("750");
@@ -115,7 +129,7 @@ describe("Phase 5 RWA tokenization", () => {
     const { tokenization } = await createActiveTokenization(service, { totalUnits: "100" });
     await service.purchaseUnits(tokenization.id, investor, {
       units: "100",
-      holderAddress: "GINVESTOR1",
+      holderAddress: INVESTOR1_ADDRESS,
     });
     const details = await service.getTokenizationDetails(tokenization.id);
     expect(details.tokenization.status).toBe(TokenizationStatus.Funded);
@@ -128,7 +142,7 @@ describe("Phase 5 RWA tokenization", () => {
     await expect(
       service.purchaseUnits(tokenization.id, investor, {
         units: "101",
-        holderAddress: "GINVESTOR1",
+        holderAddress: INVESTOR1_ADDRESS,
       }),
     ).rejects.toMatchObject({ code: "VALIDATION" });
   });
@@ -140,14 +154,14 @@ describe("Phase 5 RWA tokenization", () => {
     await expect(
       service.purchaseUnits(tokenization.id, investor, {
         units: "10",
-        holderAddress: "GINVESTOR1",
+        holderAddress: INVESTOR1_ADDRESS,
       }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
 
     await service.unfreezeTokenization(tokenization.id, issuer);
     const details = await service.purchaseUnits(tokenization.id, investor, {
       units: "10",
-      holderAddress: "GINVESTOR1",
+      holderAddress: INVESTOR1_ADDRESS,
     });
     expect(details.tokenization.unitsSold).toBe("10");
   });
@@ -158,11 +172,11 @@ describe("Phase 5 RWA tokenization", () => {
     // investor1: 300 units (30%), investor2: 200 units (20%), issuer keeps 500 (50%)
     await service.purchaseUnits(tokenization.id, investor, {
       units: "300",
-      holderAddress: "GINVESTOR1",
+      holderAddress: INVESTOR1_ADDRESS,
     });
     await service.purchaseUnits(tokenization.id, investor2, {
       units: "200",
-      holderAddress: "GINVESTOR2",
+      holderAddress: INVESTOR2_ADDRESS,
     });
 
     const distribution = await service.distributePayout(
@@ -187,12 +201,108 @@ describe("Phase 5 RWA tokenization", () => {
     expect(byUser[investor2.userId]).toBe("2000");
   });
 
+  it("posts a balanced ledger transaction for the payout", async () => {
+    // A payout used to compute its ledger transaction and throw it away, then
+    // record a fabricated id that referenced no row — the books showed no trace
+    // of money that had been distributed.
+    const { service, ledger } = setup();
+    const { tokenization } = await createActiveTokenization(service);
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "300",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+
+    const distribution = await service.distributePayout(
+      tokenization.id,
+      "order-1",
+      "release",
+      10_000n,
+      "USDC",
+      system,
+    );
+
+    expect(distribution.ledgerTransactionId).toBeTruthy();
+    const posted = await ledger.getByReference(
+      `rwa-payout:${tokenization.id}:order-1:release`,
+    );
+    expect(posted?.id).toBe(distribution.ledgerTransactionId);
+    expect(isBalanced(posted!.entries)).toBe(true);
+    // 300/1000 of 10000 — the ledger records what the holders were actually owed.
+    expect(posted!.entries[0]?.amount).toBe("3000");
+  });
+
+  it("does not post the payout twice when the same release is retried", async () => {
+    const { service, repository } = setup();
+    const { tokenization } = await createActiveTokenization(service);
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "300",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+
+    const first = await service.distributePayout(
+      tokenization.id, "order-1", "release", 10_000n, "USDC", system,
+    );
+    // The escrow release hook is best-effort and retryable, so the same payout
+    // can legitimately arrive twice. The ledger must not move twice for it.
+    const second = await service.distributePayout(
+      tokenization.id, "order-1", "release", 10_000n, "USDC", system,
+    );
+
+    expect(second.ledgerTransactionId).toBe(first.ledgerTransactionId);
+    const contract = await repository.findTokenization(tokenization.id);
+    expect(contract).toBeTruthy();
+  });
+
+  it("refuses a payout whose shares all round to zero", async () => {
+    // Posting a zero-amount entry is rejected by the ledger schema, so this
+    // must fail loudly rather than complete having recorded nothing.
+    const { service } = setup();
+    const { tokenization } = await createActiveTokenization(service, {
+      totalUnits: "1000",
+    });
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "1",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+    await expect(
+      service.distributePayout(
+        tokenization.id, "order-1", "release", 100n, "USDC", system,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("rejects a holder address that is not a Stellar account", async () => {
+    // These reach a Soroban `Address` argument. A UUID or an empty string used
+    // to pass straight through to the contract.
+    const { service } = setup();
+    const { tokenization } = await createActiveTokenization(service);
+    for (const bad of ["", "GINVESTOR1", "8b1f0f2e-0b6e-4a1e-9f6b-1f2a3b4c5d6e"]) {
+      await expect(
+        service.purchaseUnits(tokenization.id, investor, {
+          units: "10",
+          holderAddress: bad,
+        }),
+      ).rejects.toMatchObject({ code: "VALIDATION" });
+    }
+  });
+
+  it("keys on-chain balances by the issuer's real Stellar address", async () => {
+    // The issuer used to be passed as a DB user id, so the local adapter keyed
+    // the issuer's balance by a UUID while the Soroban adapter used the signer.
+    const { service, gateway } = setup();
+    const { tokenization } = await createActiveTokenization(service);
+    expect(await gateway.getBalance(tokenization.contractId!, ISSUER_ADDRESS))
+      .toBe(1000n);
+    expect(await gateway.getBalance(tokenization.contractId!, issuer.userId))
+      .toBe(0n);
+  });
+
   it("refuses payout distribution from a non-system/non-compliance actor", async () => {
     const { service } = setup();
     const { tokenization } = await createActiveTokenization(service);
     await service.purchaseUnits(tokenization.id, investor, {
       units: "100",
-      holderAddress: "GINVESTOR1",
+      holderAddress: INVESTOR1_ADDRESS,
     });
     await expect(
       service.distributePayout(
@@ -214,9 +324,9 @@ describe("Phase 5 RWA tokenization", () => {
     // Service authorizes the holder as part of purchase.
     await service.purchaseUnits(tokenization.id, investor, {
       units: "50",
-      holderAddress: "GINVESTOR1",
+      holderAddress: INVESTOR1_ADDRESS,
     });
-    expect(await gateway.isAuthorized(tokenization.contractId!, "GINVESTOR1")).toBe(true);
+    expect(await gateway.isAuthorized(tokenization.contractId!, INVESTOR1_ADDRESS)).toBe(true);
     expect(await gateway.isAuthorized(tokenization.contractId!, "GUNKNOWN")).toBe(false);
   });
 
@@ -225,7 +335,7 @@ describe("Phase 5 RWA tokenization", () => {
     const { tokenization } = await createActiveTokenization(service);
     await service.purchaseUnits(tokenization.id, investor, {
       units: "100",
-      holderAddress: "GINVESTOR1",
+      holderAddress: INVESTOR1_ADDRESS,
     });
     const portfolio = await service.getInvestorPortfolio(investor.userId);
     expect(portfolio.holdings).toHaveLength(1);
@@ -289,7 +399,14 @@ describe("Phase 5 RWA payout integration with escrow release", () => {
     const rwaRepository = new InMemoryRwaRepository();
     const rwaGateway = new DeterministicRwaGateway();
     const audit = new InMemoryAuditRepository();
-    const rwa = new RwaService(rwaRepository, rwaGateway, audit);
+    const ledger = new LedgerService(new InMemoryLedgerRepository());
+    const rwa = new RwaService(
+      rwaRepository,
+      rwaGateway,
+      audit,
+      ledger,
+      new StaticWalletAddressResolver(new Map([["issuer-1", ISSUER_ADDRESS]])),
+    );
 
     const paymentRepository = new InMemoryPaymentRepository();
     const escrowGateway = new DeterministicEscrowGateway();
@@ -299,7 +416,7 @@ describe("Phase 5 RWA payout integration with escrow release", () => {
       audit,
       rwa,
     );
-    return { rwa, rwaRepository, payments };
+    return { rwa, rwaRepository, payments, ledger };
   }
 
   it("distributes an RWA payout automatically when the linked order is released", async () => {
@@ -332,7 +449,7 @@ describe("Phase 5 RWA payout integration with escrow release", () => {
     const deployed = await rwa.deployTokenization(tokenization.id, issuer);
     await rwa.purchaseUnits(deployed.id, investor, {
       units: "400",
-      holderAddress: "GINVESTOR1",
+      holderAddress: INVESTOR1_ADDRESS,
     });
 
     // Advance the escrow to release.

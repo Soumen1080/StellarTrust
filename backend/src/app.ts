@@ -51,8 +51,10 @@ import type { KycRiskClient } from "./modules/kyc/kyc-risk.client.js";
 import { KycService } from "./modules/kyc/kyc.service.js";
 import { createKycProvider } from "./modules/kyc/providers/provider.factory.js";
 import { createLedgerRouter } from "./modules/ledger/ledger.routes.js";
+import { InMemoryLedgerRepository } from "./modules/ledger/ledger.repository.js";
+import { LedgerService } from "./modules/ledger/ledger.service.js";
 import { createEscrowGateway } from "./modules/escrow/escrow.gateway.js";
-import { IdentityEscrowAddressResolver } from "./modules/escrow/escrow.addresses.js";
+import { IdentityWalletAddressResolver } from "./modules/identity/wallet.resolver.js";
 import { InMemoryPaymentRepository } from "./modules/payments/payment.repository.js";
 import type { PaymentRepository } from "./modules/payments/payment.repository.js";
 import { PgPaymentRepository } from "./modules/payments/pg-payment.repository.js";
@@ -308,11 +310,27 @@ export function createApp(): Express {
   // RWA module is separate from the escrow happy path. Tokenization enables
   // sellers to unlock working capital and investors to get transparent
   // fractional ownership. Payouts distribute automatically when buyer pays.
+  // Contracts take Stellar addresses, not internal user ids. The only
+  // trustworthy mapping is the wallet each party proved control of during
+  // SEP-10, so escrow and RWA both resolve through the identity store.
+  const walletAddresses = new IdentityWalletAddressResolver(identities);
+
+  // One ledger service for the whole app. RWA payouts post through it, so a
+  // payout that cannot write balanced entries fails instead of silently
+  // completing (Golden Rule #1).
+  const ledgerService = new LedgerService(new InMemoryLedgerRepository());
+
   const rwaRepository: RwaRepository = usePersistentStore
     ? new PgRwaRepository(getPool())
     : new InMemoryRwaRepository();
   const rwaGateway = createRwaGateway();
-  const rwa = new RwaService(rwaRepository, rwaGateway, audit);
+  const rwa = new RwaService(
+    rwaRepository,
+    rwaGateway,
+    audit,
+    ledgerService,
+    walletAddresses,
+  );
 
   // ── Phase 6: Reputation store (advisory prior for dispute risk) ───────────
   const reputationService = new ReputationService(
@@ -325,12 +343,7 @@ export function createApp(): Express {
   const paymentRepository: PaymentRepository = usePersistentStore
     ? new PgPaymentRepository(getPool())
     : new InMemoryPaymentRepository();
-  // The escrow contract takes Stellar addresses, not internal user ids. The
-  // only trustworthy mapping is the wallet each party proved control of during
-  // SEP-10, so resolution goes through the identity store.
-  const escrowGateway = createEscrowGateway(
-    new IdentityEscrowAddressResolver(identities),
-  );
+  const escrowGateway = createEscrowGateway(walletAddresses);
   const payments = new PaymentService(
     paymentRepository,
     escrowGateway,
@@ -399,7 +412,9 @@ export function createApp(): Express {
   // ── Module routers ────────────────────────────────────────────────────────
   app.use("/api/auth", createAuthRouter(sep10, identities, bearerVerifier));
   app.use("/api/kyc", createKycRouter(kyc, bearerVerifier));
-  app.use("/api/ledger", createLedgerRouter(undefined, bearerVerifier));
+  // Same instance the RWA payouts write through, so `/api/ledger` reads back
+  // the transactions those payouts posted rather than a second, empty store.
+  app.use("/api/ledger", createLedgerRouter(ledgerService, bearerVerifier));
   app.use(
     "/api/payments",
     createPaymentRouter(payments, reconciliation, bearerVerifier),

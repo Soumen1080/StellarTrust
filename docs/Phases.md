@@ -217,25 +217,26 @@ the service — see the unchecked items below.
   boundary) and `PgRwaRepository` (used when `DATABASE_URL` is set).
 - [ ] Deploy the `rwa_token` contract to public Stellar testnet (`RWA_WASM_HASH`
   from `contracts/scripts/deploy-testnet.ps1`) and verify against it.
-- [ ] **Call the contract's payout path.** `getPayoutShares` and
-  `markDistributed` are implemented on the gateway but never invoked: shares are
-  computed off-chain and the contract's `distributed` idempotency flag is never
-  set, so its double-payout guard is inert.
-- [ ] **Persist the payout ledger.** `RwaService.distributePayout` builds a
-  balanced `LedgerTransactionInput` and discards it (`void
-  this.createPayoutLedger(...)`), then stamps a `ledgerTransactionId` that
-  references no row. RWA payouts currently write no ledger entries.
-- [ ] Resolve issuer/holder identities to real Stellar addresses. The service
-  passes DB user ids where the contract expects an `Address`; the Soroban
-  gateway silently substitutes the signer, so the two adapters key balances
-  differently.
+- [x] **Payouts post to the ledger.** `distributePayout` now awaits a real
+  `LedgerService.record()` and stores the returned id. The reference is derived
+  from tokenization + order + transition, so a retried release converges on the
+  same posting instead of paying twice.
+- [x] **The contract's double-payout guard is engaged.** `markDistributed` is
+  called after the ledger post (not before — the reverse order deadlocks a
+  retry), and `getContractMeta` verifies unit totals before shares are computed.
+- [x] Issuer and holder identities resolve to real Stellar addresses through
+  `WalletAddressResolver`; holder addresses are StrKey-validated at the
+  boundary.
+- [ ] `getPayoutShares` remains uncalled: payouts settle in the ledger, not as
+  on-chain token transfers, so the contract's per-holder view is not the right
+  authority for who gets paid. Revisit if payouts ever move on-chain.
 
 **Acceptance criteria**
 - [x] An invoice can be tokenized, sold fractionally, and pays holders on buyer
-  payment (covered by the RWA + escrow-release integration tests).
-- [ ] ⚠️ *"…all reconciled in the ledger"* was previously checked here and is
-  **not** true: the payout's balanced transaction is computed and discarded. See
-  the unchecked deliverable above.
+  payment — all reconciled in the ledger. Covered by the RWA + escrow-release
+  integration tests, including a test that reads the posted transaction back and
+  asserts it balances, and one that asserts a retried release does not post
+  twice.
 - [x] Tokenization is fully separate from the escrow happy path (Rules.md §3):
   RWA is a peer module; the payout is a non-fatal, retryable hook on release and
   never alters the tested Phase 2 money state machine.

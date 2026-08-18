@@ -1,29 +1,33 @@
 /**
- * User id → Stellar address resolution for on-chain escrow.
+ * User id → Stellar address resolution.
  *
- * Orders carry internal user ids; the escrow contract takes `Address`. The only
- * trustworthy mapping between them is the wallet a user proved control of
- * during SEP-10 — never a client-supplied address, which would let a caller
+ * Domain records carry internal user ids; Soroban contracts take `Address`.
+ * The only trustworthy mapping between them is the wallet a user proved control
+ * of during SEP-10 — never a client-supplied address, which would let a caller
  * redirect custody or a payout to an account they chose.
+ *
+ * Lives in `identity` because that is what it resolves; escrow and RWA both
+ * depend on it.
  */
 import type { WalletRef } from "@stellartrust/shared";
 import { ConflictError } from "../../lib/errors.js";
 import { isAccountAddress } from "../stellar/address.js";
 
-export interface EscrowAddressResolver {
+export interface WalletAddressResolver {
   /**
-   * The Stellar account an order party signs and settles with.
+   * The Stellar account a user signs and settles with.
    *
+   * @param role - how to name this user in an error the caller will see
+   *   ("buyer", "seller", "issuer"). A missing wallet is a real, actionable
+   *   state, not a bug: it means the person has not connected one yet.
    * @throws ConflictError when the user has no wallet on file, or the stored
-   *   value is not a usable account address. Both mean the deal cannot go
-   *   on-chain, and both need a human-readable reason at the API edge rather
-   *   than a host error out of simulation.
+   *   value is not a usable account address.
    */
   resolve(userId: string, role: string): Promise<string>;
 }
 
 /** Wallet lookup backed by the identity store. */
-export class IdentityEscrowAddressResolver implements EscrowAddressResolver {
+export class IdentityWalletAddressResolver implements WalletAddressResolver {
   constructor(
     private readonly identity: {
       findPrimaryWallet(userId: string): Promise<WalletRef | undefined>;
@@ -35,7 +39,7 @@ export class IdentityEscrowAddressResolver implements EscrowAddressResolver {
     if (!wallet) {
       throw new ConflictError(
         `The ${role} has no connected Stellar wallet. They must sign in with ` +
-          "their wallet before this order can move on-chain.",
+          "their wallet before this can move on-chain.",
       );
     }
     if (!isAccountAddress(wallet.stellarPublicKey)) {
@@ -47,8 +51,8 @@ export class IdentityEscrowAddressResolver implements EscrowAddressResolver {
   }
 }
 
-/** Fixed mapping for tests and the deterministic adapter. */
-export class StaticEscrowAddressResolver implements EscrowAddressResolver {
+/** Fixed mapping for tests and deterministic adapters. */
+export class StaticWalletAddressResolver implements WalletAddressResolver {
   constructor(private readonly addresses: ReadonlyMap<string, string>) {}
 
   async resolve(userId: string, role: string): Promise<string> {
