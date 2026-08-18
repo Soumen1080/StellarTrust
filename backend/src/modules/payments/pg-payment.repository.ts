@@ -32,7 +32,12 @@ import {
   type ReconciliationMismatchDTO,
   type StellarTxRecord,
 } from "@stellartrust/shared";
-import { ConflictError } from "../../lib/errors.js";
+import {
+  AppError,
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+} from "../../lib/errors.js";
 import { assertBalanced } from "../ledger/ledger.balance.js";
 import { systemAccountName } from "../ledger/system-accounts.js";
 import type {
@@ -426,14 +431,11 @@ export class PgPaymentRepository implements PaymentRepository {
       };
     } catch (err) {
       await client.query("rollback").catch(() => undefined);
-      // 23505 = unique_violation. The unique fields we write (ledger reference
-      // id, (order_id, transition), stellar hash) all indicate the same money
-      // movement was already recorded.
-      if (isUniqueViolation(err)) {
-        throw new ConflictError(
-          "Financial transition has already been recorded",
-        );
-      }
+      // A unique violation means this money movement was already recorded; the
+      // other translated codes mean the caller's input was bad. Anything else
+      // is our fault and keeps its 500.
+      const translated = translateConstraintViolation(err);
+      if (translated) throw translated;
       throw err;
     } finally {
       client.release();
@@ -510,11 +512,49 @@ export class PgPaymentRepository implements PaymentRepository {
   }
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    typeof err === "object" &&
-    err !== null &&
-    "code" in err &&
-    (err as { code?: string }).code === "23505"
-  );
+function pgErrorCode(err: unknown): string | undefined {
+  return typeof err === "object" && err !== null && "code" in err
+    ? (err as { code?: string }).code
+    : undefined;
+}
+
+/**
+ * Translate a constraint the *caller* violated into an answer they can act on.
+ *
+ * `orders.seller_id` is a `uuid` with a foreign key to `users`, so a seller id
+ * that is not a UUID, or is a UUID nobody owns, is rejected by Postgres rather
+ * than by any check in the service — the input schema accepts any non-empty
+ * string. Rethrowing those raw produced "Internal server error" for what is
+ * plainly a bad request, and told the user nothing about which field was wrong.
+ *
+ * Only violations that describe caller input are translated. Anything else is
+ * a genuine fault and must keep its 500, because it means our own writes are
+ * inconsistent.
+ *
+ * @returns a typed error to throw, or `undefined` to rethrow the original.
+ */
+function translateConstraintViolation(err: unknown): AppError | undefined {
+  switch (pgErrorCode(err)) {
+    case "23505": // unique_violation
+      return new ConflictError("Financial transition has already been recorded");
+    case "22P02": // invalid_text_representation — not a UUID at all
+      return new ValidationError("Seller user ID is not a valid user ID", [
+        {
+          path: "sellerId",
+          message:
+            "expected the seller's user ID, which is a UUID such as " +
+            "3f2b1a90-5c47-4d1e-9a8b-7c6d5e4f3a2b",
+        },
+      ]);
+    case "23503": // foreign_key_violation — well-formed id, no such user
+      return new NotFoundError(
+        "No user exists with that seller user ID",
+      );
+    case "23514": // check_violation — e.g. buyer_id <> seller_id, amount > 0
+      return new ValidationError(
+        "The order violates a database constraint (a buyer cannot be their own seller, and the amount must be positive)",
+      );
+    default:
+      return undefined;
+  }
 }
