@@ -3,7 +3,25 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist/**", "node_modules/**", "coverage/**"],
+    // Ad hoc scripts used for manual local debugging against a live/testnet
+    // backend, not part of the app or its test suite.
+    ignores: [
+      "dist/**",
+      "node_modules/**",
+      "coverage/**",
+      "_apply_0007.mjs",
+      "_diag_dispute_err.mjs",
+      "_diag_http.mjs",
+      "_diag_order.mjs",
+      "_diag_probe_deployed.mjs",
+      "_diag_schema.mjs",
+      "_genkey.mjs",
+      "_mkseller.mjs",
+      "test-create-order.js",
+      "test-db-connection.js",
+      "test-full-order-flow.js",
+      "tmp-db-check.mjs",
+    ],
   },
   ...tseslint.configs.recommended,
   {

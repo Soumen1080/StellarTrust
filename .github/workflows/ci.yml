@@ -106,6 +106,13 @@ jobs:
         working-directory: contracts
         run: cargo build --release --target wasm32v1-none
 
+      # backend's package.json links @stellartrust/shared via file:../shared,
+      # whose own `prepare` (build) script needs its dependencies installed
+      # first — without this, `npm ci` below fails trying to resolve them.
+      - name: Build shared contracts
+        working-directory: shared
+        run: npm ci --workspaces=false --no-audit --no-fund && npm run build
+
       - name: Install spec reader deps
         working-directory: backend
         run: npm ci
