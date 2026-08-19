@@ -4,8 +4,19 @@ import { useEffect, useState } from "react";
 import type { WalletBalancesResponse } from "@stellartrust/shared";
 import { api, ApiClientError } from "@/lib/api";
 
-/** Live testnet/mainnet balances for the connected wallet, read from Horizon. */
-export function WalletBalances({ accessToken }: { accessToken: string }) {
+/**
+ * Live testnet/mainnet balances for the connected wallet, read from Horizon.
+ *
+ * `refreshKey` lets a caller force a re-fetch (e.g. after an escrow action
+ * settles) without needing the access token itself to change.
+ */
+export function WalletBalances({
+  accessToken,
+  refreshKey,
+}: {
+  accessToken: string;
+  refreshKey?: number | string;
+}) {
   const [data, setData] = useState<WalletBalancesResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -33,7 +44,7 @@ export function WalletBalances({ accessToken }: { accessToken: string }) {
     return () => {
       cancelled = true;
     };
-  }, [accessToken]);
+  }, [accessToken, refreshKey]);
 
   if (loading) return <p className="text-xs text-muted">Loading balances…</p>;
   if (error) return <p className="text-xs text-status-refunded">{error}</p>;
