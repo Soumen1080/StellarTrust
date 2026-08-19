@@ -16,4 +16,12 @@ export default tseslint.config(
       "no-console": "warn",
     },
   },
+  {
+    // Operator-facing CLI tools: their output *is* the interface, so the
+    // structured logger (which writes JSON to a log sink) is the wrong channel.
+    files: ["src/scripts/**/*.ts"],
+    rules: {
+      "no-console": "off",
+    },
+  },
 );

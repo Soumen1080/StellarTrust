@@ -13,6 +13,7 @@
     "build:shared": "npm install --prefix ../shared --include=dev --no-audit --no-fund && npm run build --prefix ../shared",
     "build:backend": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "chain:preflight": "tsx src/scripts/chain-preflight.ts",
     "dev": "npm run build:shared && tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
