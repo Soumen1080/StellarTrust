@@ -8,7 +8,7 @@
  * off-by-10^5 here would lock the wrong amount of real value, so the
  * conversions are integer-only and reject anything they cannot represent.
  */
-import { CurrencyCode } from "@stellartrust/shared";
+import { CurrencyCode, LEDGER_CURRENCY_DECIMALS } from "@stellartrust/shared";
 import { config } from "../../config/index.js";
 import { ChainError } from "../../lib/errors.js";
 
@@ -21,18 +21,11 @@ export interface TokenBinding {
 }
 
 /**
- * Decimal places the *ledger* uses for each currency's minor unit. Fiat and
- * fiat-pegged stablecoins are cent-denominated; XLM is natively 7-dp, so its
- * minor unit already is the stroop.
+ * Decimal places the *ledger* uses for each currency's minor unit. Re-exported
+ * from `@stellartrust/shared` so the frontend's amount parsing and this
+ * module's on-chain conversion never disagree about the ledger's own scale.
  */
-const LEDGER_MINOR_DECIMALS: Record<CurrencyCode, number> = {
-  [CurrencyCode.USD]: 2,
-  [CurrencyCode.EUR]: 2,
-  [CurrencyCode.INR]: 2,
-  [CurrencyCode.NGN]: 2,
-  [CurrencyCode.USDC]: 2,
-  [CurrencyCode.XLM]: 7,
-};
+const LEDGER_MINOR_DECIMALS = LEDGER_CURRENCY_DECIMALS;
 
 /**
  * Resolve the token contract backing a ledger currency. Fails closed: an

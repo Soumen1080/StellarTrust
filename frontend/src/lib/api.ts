@@ -36,6 +36,7 @@ import type {
   TokenizationDTO,
   TokenizationDetailsResponse,
   TokenizationListResponse,
+  WalletBalancesResponse,
 } from "@stellartrust/shared";
 
 const DEFAULT_API_BASE =
@@ -122,6 +123,9 @@ export const api = {
     }),
   getIdentity: (accessToken: string) =>
     request<IdentityProfileResponse>("/api/auth/me", { accessToken }),
+  /** The connected wallet's real, live Horizon balances (XLM + any bound token). */
+  getWalletBalances: (accessToken: string) =>
+    request<WalletBalancesResponse>("/api/wallet/balances", { accessToken }),
   submitKyc: (
     accessToken: string,
     idempotencyKey: string,

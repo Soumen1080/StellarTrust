@@ -291,6 +291,27 @@ export const CURRENCY_SCALE: Record<CurrencyCode, number> = {
   USDC: 7,
 };
 
+/**
+ * Decimal places the escrow *ledger* uses for each currency's minor unit —
+ * the scale `order.amount.amount` is actually expressed in. Fiat and
+ * fiat-pegged stablecoins are cent-denominated; XLM is natively 7-dp, so its
+ * minor unit already is the stroop.
+ *
+ * This deliberately differs from {@link CURRENCY_SCALE} for USDC (2 here vs 7
+ * there) — a known, pre-existing divergence between ledger bookkeeping and
+ * the settlement/dispute modules' conversion math, tracked separately. Code
+ * that parses or displays an order amount must use this constant, not
+ * `CURRENCY_SCALE`.
+ */
+export const LEDGER_CURRENCY_DECIMALS: Record<CurrencyCode, number> = {
+  USD: 2,
+  EUR: 2,
+  INR: 2,
+  NGN: 2,
+  USDC: 2,
+  XLM: 7,
+};
+
 
 // ── Phase 4: Disputes + AI (advisory) ─────────────────────────────────────────
 

@@ -65,6 +65,8 @@ import { PgPaymentRepository } from "./modules/payments/pg-payment.repository.js
 import { createPaymentRouter } from "./modules/payments/payment.routes.js";
 import { PaymentService } from "./modules/payments/payment.service.js";
 import { createSigner } from "./modules/stellar/signer.js";
+import { StellarClient } from "./modules/stellar/stellar.client.js";
+import { createWalletBalancesRouter } from "./modules/stellar/wallet-balances.routes.js";
 import { createAnchorGateway } from "./modules/settlement/anchor.gateway.js";
 import { createLiquidityGateway } from "./modules/settlement/liquidity.gateway.js";
 import { InMemorySettlementRepository } from "./modules/settlement/settlement.repository.js";
@@ -325,6 +327,7 @@ export function createApp(): Express {
   // trustworthy mapping is the wallet each party proved control of during
   // SEP-10, so escrow and RWA both resolve through the identity store.
   const walletAddresses = new IdentityWalletAddressResolver(identities);
+  const stellarClient = new StellarClient();
 
   // One ledger service for the whole app. RWA payouts post through it, so a
   // payout that cannot write balanced entries fails instead of silently
@@ -366,7 +369,7 @@ export function createApp(): Express {
   const paymentRepository: PaymentRepository = usePersistentStore
     ? new PgPaymentRepository(getPool())
     : new InMemoryPaymentRepository();
-  const escrowGateway = createEscrowGateway(walletAddresses);
+  const escrowGateway = createEscrowGateway(walletAddresses, stellarClient);
   const payments = new PaymentService(
     paymentRepository,
     escrowGateway,
@@ -458,6 +461,10 @@ export function createApp(): Express {
 
   // ── Module routers ────────────────────────────────────────────────────────
   app.use("/api/auth", createAuthRouter(sep10, identities, bearerVerifier));
+  app.use(
+    "/api/wallet",
+    createWalletBalancesRouter(stellarClient, walletAddresses, bearerVerifier),
+  );
   app.use("/api/kyc", createKycRouter(kyc, bearerVerifier));
   // Same instance the RWA payouts write through, so `/api/ledger` reads back
   // the transactions those payouts posted rather than a second, empty store.

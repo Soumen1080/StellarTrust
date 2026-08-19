@@ -447,6 +447,13 @@ Operational, and blocking all on-chain verification:
 8. **Bind a token per currency** (`STELLAR_TOKEN_CONTRACTS`) and give the test
    buyer a balance + trustline in it — `initialize` transfers *from the buyer*,
    so without this the first lock fails no matter how correct the code is.
+   For a classic issued asset (USDC): `stellar contract id asset --asset
+   CODE:ISSUER --network testnet`. For **native XLM**, drop the issuer suffix:
+   `stellar contract id asset --asset native --network testnet` — this id is
+   deterministic per network (a network-level primitive, not something you
+   deploy), so it's safe to resolve once and hardcode into env. Native XLM
+   needs no trustline (every account already holds it), so
+   `fund-wallet.ps1`'s friendbot step alone is enough to test it end to end.
 9. **Choose a persistent backend host** (A3) so the reconciliation scheduler
    actually runs. Document it in `infra/`.
 10. **Rotate the exposed Supabase secret** (B1).

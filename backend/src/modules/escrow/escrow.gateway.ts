@@ -21,15 +21,20 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   ChainSigningMode,
   ChainTxStatus,
+  CurrencyCode,
   EscrowState,
   PaymentTransition,
-  type CurrencyCode,
 } from "@stellartrust/shared";
 import { ChainError, ConflictError } from "../../lib/errors.js";
 import { config } from "../../config/index.js";
 import { logger } from "../../lib/logger.js";
 import { createSigner, type Signer } from "../stellar/signer.js";
-import { networkPassphrase } from "../stellar/stellar.client.js";
+import {
+  networkPassphrase,
+  StellarClient,
+  type AccountSummary,
+} from "../stellar/stellar.client.js";
+import { decimalStringToBigInt } from "../stellar/decimal.js";
 import {
   fromTokenAmount,
   resolveToken,
@@ -379,10 +384,14 @@ export class DeterministicEscrowGateway implements EscrowGateway {
  * custody instance and signs `release`/`refund`. Buyer- and seller-authorized
  * transitions are assembled here but signed in the party's wallet.
  */
+/** The one read the reserve-safety check needs — narrowed so a test double doesn't need the real class's private fields. */
+type AccountReader = Pick<StellarClient, "getAccount">;
+
 export class SorobanRpcEscrowGateway implements EscrowGateway {
   constructor(
     private readonly signer: Signer,
     private readonly addresses: WalletAddressResolver,
+    private readonly accountReader: AccountReader = new StellarClient(),
   ) {}
 
   async signingMode(transition: PaymentTransition): Promise<ChainSigningMode> {
@@ -468,6 +477,10 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
         const buyer = await this.addresses.resolve(input.buyerId, "buyer");
         const seller = await this.addresses.resolve(input.sellerId, "seller");
         const token = resolveToken(input.currency);
+        const lockAmount = toTokenAmount(input.amount, token);
+        if (input.currency === CurrencyCode.XLM) {
+          await this.assertReserveSafety(buyer, lockAmount);
+        }
         const client = (await getUnsignedContractClient(
           contractId,
           buyer,
@@ -477,7 +490,7 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
           seller,
           arbiter: await this.arbiterAddress(),
           token_id: token.contractId,
-          amount: toTokenAmount(input.amount, token),
+          amount: lockAmount,
           order_ref: input.orderId,
         });
         return { ...toUnsignedTransaction(tx, buyer), signerAddress: buyer };
@@ -698,6 +711,25 @@ export class SorobanRpcEscrowGateway implements EscrowGateway {
     return deployFromWasmHash(wasmHash, this.signer);
   }
 
+  /**
+   * XLM is both the escrow-payable currency and the network's gas token.
+   * Locking an amount that leaves the buyer below Stellar's own minimum
+   * reserve would strand their account, unable to pay for its own future
+   * transactions. Checked before a wallet transaction is even built, so a
+   * shortfall never reaches a signature prompt.
+   */
+  private async assertReserveSafety(
+    buyer: string,
+    lockAmountStroops: bigint,
+  ): Promise<void> {
+    const account = await this.accountReader.getAccount(buyer);
+    assertXlmReserveSafety(
+      account,
+      lockAmountStroops,
+      BigInt(config.ESCROW_XLM_FEE_BUFFER_STROOPS),
+    );
+  }
+
   private requireContractId(input: ChainTransitionInput): string {
     if (!input.contractId) {
       throw new ConflictError(
@@ -827,6 +859,41 @@ export function assertCustodyValueMatches(
   }
 }
 
+/** Stellar's per-account base reserve, in stroops (0.5 XLM). */
+export const STELLAR_BASE_RESERVE_STROOPS = 5_000_000n;
+
+/**
+ * Assert that locking `lockAmountStroops` of native XLM would not leave
+ * `account` below Stellar's own minimum reserve — `(2 + subentries) * base
+ * reserve` — plus `feeBufferStroops` for future transaction fees.
+ *
+ * A pure function so the reserve math is checkable without a live network:
+ * the gateway just supplies the account it already read.
+ */
+export function assertXlmReserveSafety(
+  account: AccountSummary,
+  lockAmountStroops: bigint,
+  feeBufferStroops: bigint,
+): void {
+  const native = account.balances.find((b) => b.asset === "native");
+  const currentStroops = decimalStringToBigInt(native?.balance ?? "0", 7);
+  const minReserveStroops =
+    (2n + BigInt(account.subentryCount)) * STELLAR_BASE_RESERVE_STROOPS;
+  const requiredStroops =
+    lockAmountStroops + minReserveStroops + feeBufferStroops;
+
+  if (currentStroops < requiredStroops) {
+    const stroopsToXlm = (v: bigint) => (Number(v) / 10_000_000).toFixed(7);
+    throw new ConflictError(
+      `Locking ${stroopsToXlm(lockAmountStroops)} XLM would leave this wallet ` +
+        `below Stellar's minimum reserve. Balance: ${stroopsToXlm(currentStroops)} XLM. ` +
+        `Required: ${stroopsToXlm(requiredStroops)} XLM ` +
+        `(${stroopsToXlm(lockAmountStroops)} lock + ${stroopsToXlm(minReserveStroops)} ` +
+        `account reserve + ${stroopsToXlm(feeBufferStroops)} fee buffer).`,
+    );
+  }
+}
+
 /** The custody state a completed transition must leave the contract in. */
 function expectedStateAfter(
   transition: PaymentTransition,
@@ -911,6 +978,7 @@ interface EscrowContractState {
 /** Fail closed rather than running a synthetic chain adapter outside local/test. */
 export function createEscrowGateway(
   addresses: WalletAddressResolver,
+  accountReader?: AccountReader,
 ): EscrowGateway {
   if (config.ESCROW_GATEWAY === "deterministic") {
     if (config.NODE_ENV === "staging" || config.NODE_ENV === "production") {
@@ -920,5 +988,9 @@ export function createEscrowGateway(
     }
     return new DeterministicEscrowGateway();
   }
-  return new SorobanRpcEscrowGateway(createSigner(), addresses);
+  return new SorobanRpcEscrowGateway(
+    createSigner(),
+    addresses,
+    accountReader,
+  );
 }

@@ -164,6 +164,29 @@ export interface PaymentCapabilitiesResponse {
   signingModes: Record<string, ChainSigningMode>;
   /** Transitions requiring a wallet round trip, for quick client checks. */
   walletSignedTransitions: PaymentTransition[];
+  /**
+   * Currencies this deployment can actually escrow on-chain (i.e. have a
+   * configured Soroban token contract binding). A client reads this instead
+   * of hard-coding a currency list, so a newly bound currency (e.g. XLM)
+   * appears in the order-creation UI without a frontend redeploy.
+   */
+  supportedCurrencies: CurrencyCode[];
+}
+
+/** One asset balance held by a Stellar account, as read from Horizon. */
+export interface WalletBalanceEntry {
+  currency: CurrencyCode;
+  /** Horizon's own decimal string, e.g. "128.5000000". Human-readable. */
+  balance: string;
+  /** The same balance as an integer string at the chain's own scale (stroops for XLM, 7dp for a classic SAC). */
+  rawUnits: string;
+}
+
+/** A connected wallet's live testnet/mainnet balances, read from Horizon. */
+export interface WalletBalancesResponse {
+  address: string;
+  network: "testnet" | "public";
+  balances: WalletBalanceEntry[];
 }
 
 /**

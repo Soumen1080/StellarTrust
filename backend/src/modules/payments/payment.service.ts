@@ -6,8 +6,10 @@ import {
   OrderStatus,
   PaymentTransition,
   DisputeResolution,
+  SUPPORTED_CURRENCIES,
   createOrderInputSchema,
   type CreateOrderInput,
+  type CurrencyCode,
   type EscrowDTO,
   type LedgerTransactionInput,
   type OrderDetailsResponse,
@@ -157,12 +159,17 @@ export class PaymentService {
         walletSignedTransitions.push(transition);
       }
     }
+    const boundCurrencies = new Set(Object.keys(config.STELLAR_TOKEN_CONTRACTS));
+    const supportedCurrencies = SUPPORTED_CURRENCIES.filter((currency) =>
+      boundCurrencies.has(currency),
+    ) as CurrencyCode[];
     return {
       gateway: config.ESCROW_GATEWAY,
       network: config.STELLAR_NETWORK,
       networkPassphrase: networkPassphrase(),
       signingModes,
       walletSignedTransitions,
+      supportedCurrencies,
     };
   }
 

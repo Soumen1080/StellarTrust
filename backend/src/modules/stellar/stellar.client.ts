@@ -20,6 +20,8 @@ export function networkPassphrase(): string {
 
 export interface AccountSummary {
   accountId: string;
+  /** Trustlines + signers + offers + data entries — drives the reserve formula. */
+  subentryCount: number;
   balances: Array<{ asset: string; balance: string }>;
 }
 
@@ -51,6 +53,7 @@ export class StellarClient {
       const account = await this.horizon.loadAccount(accountId);
       return {
         accountId,
+        subentryCount: account.subentry_count,
         balances: account.balances.map((b) => ({
           asset: "asset_code" in b ? String(b.asset_code) : b.asset_type,
           balance: b.balance,

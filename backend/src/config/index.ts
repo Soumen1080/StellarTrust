@@ -286,6 +286,17 @@ const envSchema = z.object({
     .positive()
     .max(3_600)
     .default(300),
+  // Locking XLM into escrow spends the same asset that pays transaction fees.
+  // A buyer must keep this many stroops beyond Stellar's own minimum reserve
+  // after the lock, or the prepare step refuses before a wallet prompt ever
+  // shows. 5_000_000 stroops (0.5 XLM) generously covers one `initialize`
+  // call's base fee + Soroban resource fee (well under 1 XLM per
+  // chain-preflight.ts's own affordability estimate).
+  ESCROW_XLM_FEE_BUFFER_STROOPS: z.coerce
+    .number()
+    .int()
+    .nonnegative()
+    .default(5_000_000),
 })
   // A gateway that cannot deploy is a gateway that fails on the first lock.
   // Catch it at boot rather than mid-payment (Rules.md: never boot the money
