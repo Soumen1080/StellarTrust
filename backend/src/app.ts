@@ -10,6 +10,7 @@ import { rateLimit } from "express-rate-limit";
 import helmetImport from "helmet";
 import { pinoHttp } from "pino-http";
 import { config } from "./config/index.js";
+import { isAllowedOrigin } from "./lib/cors.js";
 import { getPool, pingDatabase } from "./db/index.js";
 import { ReconciliationJob } from "./jobs/reconciliation.job.js";
 import { logger } from "./lib/logger.js";
@@ -126,13 +127,15 @@ export function createApp(): Express {
   app.use(helmet());
   // Allow the primary origin plus explicitly configured deployment origins.
   // Credentials are not used because SEP-10 bearer sessions are sent explicitly.
+  const allowedOrigins = [config.FRONTEND_ORIGIN, ...config.FRONTEND_ORIGINS];
+  // A rejected origin is otherwise invisible server-side: the request is served
+  // normally and the browser discards the response, so the only symptom is a
+  // "Failed to fetch" on someone else's screen. Warn once per origin — enough
+  // to diagnose a misconfigured deployment, not enough to spam on a scan.
+  const rejectedOrigins = new Set<string>();
   app.use((req, res, next) => {
     const origin = req.header("origin");
-    if (
-      origin &&
-      (origin === config.FRONTEND_ORIGIN ||
-        config.FRONTEND_ORIGINS.includes(origin))
-    ) {
+    if (origin && isAllowedOrigin(origin, allowedOrigins)) {
       res.setHeader("access-control-allow-origin", origin);
       res.setHeader(
         "access-control-allow-headers",
@@ -140,6 +143,12 @@ export function createApp(): Express {
       );
       res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
       res.setHeader("vary", "Origin");
+    } else if (origin && !rejectedOrigins.has(origin)) {
+      rejectedOrigins.add(origin);
+      logger.warn(
+        { origin, allowedOrigins },
+        "CORS: rejected browser origin; requests from it will fail in the browser",
+      );
     }
     if (req.method === "OPTIONS") {
       res.sendStatus(204);

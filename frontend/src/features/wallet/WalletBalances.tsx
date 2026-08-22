@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { WalletBalancesResponse } from "@stellartrust/shared";
-import { api, ApiClientError } from "@/lib/api";
+import { api, ApiClientError, ApiUnreachableError } from "@/lib/api";
 
 /**
  * Live testnet/mainnet balances for the connected wallet, read from Horizon.
@@ -33,7 +33,7 @@ export function WalletBalances({
       .catch((err) => {
         if (cancelled) return;
         setError(
-          err instanceof ApiClientError
+          err instanceof ApiClientError || err instanceof ApiUnreachableError
             ? err.message
             : "Could not load wallet balances",
         );

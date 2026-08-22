@@ -73,6 +73,26 @@ export class ApiClientError extends Error {
   }
 }
 
+/**
+ * The request never reached the API, or its response was discarded.
+ *
+ * `fetch` rejects with a bare `TypeError: Failed to fetch` for every such case
+ * — server down, DNS failure, offline, or a CORS rule that rejected this
+ * origin — and deliberately says no more, because distinguishing them would
+ * leak cross-origin information to the page. So the cause has to be read off
+ * the browser's Network tab; what the UI can do is stop blaming whichever
+ * action happened to be in flight.
+ */
+export class ApiUnreachableError extends Error {
+  constructor(public readonly cause: unknown) {
+    super(
+      `Could not reach the StellarTrust API at ${API_BASE}. It may be offline, ` +
+        "or it may not allow requests from this site.",
+    );
+    this.name = "ApiUnreachableError";
+  }
+}
+
 interface ApiRequestInit extends RequestInit {
   accessToken?: string;
   devApprovalPassword?: string;
@@ -86,17 +106,24 @@ async function request<T>(
     ...init
   }: ApiRequestInit = {},
 ): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      "content-type": "application/json",
-      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
-      ...(devApprovalPassword
-        ? { "x-dev-approval-password": devApprovalPassword }
-        : {}),
-      ...init.headers,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: {
+        "content-type": "application/json",
+        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+        ...(devApprovalPassword
+          ? { "x-dev-approval-password": devApprovalPassword }
+          : {}),
+        ...init.headers,
+      },
+    });
+  } catch (err) {
+    // An aborted request is the caller's own doing, not an unreachable API.
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    throw new ApiUnreachableError(err);
+  }
   if (!res.ok) {
     const body = (await res.json().catch(() => undefined)) as
       | ApiError

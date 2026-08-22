@@ -15,8 +15,13 @@ export function WalletConnect() {
   async function connect() {
     setPending(true);
     setError(null);
+    // Only a throw with no message is treated as a cancelled wallet prompt —
+    // the kit signals a dismissed modal that way. Anything that carries a
+    // message says what actually failed, including an unreachable API, and
+    // reporting it as a cancellation would send the user back to their wallet
+    // to fix a problem that is not there.
     try { await connectWalletAndSignIn(); }
-    catch (err) { setError(err instanceof Error ? err.message : "Wallet connection was cancelled"); }
+    catch (err) { setError(err instanceof Error && err.message ? err.message : "Wallet connection was cancelled"); }
     finally { setPending(false); }
   }
 

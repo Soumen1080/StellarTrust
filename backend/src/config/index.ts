@@ -31,6 +31,22 @@ function optionalEnv<T extends z.ZodTypeAny>(schema: T) {
 }
 
 /**
+ * Reduce a configured origin to the exact string a browser sends in `Origin`.
+ *
+ * These values are typed by hand into a hosting dashboard and routinely arrive
+ * as `https://app.example.com/`. But `Origin` is always scheme + host + port
+ * with no trailing slash and no path, and the CORS check is an exact match — so
+ * one stray slash silently blocks every request from the deployed frontend and
+ * surfaces in the browser only as `TypeError: Failed to fetch`. Normalizing
+ * here means a value that names the right origin works however it was typed.
+ *
+ * A `*` in the host is preserved; `isAllowedOrigin` gives it wildcard meaning.
+ */
+function normalizeOrigin(value: string): string {
+  return new URL(value).origin;
+}
+
+/**
  * Currency → Soroban token contract bindings. Kept here rather than in the
  * shared package because it is deployment configuration, not a wire contract.
  * The currency keys are validated loosely (any code) so adding a currency to
@@ -52,20 +68,31 @@ const envSchema = z.object({
     .enum(["development", "test", "staging", "production"])
     .default("development"),
   PORT: z.coerce.number().int().positive().default(8080),
-  FRONTEND_ORIGIN: z.string().url().default("http://localhost:3000"),
+  FRONTEND_ORIGIN: z
+    .string()
+    .url()
+    .default("http://localhost:3000")
+    .transform(normalizeOrigin),
   // Additional allowed browser origins (comma-separated). Env-driven; the
   // deployed frontend origin is included by default so production works even
   // before a dashboard override is set. Override via FRONTEND_ORIGINS env.
+  //
+  // An entry may use `*` as a wildcard for one host label — Vercel gives every
+  // preview deploy its own subdomain, so previews need a pattern rather than a
+  // list that would go stale on each push. Wildcards match a single label only,
+  // so `https://acme-*.vercel.app` can never widen to another project's domain.
   FRONTEND_ORIGINS: z
     .string()
-    .default("https://stellar-trust-frontend.vercel.app")
+    .default(
+      "https://stellar-trust-frontend.vercel.app,https://stellar-trust-frontend-*.vercel.app",
+    )
     .transform((value) =>
       value
         .split(",")
         .map((origin) => origin.trim())
         .filter(Boolean),
     )
-    .pipe(z.array(z.string().url())),
+    .pipe(z.array(z.string().url().transform(normalizeOrigin))),
   TEMP_KYC_APPROVAL_PASSWORD: z.string().min(8).optional(),
   LOG_LEVEL: z
     .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
