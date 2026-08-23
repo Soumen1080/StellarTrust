@@ -59,7 +59,7 @@ export function WalletBalances({
           key={entry.currency}
           className="rounded-md border border-hairline-dark bg-surface-card-dark px-sm py-xs"
         >
-          <p className="text-[10px] uppercase tracking-wider text-muted">
+          <p className="data-label">
             {entry.currency}
           </p>
           <p className="font-mono text-sm font-semibold text-on-dark">

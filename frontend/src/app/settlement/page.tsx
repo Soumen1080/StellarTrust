@@ -9,9 +9,9 @@ export const metadata: Metadata = {
 
 export default function SettlementPage() {
   return (
-    <main id="main-content" className="min-h-[calc(100vh-4rem)]">
+    <main id="main-content" className="min-h-[calc(100dvh-4rem)]">
       <div className="mx-auto max-w-[1440px] px-md py-xl sm:px-lg sm:py-xxl">
-        <header className="mb-xl flex flex-col justify-between gap-lg border-b border-hairline-dark pb-xl lg:flex-row lg:items-end">
+        <header className="mb-lg flex flex-col justify-between gap-md border-b border-hairline-dark pb-lg sm:mb-xl sm:gap-lg sm:pb-xl lg:flex-row lg:items-end">
           <div>
             <p className="eyebrow">Settlement workspace</p>
             <h1 className="mt-sm text-3xl font-bold tracking-tight text-on-dark sm:text-4xl">Cross-border settlement</h1>
@@ -19,7 +19,7 @@ export default function SettlementPage() {
               Route each transfer over the best available path-payment or AMM liquidity, settle fiat through a regulated anchor, and reconcile every deposit, conversion, and payout against the ledger.
             </p>
           </div>
-          <div className="flex items-center gap-sm rounded-lg border border-hairline-dark bg-surface-card-dark px-md py-sm text-xs text-muted-strong">
+          <div className="flex w-fit items-center gap-sm rounded-lg border border-hairline-dark bg-surface-card-dark px-md py-sm text-xs text-muted-strong">
             <span className="h-2 w-2 rounded-full bg-status-verified" />
             <span>Sandbox anchor · Testnet liquidity</span>
           </div>

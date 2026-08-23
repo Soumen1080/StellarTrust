@@ -54,11 +54,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [open]);
 
   return (
-    <div className={light ? "min-h-screen bg-surface-soft-light text-ink" : "min-h-screen bg-canvas-dark text-body"}>
+    <div className={light ? "min-h-[100dvh] bg-surface-soft-light text-ink" : "min-h-[100dvh] bg-canvas-dark text-body"}>
       <a href="#main-content" className="skip-link">Skip to content</a>
       <header className={`sticky top-0 z-50 border-b backdrop-blur-xl ${light ? "border-hairline-light bg-white/95" : "border-hairline-dark bg-canvas-dark/95"}`}>
         <div className="mx-auto flex h-16 max-w-[1440px] items-center justify-between px-md sm:px-lg">
-          <Link href="/" className={`flex items-center gap-sm text-lg font-bold tracking-tight ${light ? "text-ink" : "text-on-dark"}`} aria-label="StellarTrust home">
+          <Link href="/" className={`flex min-h-11 items-center gap-sm text-lg font-bold tracking-tight ${light ? "text-ink" : "text-on-dark"}`} aria-label="StellarTrust home">
             <span className="grid h-8 w-8 place-items-center rounded-md bg-primary text-ink"><Icon name="shield" className="h-5 w-5" /></span>
             <span>Stellar<span className="text-primary-active">Trust</span></span>
           </Link>
@@ -66,11 +66,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <nav className="hidden items-center gap-xxs md:flex" aria-label="Primary navigation">
             {links.map((link) => {
               const active = link.href === "/" ? pathname === "/" : pathname.startsWith(link.href);
-              return <Link key={link.href} href={link.href} aria-current={active ? "page" : undefined} className={`rounded-md px-md py-sm text-sm font-medium transition-colors ${active ? light ? "bg-surface-strong-light text-ink" : "bg-surface-card-dark text-on-dark" : light ? "text-muted hover:text-ink" : "text-muted-strong hover:text-on-dark"}`}>{link.label}</Link>;
+              return <Link key={link.href} href={link.href} aria-current={active ? "page" : undefined} className={`rounded-md px-sm py-sm text-sm font-medium transition-colors lg:px-md ${active ? light ? "bg-surface-strong-light text-ink" : "bg-surface-card-dark text-on-dark" : light ? "text-muted hover:text-ink" : "text-muted-strong hover:text-on-dark"}`}>{link.label}</Link>;
             })}
           </nav>
 
-          <div className="hidden items-center gap-sm md:flex">
+          {/* Waits for lg: between md and lg the six nav links already fill the
+              bar, and adding this cluster overran it. The account link stays
+              reachable there because it is one of those links. */}
+          <div className="hidden items-center gap-sm lg:flex">
             <span className={`rounded-pill border px-sm py-xs font-mono text-[11px] uppercase tracking-wider ${light ? "border-hairline-light text-muted" : "border-hairline-dark text-muted-strong"}`}><span className="mr-xs inline-block h-1.5 w-1.5 rounded-full bg-status-verified" />Testnet</span>
             <Link href={accountLink.href} className="btn-primary">{isVerified ? "Open dashboard" : "Start verification"} <Icon name="arrow-right" className="h-4 w-4" /></Link>
           </div>
@@ -79,23 +82,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <Icon name={open ? "x" : "menu"} />
           </button>
         </div>
-        {open ? (
-          <nav ref={mobileNavRef} id="mobile-navigation" className={`fixed inset-x-0 bottom-0 top-16 z-50 flex flex-col border-t px-md py-lg md:hidden ${light ? "border-hairline-light bg-white" : "border-hairline-dark bg-canvas-dark"}`} aria-label="Mobile navigation">
-            <div className="grid gap-xs">
-              {links.map((link, index) => <Link ref={index === 0 ? firstMobileLinkRef : undefined} key={link.href} href={link.href} aria-current={pathname === link.href ? "page" : undefined} className={`rounded-md px-md py-md text-lg font-semibold ${pathname === link.href ? "bg-primary text-ink" : light ? "text-ink" : "text-body"}`}>{link.label}</Link>)}
-            </div>
-            <div className={`mt-auto border-t pt-lg ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
-              <p className={`mb-md text-sm ${light ? "text-muted" : "text-muted-strong"}`}>Secure escrow and identity verification on Stellar testnet.</p>
-              <Link href={accountLink.href} className="btn-primary w-full justify-center">{isVerified ? "Open dashboard" : "Start verification"} <Icon name="arrow-right" className="h-4 w-4" /></Link>
-            </div>
-          </nav>
-        ) : null}
       </header>
+      {/* Deliberately a sibling of <header>, not a child: the header carries
+          backdrop-blur, and a backdrop-filter makes an element the containing
+          block for its position:fixed descendants. Nested, this drawer sized
+          itself against the 64px header instead of the viewport and opened as
+          an unusable sliver showing only the first link. */}
+      {open ? (
+        <nav ref={mobileNavRef} id="mobile-navigation" className={`fixed inset-x-0 bottom-0 top-16 z-50 flex flex-col overflow-y-auto overscroll-contain border-t px-md py-lg md:hidden ${light ? "border-hairline-light bg-white" : "border-hairline-dark bg-canvas-dark"}`} aria-label="Mobile navigation">
+          <div className="grid gap-xs">
+            {links.map((link, index) => <Link ref={index === 0 ? firstMobileLinkRef : undefined} key={link.href} href={link.href} aria-current={pathname === link.href ? "page" : undefined} className={`block rounded-md px-md py-md text-lg font-semibold ${pathname === link.href ? "bg-primary text-ink" : light ? "text-ink" : "text-body"}`}>{link.label}</Link>)}
+          </div>
+          <div className={`mt-auto border-t pt-lg ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
+            <p className={`mb-md text-sm ${light ? "text-muted" : "text-muted-strong"}`}>Secure escrow and identity verification on Stellar testnet.</p>
+            <Link href={accountLink.href} className="btn-primary w-full justify-center">{isVerified ? "Open dashboard" : "Start verification"} <Icon name="arrow-right" className="h-4 w-4" /></Link>
+          </div>
+        </nav>
+      ) : null}
       {children}
       <footer className="border-t border-hairline-light bg-surface-soft-light text-ink">
-        <div className="mx-auto grid max-w-[1280px] gap-xl px-md py-xxl sm:px-lg lg:grid-cols-[1.2fr_2fr]">
+        <div className="mx-auto grid max-w-[1280px] gap-xl px-md py-xl sm:px-lg sm:py-xxl lg:grid-cols-[1.2fr_2fr]">
           <div>
-            <Link href="/" className="flex items-center gap-sm font-bold"><span className="grid h-8 w-8 place-items-center rounded-md bg-primary"><Icon name="shield" className="h-5 w-5" /></span>StellarTrust</Link>
+            <Link href="/" className="inline-flex min-h-11 items-center gap-sm font-bold"><span className="grid h-8 w-8 place-items-center rounded-md bg-primary"><Icon name="shield" className="h-5 w-5" /></span>StellarTrust</Link>
             <p className="mt-md max-w-sm text-sm leading-6 text-muted">Programmable, auditable commerce infrastructure for secure cross-border payments on Stellar.</p>
             <p className="mt-lg font-mono text-xs text-muted">Stellar testnet · Sandbox environment</p>
           </div>

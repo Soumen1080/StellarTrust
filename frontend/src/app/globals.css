@@ -4,7 +4,12 @@
 
 :root { color-scheme: dark; }
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  /* Safari inflates text in landscape unless this is pinned. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
 body {
   margin: 0;
   background-color: #0b0e11;
@@ -21,14 +26,34 @@ button, a { -webkit-tap-highlight-color: transparent; }
 }
 
 @layer components {
-  .input { @apply min-h-11 w-full rounded-md border border-border-strong bg-canvas-light px-sm py-xs text-sm text-ink outline-none transition placeholder:text-muted focus:border-info focus:ring-2 focus:ring-info/20; }
-  .input-dark { @apply min-h-11 w-full rounded-md border border-hairline-dark bg-canvas-dark px-sm py-xs text-sm text-body outline-none transition placeholder:text-muted focus:border-info focus:ring-2 focus:ring-info/20; }
-  .btn-primary { @apply inline-flex min-h-10 items-center justify-center gap-xs rounded-md bg-primary px-lg py-sm text-sm font-semibold text-on-primary transition hover:bg-primary-active active:translate-y-px disabled:cursor-not-allowed disabled:bg-primary-disabled disabled:text-muted; }
-  .btn-secondary-dark { @apply inline-flex min-h-10 items-center justify-center gap-xs rounded-md border border-hairline-dark bg-surface-card-dark px-lg py-sm text-sm font-semibold text-body transition hover:border-muted hover:text-on-dark; }
-  .btn-secondary-light { @apply inline-flex min-h-10 items-center justify-center gap-xs rounded-md border border-border-strong bg-white px-lg py-sm text-sm font-semibold text-ink transition hover:bg-surface-strong-light; }
+  /* 16px on phones: iOS Safari zooms the whole page when a focused field is
+     under 16px, which throws the user out of the layout mid-form. */
+  .input { @apply min-h-11 w-full rounded-md border border-border-strong bg-canvas-light px-sm py-xs text-base text-ink outline-none transition placeholder:text-muted focus:border-info focus:ring-2 focus:ring-info/20 sm:text-sm; }
+  .input-dark { @apply min-h-11 w-full rounded-md border border-hairline-dark bg-canvas-dark px-sm py-xs text-base text-body outline-none transition placeholder:text-muted focus:border-info focus:ring-2 focus:ring-info/20 sm:text-sm; }
+  .btn-primary { @apply inline-flex min-h-11 items-center justify-center gap-xs rounded-md bg-primary px-lg py-sm text-sm font-semibold text-on-primary transition hover:bg-primary-active active:translate-y-px disabled:cursor-not-allowed disabled:bg-primary-disabled disabled:text-muted; }
+  .btn-secondary-dark { @apply inline-flex min-h-11 items-center justify-center gap-xs rounded-md border border-hairline-dark bg-surface-card-dark px-lg py-sm text-sm font-semibold text-body transition hover:border-muted hover:text-on-dark; }
+  .btn-secondary-light { @apply inline-flex min-h-11 items-center justify-center gap-xs rounded-md border border-border-strong bg-white px-lg py-sm text-sm font-semibold text-ink transition hover:bg-surface-strong-light; }
   .eyebrow { @apply text-xs font-semibold uppercase tracking-[0.16em] text-muted-strong; }
   .panel-dark { @apply rounded-xl border border-hairline-dark bg-surface-card-dark; }
   .panel-light { @apply rounded-xl border border-hairline-light bg-white; }
   .skip-link { @apply fixed left-md top-md z-[100] -translate-y-24 rounded-md bg-primary px-md py-sm font-semibold text-ink transition focus:translate-y-0; }
   .skeleton { @apply animate-pulse rounded-md bg-surface-elevated-dark; }
+
+  /* Field labels in the data grids. 10px is unreadable on a phone, so it only
+     tightens once there is room for it. */
+  .data-label { @apply text-[11px] uppercase tracking-wider text-muted sm:text-[10px]; }
+
+  /* An icon-only control (dismiss, close) needs a real finger-sized box even
+     though the glyph inside it is 16px. */
+  .icon-button { @apply -m-xs grid h-11 w-11 shrink-0 place-items-center rounded-md text-current transition; }
+
+  /* A row of filter chips that scrolls edge-to-edge instead of being visibly
+     sliced off by the container padding. */
+  .chip-row { @apply -mx-md flex snap-x snap-mandatory gap-xs overflow-x-auto px-md pb-1 sm:mx-0 sm:px-0; scrollbar-width: none; }
+  .chip-row::-webkit-scrollbar { display: none; }
+  .chip { @apply min-h-11 snap-start whitespace-nowrap rounded-md px-md text-sm font-medium capitalize transition; }
+
+  /* Section rhythm: 80px of padding above and below every band is most of a
+     phone screen spent on nothing. */
+  .section-y { @apply py-xxl sm:py-section; }
 }

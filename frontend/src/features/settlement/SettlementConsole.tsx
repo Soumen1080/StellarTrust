@@ -129,11 +129,11 @@ export function SettlementConsole() {
   if (!session) {
     return (
       <section className="panel-dark overflow-hidden">
-        <div className="p-xl sm:p-xxl">
+        <div className="p-lg sm:p-xl md:p-xxl">
           <span className="grid h-12 w-12 place-items-center rounded-lg bg-primary/10 text-primary">
             <Icon name="globe" className="h-6 w-6" />
           </span>
-          <h2 className="mt-lg text-2xl font-bold text-on-dark">Connect your wallet to settle cross-border</h2>
+          <h2 className="mt-lg text-xl font-bold text-on-dark sm:text-2xl">Connect your wallet to settle cross-border</h2>
           <p className="mt-sm max-w-xl leading-7 text-muted-strong">
             Authenticate with SEP-10 to quote a corridor, route over path payments and AMM liquidity, and settle through a regulated anchor — every leg reconciled to the ledger.
           </p>
@@ -156,7 +156,7 @@ export function SettlementConsole() {
       {error ? (
         <div role="alert" className="mb-lg flex items-start justify-between gap-md rounded-lg border border-status-rejected/30 bg-status-rejected/10 p-md text-sm text-status-rejected">
           <span>{error}</span>
-          <button type="button" onClick={() => setError(null)} aria-label="Dismiss error"><Icon name="x" className="h-4 w-4" /></button>
+          <button type="button" onClick={() => setError(null)} aria-label="Dismiss error" className="icon-button"><Icon name="x" className="h-4 w-4" /></button>
         </div>
       ) : null}
 
@@ -178,21 +178,25 @@ export function SettlementConsole() {
                 const s = details.settlement;
                 return (
                   <article key={s.id} className="panel-dark overflow-hidden">
-                    <div className="p-lg">
+                    <div className="p-md sm:p-lg">
                       <div className="flex flex-col justify-between gap-md sm:flex-row sm:items-start">
                         <div>
                           <div className="flex flex-wrap items-center gap-sm">
                             <StatusPill status={s.status} />
                             <span className="rounded-pill border border-hairline-dark px-sm py-xs text-xs font-medium text-muted-strong capitalize">{s.route.type.replace(/_/g, " ")}</span>
                           </div>
-                          <p className="mt-md font-mono text-2xl font-semibold text-on-dark">
-                            {formatMinor(s.source.amount, s.source.currency)} <span className="text-base text-muted">{s.source.currency}</span>
-                            <span className="mx-sm text-muted">→</span>
-                            {formatMinor(s.destination.amount, s.destination.currency)} <span className="text-base text-muted">{s.destination.currency}</span>
+                          {/* Source and destination each stay on their own line
+                              until there is room for the inline form. Wrapped
+                              mid-run, the arrow ends up beside the source
+                              currency and the pair reads as the wrong rate. */}
+                          <p className="mt-md flex flex-col gap-xxs font-mono text-xl font-semibold text-on-dark sm:flex-row sm:flex-wrap sm:items-baseline sm:gap-sm sm:text-2xl">
+                            <span className="whitespace-nowrap">{formatMinor(s.source.amount, s.source.currency)} <span className="text-base text-muted">{s.source.currency}</span></span>
+                            <span aria-hidden="true" className="text-muted">→</span>
+                            <span className="whitespace-nowrap">{formatMinor(s.destination.amount, s.destination.currency)} <span className="text-base text-muted">{s.destination.currency}</span></span>
                           </p>
                           <p className="mt-xs font-mono text-[11px] text-muted" title={s.id}>Settlement · {s.id.slice(0, 10)}…{s.id.slice(-8)}</p>
                         </div>
-                        <button type="button" aria-expanded={expanded} onClick={() => setExpandedId(expanded ? null : s.id)} className="btn-secondary-dark">
+                        <button type="button" aria-expanded={expanded} onClick={() => setExpandedId(expanded ? null : s.id)} className="btn-secondary-dark w-full sm:w-auto">
                           {expanded ? "Hide legs" : "View legs"}<Icon name="chevron-down" className={`h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} />
                         </button>
                       </div>
@@ -204,11 +208,11 @@ export function SettlementConsole() {
                       </div>
                     </div>
                     {expanded ? (
-                      <div className="border-t border-hairline-dark bg-canvas-dark/40 p-lg">
+                      <div className="border-t border-hairline-dark bg-canvas-dark/40 p-md sm:p-lg">
                         <p className="eyebrow">Settlement legs</p>
                         <ul className="mt-md space-y-sm">
                           {details.transitions.map((t) => (
-                            <li key={t.id} className="flex items-center justify-between gap-sm rounded-md border border-hairline-dark bg-surface-card-dark px-md py-sm">
+                            <li key={t.id} className="flex flex-wrap items-center justify-between gap-sm rounded-md border border-hairline-dark bg-surface-card-dark px-md py-sm">
                               <span className="flex items-center gap-sm text-sm text-body">
                                 <span className="grid h-6 w-6 place-items-center rounded-full bg-status-verified/10 text-status-verified"><Icon name="check" className="h-3.5 w-3.5" /></span>
                                 <span className="capitalize">{t.transition}</span>
@@ -220,7 +224,7 @@ export function SettlementConsole() {
                           ))}
                         </ul>
                         <dl className="mt-lg grid gap-md border-t border-hairline-dark pt-md sm:grid-cols-2">
-                          <div><dt className="text-xs text-muted">Corridor</dt><dd className="mt-xs font-mono text-xs text-body">{s.corridorId}</dd></div>
+                          <div><dt className="text-xs text-muted">Corridor</dt><dd className="mt-xs break-all font-mono text-xs text-body">{s.corridorId}</dd></div>
                           <div><dt className="text-xs text-muted">Destination reference</dt><dd className="mt-xs break-all font-mono text-xs text-body">{s.destinationReference}</dd></div>
                         </dl>
                       </div>
@@ -269,7 +273,7 @@ export function SettlementConsole() {
               <div className="rounded-lg bg-surface-strong-light p-md">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-muted">You receive</span>
-                  <span className="rounded-pill bg-primary/15 px-sm py-xs text-[11px] font-semibold uppercase tracking-wide text-primary-active capitalize">{quote.route.type.replace(/_/g, " ")}</span>
+                  <span className="rounded-pill bg-primary/15 px-sm py-xs text-[11px] font-semibold uppercase tracking-wide text-primary-active">{quote.route.type.replace(/_/g, " ")}</span>
                 </div>
                 <p className="mt-xs font-mono text-2xl font-semibold">
                   {formatMinor(quote.route.destinationAmount.amount, quote.route.destinationAmount.currency)}
@@ -306,10 +310,10 @@ function Metric({ label, value, detail, icon }: { label: string; value: string; 
     <div className="panel-dark flex items-center justify-between p-lg">
       <div>
         <p className="text-xs font-medium text-muted">{label}</p>
-        <p className="mt-xs font-mono text-2xl font-semibold text-on-dark">{value}</p>
+        <p className="mt-xs break-words font-mono text-xl font-semibold text-on-dark sm:text-2xl">{value}</p>
         <p className="mt-xs text-xs text-muted">{detail}</p>
       </div>
-      <span className="grid h-10 w-10 place-items-center rounded-lg bg-surface-elevated-dark text-muted-strong"><Icon name={icon} /></span>
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-surface-elevated-dark text-muted-strong"><Icon name={icon} /></span>
     </div>
   );
 }
@@ -317,7 +321,7 @@ function Metric({ label, value, detail, icon }: { label: string; value: string; 
 function Detail({ label, value, alert = false }: { label: string; value: string; alert?: boolean }) {
   return (
     <div>
-      <dt className="text-[10px] uppercase tracking-wider text-muted">{label}</dt>
+      <dt className="data-label">{label}</dt>
       <dd className={`mt-xs text-xs font-medium ${alert ? "text-status-disputed" : "text-body"}`}>{value}</dd>
     </div>
   );
@@ -325,7 +329,7 @@ function Detail({ label, value, alert = false }: { label: string; value: string;
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex justify-between gap-md">
+    <div className="flex flex-wrap justify-between gap-x-md gap-y-xxs">
       <span className="text-muted">{label}</span>
       <span className="font-mono font-medium text-ink">{value}</span>
     </div>

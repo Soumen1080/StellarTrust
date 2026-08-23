@@ -102,11 +102,11 @@ export function RwaConsole() {
   if (!session) {
     return (
       <section className="panel-dark overflow-hidden">
-        <div className="p-xl sm:p-xxl">
+        <div className="p-lg sm:p-xl md:p-xxl">
           <span className="grid h-12 w-12 place-items-center rounded-lg bg-primary/10 text-primary">
             <Icon name="sparkles" className="h-6 w-6" />
           </span>
-          <h2 className="mt-lg text-2xl font-bold text-on-dark">Connect your wallet to tokenize and invest</h2>
+          <h2 className="mt-lg text-xl font-bold text-on-dark sm:text-2xl">Connect your wallet to tokenize and invest</h2>
           <p className="mt-sm max-w-xl leading-7 text-muted-strong">
             Authenticate with SEP-10 to tokenize invoices, commodities, or real estate, and to buy transparent fractional ownership — payouts distribute pro-rata when the buyer pays through escrow.
           </p>
@@ -134,17 +134,17 @@ export function RwaConsole() {
       {error ? (
         <div role="alert" className="mb-lg flex items-start justify-between gap-md rounded-lg border border-status-rejected/30 bg-status-rejected/10 p-md text-sm text-status-rejected">
           <span>{error}</span>
-          <button type="button" onClick={() => setError(null)} aria-label="Dismiss error"><Icon name="x" className="h-4 w-4" /></button>
+          <button type="button" onClick={() => setError(null)} aria-label="Dismiss error" className="icon-button"><Icon name="x" className="h-4 w-4" /></button>
         </div>
       ) : null}
       {notice ? (
         <div role="status" className="mb-lg flex items-start justify-between gap-md rounded-lg border border-status-verified/30 bg-status-verified/10 p-md text-sm text-status-verified">
           <span>{notice}</span>
-          <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss notice"><Icon name="x" className="h-4 w-4" /></button>
+          <button type="button" onClick={() => setNotice(null)} aria-label="Dismiss notice" className="icon-button"><Icon name="x" className="h-4 w-4" /></button>
         </div>
       ) : null}
 
-      <div role="tablist" aria-label="RWA sections" className="mb-lg flex gap-xs border-b border-hairline-dark">
+      <div role="tablist" aria-label="RWA sections" className="mb-lg -mx-md flex gap-xs overflow-x-auto border-b border-hairline-dark px-md sm:mx-0 sm:px-0">
         <TabButton current={tab} value="marketplace" onSelect={setTab}>Marketplace</TabButton>
         <TabButton current={tab} value="issue" onSelect={setTab}>Tokenize</TabButton>
         <TabButton current={tab} value="portfolio" onSelect={setTab}>Portfolio</TabButton>
@@ -279,7 +279,7 @@ function TokenizationCard({
         <p className="mt-md font-mono text-[11px] text-muted" title={tokenization.id}>
           Tokenization · {tokenization.id.slice(0, 8)}…{tokenization.id.slice(-6)}
         </p>
-        <p className="mt-sm font-mono text-2xl font-semibold text-on-dark">
+        <p className="mt-sm break-words font-mono text-xl font-semibold text-on-dark sm:text-2xl">
           {formatMinor(tokenization.pricePerUnitAmount, tokenization.pricePerUnitCurrency)}
           <span className="ml-xs text-sm text-muted">{tokenization.pricePerUnitCurrency} / unit</span>
         </p>
@@ -295,8 +295,8 @@ function TokenizationCard({
         </div>
 
         {canInvest ? (
-          <form onSubmit={invest} className="mt-lg flex items-end gap-sm">
-            <label className="flex-1 text-sm font-medium text-body">Units
+          <form onSubmit={invest} className="mt-lg flex flex-col gap-sm min-[420px]:flex-row min-[420px]:items-end">
+            <label className="min-w-0 flex-1 text-sm font-medium text-body">Units
               <input
                 value={units}
                 onChange={(e) => setUnits(e.target.value)}
@@ -305,7 +305,7 @@ function TokenizationCard({
                 className="input mt-xs font-mono"
               />
             </label>
-            <button disabled={pending} className="btn-primary shrink-0">
+            <button disabled={pending} className="btn-primary w-full shrink-0 min-[420px]:w-auto">
               {pending ? "Buying…" : "Invest"}
             </button>
           </form>
@@ -454,12 +454,12 @@ function IssuePanel({
         ) : (
           <div className="space-y-md">
             {myTokenizations.map((t) => (
-              <article key={t.id} className="panel-dark p-lg">
+              <article key={t.id} className="panel-dark p-md sm:p-lg">
                 <div className="flex flex-wrap items-center justify-between gap-sm">
                   <StatusPill status={t.status} />
                   <span className="font-mono text-[11px] text-muted" title={t.id}>{t.id.slice(0, 8)}…{t.id.slice(-6)}</span>
                 </div>
-                <p className="mt-md font-mono text-lg font-semibold text-on-dark">
+                <p className="mt-md break-words font-mono text-lg font-semibold text-on-dark">
                   {t.totalUnits} units · {formatMinor(t.pricePerUnitAmount, t.pricePerUnitCurrency)} {t.pricePerUnitCurrency}/unit
                 </p>
                 <p className="mt-xs text-xs text-muted">{t.unitsSold} sold · {t.requireAuthorization ? "authorization required" : "open transfers"}</p>
@@ -583,7 +583,7 @@ function PortfolioPanel({ portfolio }: { portfolio: InvestorPortfolioResponse | 
       </section>
       <div className="space-y-md">
         {portfolio.holdings.map(({ holding, tokenization, asset }) => (
-          <article key={holding.id} className="panel-dark p-lg">
+          <article key={holding.id} className="panel-dark p-md sm:p-lg">
             <div className="flex flex-wrap items-center justify-between gap-sm">
               <div className="flex items-center gap-sm">
                 <StatusPill status={tokenization.status} />
@@ -593,7 +593,7 @@ function PortfolioPanel({ portfolio }: { portfolio: InvestorPortfolioResponse | 
               </div>
               <span className="font-mono text-[11px] text-muted">{asset.assetRef}</span>
             </div>
-            <p className="mt-md font-mono text-xl font-semibold text-on-dark">
+            <p className="mt-md break-words font-mono text-xl font-semibold text-on-dark">
               {holding.units} units
               <span className="ml-sm text-sm font-normal text-muted">
                 of {tokenization.totalUnits}
@@ -605,7 +605,7 @@ function PortfolioPanel({ portfolio }: { portfolio: InvestorPortfolioResponse | 
               // the issuer has not signed them over yet. Saying "you own this"
               // would be untrue, and the investor cannot chase what they are
               // not told about.
-              <p className="mt-md flex items-start gap-xs rounded-lg bg-surface-strong-dark p-sm text-xs leading-5 text-muted">
+              <p className="mt-md flex items-start gap-xs rounded-lg bg-surface-elevated-dark p-sm text-xs leading-5 text-muted">
                 <Icon name="clock" className="mt-0.5 h-4 w-4 shrink-0" />
                 Awaiting delivery — the issuer holds these units until they sign
                 the transfer. Payouts start once they do.
@@ -644,7 +644,7 @@ function TabButton({
       aria-selected={active}
       type="button"
       onClick={() => onSelect(value)}
-      className={`-mb-px border-b-2 px-md py-sm text-sm font-medium transition-colors ${active ? "border-primary text-on-dark" : "border-transparent text-muted-strong hover:text-on-dark"}`}
+      className={`-mb-px min-h-11 whitespace-nowrap border-b-2 px-md py-sm text-sm font-medium transition-colors ${active ? "border-primary text-on-dark" : "border-transparent text-muted-strong hover:text-on-dark"}`}
     >
       {children}
     </button>
@@ -656,10 +656,10 @@ function Metric({ label, value, detail, icon }: { label: string; value: string; 
     <div className="panel-dark flex items-center justify-between p-lg">
       <div>
         <p className="text-xs font-medium text-muted">{label}</p>
-        <p className="mt-xs font-mono text-2xl font-semibold text-on-dark">{value}</p>
+        <p className="mt-xs break-words font-mono text-xl font-semibold text-on-dark sm:text-2xl">{value}</p>
         <p className="mt-xs text-xs text-muted">{detail}</p>
       </div>
-      <span className="grid h-10 w-10 place-items-center rounded-lg bg-surface-elevated-dark text-muted-strong"><Icon name={icon} /></span>
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-surface-elevated-dark text-muted-strong"><Icon name={icon} /></span>
     </div>
   );
 }
@@ -667,7 +667,7 @@ function Metric({ label, value, detail, icon }: { label: string; value: string; 
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-[10px] uppercase tracking-wider text-muted">{label}</dt>
+      <dt className="data-label">{label}</dt>
       <dd className="mt-xs text-xs font-medium text-body">{value}</dd>
     </div>
   );

@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 
 export default function DashboardPage() {
   return (
-    <main id="main-content" className="min-h-[calc(100vh-4rem)]">
+    <main id="main-content" className="min-h-[calc(100dvh-4rem)]">
       <div className="mx-auto max-w-[1440px] px-md py-xl sm:px-lg sm:py-xxl">
         <UserDashboard />
       </div>

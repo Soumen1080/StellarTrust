@@ -146,11 +146,11 @@ export function DisputeConsole() {
   if (!session) {
     return (
       <section className="panel-dark overflow-hidden">
-        <div className="p-xl sm:p-xxl">
+        <div className="p-lg sm:p-xl md:p-xxl">
           <span className="grid h-12 w-12 place-items-center rounded-lg bg-primary/10 text-primary">
             <Icon name="shield" className="h-6 w-6" />
           </span>
-          <h2 className="mt-lg text-2xl font-bold text-on-dark">Connect your wallet to manage disputes</h2>
+          <h2 className="mt-lg text-xl font-bold text-on-dark sm:text-2xl">Connect your wallet to manage disputes</h2>
           <p className="mt-sm max-w-xl leading-7 text-muted-strong">
             Open a dispute on an order, submit evidence within the review window, and see an explainable AI recommendation. High-value or low-confidence disputes are escalated to a human decision.
           </p>
@@ -168,7 +168,7 @@ export function DisputeConsole() {
         {error ? (
           <div role="alert" className="mb-lg flex items-start justify-between gap-md rounded-lg border border-status-rejected/30 bg-status-rejected/10 p-md text-sm text-status-rejected">
             <span>{error}</span>
-            <button type="button" onClick={() => setError(null)} aria-label="Dismiss error"><Icon name="x" className="h-4 w-4" /></button>
+            <button type="button" onClick={() => setError(null)} aria-label="Dismiss error" className="icon-button"><Icon name="x" className="h-4 w-4" /></button>
           </div>
         ) : null}
 
@@ -258,7 +258,7 @@ function DisputeCard({
 
   return (
     <article className="panel-dark overflow-hidden">
-      <div className="p-lg">
+      <div className="p-md sm:p-lg">
         <div className="flex flex-col justify-between gap-md sm:flex-row sm:items-start">
           <div>
             <div className="flex flex-wrap items-center gap-sm">
@@ -272,27 +272,27 @@ function DisputeCard({
                 <span className="rounded-pill border border-status-verified/30 bg-status-verified/10 px-sm py-xs text-xs font-semibold text-status-verified">Auto-resolvable</span>
               ) : null}
             </div>
-            <p className="mt-md font-mono text-lg font-semibold text-on-dark">
+            <p className="mt-md break-words font-mono text-lg font-semibold text-on-dark">
               {dispute.amount.amount} <span className="text-sm text-muted">{dispute.amount.currency} (minor)</span>
             </p>
             <p className="mt-xs font-mono text-[11px] text-muted" title={dispute.id}>Dispute · {dispute.id.slice(0, 10)}…{dispute.id.slice(-8)}</p>
             <p className="mt-xs font-mono text-[11px] text-muted" title={dispute.orderId}>Order · {dispute.orderId.slice(0, 10)}…</p>
           </div>
-          <button type="button" aria-expanded={expanded} onClick={onToggle} className="btn-secondary-dark">
+          <button type="button" aria-expanded={expanded} onClick={onToggle} className="btn-secondary-dark w-full sm:w-auto">
             {expanded ? "Hide" : "Manage"}<Icon name="chevron-down" className={`h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} />
           </button>
         </div>
       </div>
 
       {expanded ? (
-        <div className="border-t border-hairline-dark bg-canvas-dark/40 p-lg">
+        <div className="border-t border-hairline-dark bg-canvas-dark/40 p-md sm:p-lg">
           {dispute.advisory ? (
             <div className="mb-lg rounded-lg border border-hairline-dark bg-surface-card-dark p-md">
               <p className="eyebrow">AI advisory (read-only)</p>
               <p className="mt-xs text-sm text-body">{dispute.advisory.explanation}</p>
               <div className="mt-sm flex flex-wrap gap-xs">
                 {dispute.advisory.signals.map((signal) => (
-                  <span key={signal} className="rounded-pill bg-surface-elevated-dark px-sm py-xs font-mono text-[10px] text-muted-strong">{signal}</span>
+                  <span key={signal} className="rounded-pill bg-surface-elevated-dark px-sm py-xs font-mono text-[11px] text-muted-strong">{signal}</span>
                 ))}
               </div>
             </div>
@@ -311,7 +311,7 @@ function DisputeCard({
             <div className="space-y-lg">
               <div>
                 <p className="eyebrow">Submit evidence</p>
-                <div className="mt-sm grid gap-sm sm:grid-cols-4">
+                <div className="mt-sm grid gap-sm sm:grid-cols-2 xl:grid-cols-4">
                   <select value={evidenceKind} onChange={(e) => setEvidenceKind(e.target.value as EvidenceKind)} className="input-dark capitalize">
                     {EVIDENCE_KINDS.map((kind) => <option key={kind} value={kind}>{kind}</option>)}
                   </select>
@@ -320,7 +320,7 @@ function DisputeCard({
                     <option value={DisputeResolution.Refund}>supports refund</option>
                   </select>
                   <input value={evidenceWeight} onChange={(e) => setEvidenceWeight(e.target.value)} inputMode="decimal" placeholder="weight 0–1" className="input-dark font-mono" />
-                  <button type="button" disabled={busy} onClick={() => onEvidence(dispute.id, evidenceSupports, evidenceKind, clampWeight(evidenceWeight))} className="btn-secondary-dark justify-center">
+                  <button type="button" disabled={busy} onClick={() => onEvidence(dispute.id, evidenceSupports, evidenceKind, clampWeight(evidenceWeight))} className="btn-secondary-dark justify-center sm:col-span-2 xl:col-span-1">
                     {busy ? "…" : "Add evidence"}
                   </button>
                 </div>
@@ -337,13 +337,13 @@ function DisputeCard({
                 )}
 
                 {isCompliance ? (
-                  <div className="mt-md grid gap-sm rounded-lg border border-hairline-dark bg-surface-card-dark p-md sm:grid-cols-[160px_1fr_auto]">
+                  <div className="mt-md grid gap-sm rounded-lg border border-hairline-dark bg-surface-card-dark p-md sm:grid-cols-[160px_1fr] xl:grid-cols-[160px_1fr_auto]">
                     <select value={decision} onChange={(e) => setDecision(e.target.value as DisputeResolution)} className="input-dark capitalize">
                       <option value={DisputeResolution.Refund}>refund buyer</option>
                       <option value={DisputeResolution.Release}>release to seller</option>
                     </select>
                     <input value={decisionReason} onChange={(e) => setDecisionReason(e.target.value)} placeholder="Decision reason (min 5 chars)" className="input-dark text-sm" />
-                    <button type="button" disabled={busy || decisionReason.trim().length < 5} onClick={() => onHumanResolve(dispute.id, decision, decisionReason.trim())} className="btn-primary justify-center">
+                    <button type="button" disabled={busy || decisionReason.trim().length < 5} onClick={() => onHumanResolve(dispute.id, decision, decisionReason.trim())} className="btn-primary justify-center sm:col-span-2 xl:col-span-1">
                       {busy ? "…" : "Sign off"}
                     </button>
                   </div>

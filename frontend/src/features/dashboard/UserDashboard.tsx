@@ -95,7 +95,7 @@ export function UserDashboard() {
 
   return (
     <div>
-      <section className="grid gap-lg border-b border-hairline-dark pb-xl lg:grid-cols-[1fr_auto] lg:items-end">
+      <section className="grid gap-md border-b border-hairline-dark pb-lg sm:gap-lg sm:pb-xl lg:grid-cols-[1fr_auto] lg:items-end">
         <div>
           <p className="eyebrow">Account dashboard</p>
           <h1 className="mt-sm text-3xl font-bold tracking-tight text-on-dark sm:text-4xl">
@@ -106,7 +106,7 @@ export function UserDashboard() {
           </p>
         </div>
         <div className="flex flex-wrap gap-sm">
-          <Link href="/escrow" className="btn-primary">
+          <Link href="/escrow" className="btn-primary w-full justify-center sm:w-auto">
             Open escrow <Icon name="arrow-right" className="h-4 w-4" />
           </Link>
         </div>
@@ -141,10 +141,10 @@ export function UserDashboard() {
           ) : recentOrders.length ? (
             <div className="divide-y divide-hairline-dark">
               {recentOrders.map(({ order }) => (
-                <article key={order.id} className="flex flex-col justify-between gap-md p-lg sm:flex-row sm:items-center">
+                <article key={order.id} className="flex flex-col justify-between gap-md p-md sm:flex-row sm:items-center sm:p-lg">
                   <div>
                     <div className="flex flex-wrap items-center gap-sm"><StatusPill status={order.status} /><span className="font-mono text-xs text-muted">{shortId(order.id)}</span></div>
-                    <p className="mt-sm font-mono text-lg font-semibold text-on-dark">{(Number(order.amount.amount) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })} {order.amount.currency}</p>
+                    <p className="mt-sm break-words font-mono text-lg font-semibold text-on-dark">{(Number(order.amount.amount) / 100).toLocaleString(undefined, { minimumFractionDigits: 2 })} {order.amount.currency}</p>
                   </div>
                   <p className="text-xs text-muted">{order.buyerId === profile.user.id ? "Buyer" : order.sellerId === profile.user.id ? "Seller" : "Participant"}</p>
                 </article>
@@ -180,11 +180,11 @@ export function UserDashboard() {
 }
 
 function Metric({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: "user-check" | "clock" | "lock" | "wallet" }) {
-  return <div className="panel-dark flex items-center justify-between gap-md p-lg"><div><p className="text-xs font-medium text-muted">{label}</p><p className="mt-xs font-mono text-xl font-semibold text-on-dark">{value}</p><p className="mt-xs text-xs text-muted">{detail}</p></div><span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-surface-elevated-dark text-primary"><Icon name={icon} /></span></div>;
+  return <div className="panel-dark flex items-center justify-between gap-md p-lg"><div className="min-w-0"><p className="text-xs font-medium text-muted">{label}</p><p className="mt-xs break-words font-mono text-lg font-semibold text-on-dark sm:text-xl">{value}</p><p className="mt-xs text-xs text-muted">{detail}</p></div><span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-surface-elevated-dark text-primary"><Icon name={icon} /></span></div>;
 }
 
 function Detail({ label, value }: { label: string; value: string }) {
-  return <div><dt className="text-[10px] uppercase tracking-wider text-muted">{label}</dt><dd className="mt-xs text-sm font-medium">{value}</dd></div>;
+  return <div><dt className="data-label">{label}</dt><dd className="mt-xs text-sm font-medium">{value}</dd></div>;
 }
 
 function DashboardLoading() {

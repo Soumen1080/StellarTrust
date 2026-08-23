@@ -25,7 +25,7 @@ export default function Home() {
           <div className="absolute bottom-[24%] right-[20%] h-3 w-3 rounded-full bg-status-verified" />
           <div className="absolute left-[20%] top-[20%] h-px w-[63%] origin-left rotate-[28deg] bg-gradient-to-r from-primary to-status-verified" />
         </div>
-        <div className="relative mx-auto grid min-h-[680px] max-w-[1280px] items-center gap-xxl px-md py-section sm:px-lg lg:grid-cols-[1.15fr_.85fr]">
+        <div className="relative mx-auto grid max-w-[1280px] items-center gap-xxl px-md py-xxl sm:px-lg sm:py-section lg:min-h-[680px] lg:grid-cols-[1.15fr_.85fr]">
           <div>
             <div className="mb-lg inline-flex items-center gap-xs rounded-pill border border-hairline-dark bg-surface-card-dark px-sm py-xs text-xs font-medium text-muted-strong"><span className="h-1.5 w-1.5 rounded-full bg-status-verified" />Stellar testnet · Infrastructure preview</div>
             <h1 className="max-w-4xl text-4xl font-bold leading-[1.08] tracking-[-0.04em] text-on-dark sm:text-6xl lg:text-[68px]">Global commerce,<br/><span className="text-primary">without the trust gap.</span></h1>
@@ -43,20 +43,20 @@ export default function Home() {
         </div>
       </section>
 
-      <section className="mx-auto max-w-[1280px] px-md py-section sm:px-lg">
-        <div className="grid border-y border-hairline-dark sm:grid-cols-3">{[["6", "State-linked settlement steps"], ["100%", "Balanced ledger transitions"], ["0", "Secret keys stored by StellarTrust"]].map(([value, label], index) => <div key={label} className={`py-lg sm:px-lg ${index ? "sm:border-l sm:border-hairline-dark" : ""}`}><p className="font-mono text-3xl font-semibold text-primary">{value}</p><p className="mt-xs text-sm text-muted">{label}</p></div>)}</div>
+      <section className="mx-auto max-w-[1280px] px-md py-xxl sm:px-lg sm:py-section">
+        <div className="grid divide-y divide-hairline-dark border-y border-hairline-dark sm:grid-cols-3 sm:divide-y-0">{[["6", "State-linked settlement steps"], ["100%", "Balanced ledger transitions"], ["0", "Secret keys stored by StellarTrust"]].map(([value, label], index) => <div key={label} className={`py-lg sm:px-lg ${index ? "sm:border-l sm:border-hairline-dark" : ""}`}><p className="font-mono text-3xl font-semibold text-primary">{value}</p><p className="mt-xs text-sm text-muted">{label}</p></div>)}</div>
       </section>
 
-      <section className="mx-auto max-w-[1280px] px-md pb-section sm:px-lg">
+      <section className="mx-auto max-w-[1280px] px-md pb-xxl sm:px-lg sm:pb-section">
         <div className="max-w-2xl"><p className="eyebrow">One infrastructure layer</p><h2 className="mt-sm text-3xl font-bold tracking-tight text-on-dark sm:text-4xl">Trust controls built into every transaction.</h2><p className="mt-md leading-7 text-muted-strong">Designed for trade where identity, custody, money movement, and accountability must work together.</p></div>
         <div className="mt-xl grid gap-lg md:grid-cols-3">{capabilities.map((item) => <article key={item.title} className="panel-dark p-lg transition hover:-translate-y-1 hover:border-muted"><div className="grid h-11 w-11 place-items-center rounded-lg bg-surface-elevated-dark text-primary"><Icon name={item.icon} /></div><p className="mt-lg font-mono text-[11px] uppercase tracking-wider text-muted">{item.meta}</p><h3 className="mt-xs text-xl font-semibold text-on-dark">{item.title}</h3><p className="mt-sm text-sm leading-6 text-muted-strong">{item.copy}</p></article>)}</div>
       </section>
 
       <section className="bg-white text-ink">
-        <div className="mx-auto max-w-[1280px] px-md py-section sm:px-lg"><div className="grid gap-xxl lg:grid-cols-[.75fr_1.25fr]"><div><p className="eyebrow">Simple by design</p><h2 className="mt-sm text-3xl font-bold tracking-tight sm:text-4xl">From wallet to settlement in three clear stages.</h2><p className="mt-md leading-7 text-muted">Each action is explicit, attributable, and protected by idempotent APIs.</p><Link href="/escrow" className="btn-primary mt-lg">Explore escrow <Icon name="arrow-right" className="h-4 w-4" /></Link></div><ol className="divide-y divide-hairline-light border-y border-hairline-light">{steps.map(([number, title, copy]) => <li key={number} className="grid gap-sm py-lg sm:grid-cols-[72px_1fr]"><span className="font-mono text-sm font-semibold text-primary-active">{number}</span><div><h3 className="font-semibold">{title}</h3><p className="mt-xs text-sm leading-6 text-muted">{copy}</p></div></li>)}</ol></div></div>
+        <div className="mx-auto max-w-[1280px] px-md py-xxl sm:px-lg sm:py-section"><div className="grid gap-xxl lg:grid-cols-[.75fr_1.25fr]"><div><p className="eyebrow">Simple by design</p><h2 className="mt-sm text-3xl font-bold tracking-tight sm:text-4xl">From wallet to settlement in three clear stages.</h2><p className="mt-md leading-7 text-muted">Each action is explicit, attributable, and protected by idempotent APIs.</p><Link href="/escrow" className="btn-primary mt-lg">Explore escrow <Icon name="arrow-right" className="h-4 w-4" /></Link></div><ol className="divide-y divide-hairline-light border-y border-hairline-light">{steps.map(([number, title, copy]) => <li key={number} className="grid gap-sm py-lg sm:grid-cols-[72px_1fr]"><span className="font-mono text-sm font-semibold text-primary-active">{number}</span><div><h3 className="font-semibold">{title}</h3><p className="mt-xs text-sm leading-6 text-muted">{copy}</p></div></li>)}</ol></div></div>
       </section>
 
-      <section className="mx-auto max-w-[1280px] px-md py-section sm:px-lg"><div className="panel-dark grid items-center gap-xl p-xl sm:p-xxl lg:grid-cols-[1fr_auto]"><div><p className="eyebrow">Ready to begin?</p><h2 className="mt-sm text-3xl font-bold text-on-dark">Move value with verifiable trust.</h2><p className="mt-sm max-w-2xl text-muted-strong">Connect a Stellar wallet, complete identity checks, and create your first protected order.</p></div><AccountActionLink verificationLabel="Get verified" dashboardLabel="Open dashboard" /></div></section>
+      <section className="mx-auto max-w-[1280px] px-md py-xxl sm:px-lg sm:py-section"><div className="panel-dark grid items-center gap-xl p-lg sm:p-xl md:p-xxl lg:grid-cols-[1fr_auto]"><div><p className="eyebrow">Ready to begin?</p><h2 className="mt-sm text-2xl font-bold text-on-dark sm:text-3xl">Move value with verifiable trust.</h2><p className="mt-sm max-w-2xl text-muted-strong">Connect a Stellar wallet, complete identity checks, and create your first protected order.</p></div><AccountActionLink className="btn-primary w-full justify-center sm:w-auto" verificationLabel="Get verified" dashboardLabel="Open dashboard" /></div></section>
     </main>
   );
 }
