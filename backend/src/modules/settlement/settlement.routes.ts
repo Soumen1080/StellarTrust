@@ -35,8 +35,8 @@ export function createSettlementRouter(
   // idempotency key is required, but it is authenticated.
   router.post("/quotes", requireAuth(verifier), async (req, res, next) => {
     try {
-      requireActor(req as AuthedRequest);
-      res.status(201).json(await service.quote(req.body));
+      const actor = requireActor(req as AuthedRequest);
+      res.status(201).json(await service.quote(actor, req.body));
     } catch (err) {
       next(err);
     }

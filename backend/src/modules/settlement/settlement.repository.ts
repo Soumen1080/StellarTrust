@@ -35,6 +35,13 @@ export interface SettlementTransitionCommit {
 export interface SettlementRepository {
   saveQuote(quote: SettlementQuoteDTO): Promise<void>;
   findQuote(quoteId: string): Promise<SettlementQuoteDTO | undefined>;
+  /**
+   * Upsert a settlement outside a financial transition — used to record the
+   * REQUEST before the first leg runs and the terminal failure state after a
+   * leg throws. Never used to change money amounts: those only move through
+   * {@link SettlementRepository.commitTransition}, which carries the ledger.
+   */
+  saveSettlement(settlement: SettlementDTO): Promise<void>;
   findSettlement(settlementId: string): Promise<SettlementDTO | undefined>;
   findSettlementByQuote(quoteId: string): Promise<SettlementDTO | undefined>;
   listSettlements(userId: string): Promise<SettlementDTO[]>;
@@ -62,6 +69,10 @@ export class InMemorySettlementRepository implements SettlementRepository {
 
   async findQuote(quoteId: string): Promise<SettlementQuoteDTO | undefined> {
     return this.quotes.get(quoteId);
+  }
+
+  async saveSettlement(settlement: SettlementDTO): Promise<void> {
+    this.settlements.set(settlement.id, settlement);
   }
 
   async findSettlement(

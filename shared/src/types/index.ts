@@ -26,6 +26,12 @@ import type {
   DisputeResolution,
   EvidenceKind,
 } from "../constants/index.js";
+import type {
+  PayoutCountry,
+  PayoutDestinationInput,
+  PayoutRail,
+  PayoutRailSpec,
+} from "../payouts/index.js";
 
 /** Monetary amount as a fixed-precision minor-unit string to avoid float drift. */
 export type MinorUnitAmount = string; // e.g. "10000" = 100.00 for a 2-dp currency
@@ -471,6 +477,14 @@ export interface CorridorDTO {
   bridgeAsset: CurrencyCode;
   anchorProtocol: AnchorProtocol;
   estimatedSeconds: number;
+  /** Country (or SEPA region) the beneficiary is paid in. */
+  destinationCountry: PayoutCountry;
+  /**
+   * Local delivery rails available on the destination side, fastest first.
+   * Carries each scheme's limits, fee, and required beneficiary fields so the
+   * client can render and pre-validate the payout form without a second call.
+   */
+  payoutRails: PayoutRailSpec[];
 }
 
 /** A single conversion hop within a route (classic Stellar liquidity only). */
@@ -503,6 +517,13 @@ export interface SettlementQuoteInput {
   destinationCurrency: CurrencyCode;
   /** Source amount in minor units (integer string). */
   sourceAmount: MinorUnitAmount;
+  /**
+   * Local delivery rail for the destination leg. Defaults to the fastest rail
+   * serving the destination currency. The rail decides the payout fee, the
+   * credit time, and the per-transaction limits the quote is checked against,
+   * so it is priced INTO the quote rather than chosen afterwards.
+   */
+  payoutRail?: PayoutRail;
   /** Optional constraint: reject routes above this slippage (basis points). */
   maxSlippageBps?: number;
   /** Optional constraint: reject routes whose source-side fee exceeds this. */
@@ -511,6 +532,8 @@ export interface SettlementQuoteInput {
 
 export interface SettlementQuoteDTO {
   id: string;
+  /** Owner of the quote; only this user may execute it. */
+  userId: string;
   corridorId: string;
   source: Money;
   /** The best selected route. */
@@ -519,14 +542,60 @@ export interface SettlementQuoteDTO {
   consideredRoutes: SettlementRouteDTO[];
   maxSlippageBps: number;
   maxFeeAmount: MinorUnitAmount | null;
+  /** Local rail this quote is priced for. */
+  payoutRail: PayoutRail;
+  /** Flat rail fee deducted from the converted amount (destination currency). */
+  payoutFee: Money;
+  /** What the beneficiary actually receives: converted amount minus rail fee. */
+  netDestinationAmount: Money;
+  /** Conversion + local clearing time for the chosen rail. */
+  totalEstimatedSeconds: number;
   expiresAt: string;
   createdAt: string;
 }
 
 export interface SettlementExecuteInput {
   quoteId: string;
-  /** Destination beneficiary reference (opaque; never raw bank/PII in logs). */
-  destinationReference: string;
+  /**
+   * Beneficiary handle for the quoted rail (UPI ID, IFSC account, IBAN, ABA
+   * account, NUBAN). Validated against the scheme's own checksums; only a
+   * masked form and a fingerprint are persisted.
+   */
+  destination: PayoutDestinationInput;
+}
+
+/**
+ * Persisted beneficiary record. Deliberately non-reversible: the raw handle is
+ * used for the anchor payout call and dropped (Rules.md §7 — no raw PII at
+ * rest). The fingerprint gives duplicate detection and support lookups without
+ * ever storing an account number.
+ */
+export interface PayoutDestinationDTO {
+  rail: PayoutRail;
+  country: PayoutCountry;
+  currency: CurrencyCode;
+  /** Masked handle, e.g. "••••4321 · HDFC0001234". */
+  masked: string;
+  /** Beneficiary initials only, e.g. "S. M.". */
+  holderMasked: string;
+  /** SHA-256 (hex) of the normalized handle. */
+  fingerprint: string;
+  /** Remittance memo shown on the beneficiary's statement, if provided. */
+  reference: string | null;
+}
+
+/** The destination-leg delivery plan attached to a settlement. */
+export interface SettlementPayoutDTO {
+  rail: PayoutRail;
+  /** Clearing scheme that moves the local money (e.g. "NPCI UPI"). */
+  network: string;
+  destination: PayoutDestinationDTO;
+  /** Flat rail fee deducted from the converted amount. */
+  fee: Money;
+  /** Amount actually credited to the beneficiary. */
+  netAmount: Money;
+  /** Local clearing time for this rail, once the anchor releases funds. */
+  estimatedSeconds: number;
 }
 
 /** Anchor-side transfer record (SEP-6/24/31). No raw PII is stored. */
@@ -541,6 +610,14 @@ export interface AnchorTransferDTO {
   reference: string;
   /** SEP-12 customer id used for this transfer. */
   customerId: string;
+  /** Local scheme the anchor delivered on (withdrawals only). */
+  payoutRail: PayoutRail | null;
+  /**
+   * Fingerprint of the beneficiary handle the anchor was instructed to pay.
+   * Reconciliation compares it to the settlement's own record, so a payout
+   * sent to a different account is caught without either side storing one.
+   */
+  destinationFingerprint: string | null;
   createdAt: string;
 }
 
@@ -561,9 +638,17 @@ export interface SettlementDTO {
   corridorId: string;
   status: SettlementStatus;
   source: Money;
+  /** Converted amount before the local rail fee. */
   destination: Money;
   route: SettlementRouteDTO;
+  /** Local delivery leg: rail, masked beneficiary, fee, net credited amount. */
+  payout: SettlementPayoutDTO;
+  /** Remittance memo (falls back to the masked handle). Never a raw account. */
   destinationReference: string;
+  /** Set when the settlement reaches a terminal state. */
+  completedAt: string | null;
+  /** Why the settlement failed, when it did. */
+  failureReason: string | null;
   createdAt: string;
   updatedAt: string;
 }

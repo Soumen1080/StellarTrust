@@ -26,6 +26,24 @@ export interface AnchorTransferInput {
   amount: string;
   currency: CurrencyCode;
   customerId: string;
+  /**
+   * Local delivery instruction for a withdrawal. The anchor needs the raw
+   * beneficiary handle to instruct the scheme, but nothing downstream does —
+   * so it is passed here, per call, and never returned on the transfer record
+   * or written to a log (Rules.md §7).
+   */
+  payout?: AnchorPayoutInstruction;
+}
+
+export interface AnchorPayoutInstruction {
+  /** Local scheme to deliver on (`upi`, `imps`, `sepa_instant`, …). */
+  rail: string;
+  /** Normalized beneficiary fields for that rail. */
+  fields: Record<string, string>;
+  /** Non-reversible id for the handle; safe to persist and correlate on. */
+  fingerprint: string;
+  /** Remittance memo for the beneficiary's statement. */
+  reference?: string;
 }
 
 export interface AnchorKycRegistration {
@@ -68,7 +86,15 @@ export class SandboxAnchorGateway implements AnchorGateway {
   async submitTransfer(
     input: AnchorTransferInput,
   ): Promise<AnchorTransferDTO> {
-    const reference = `anchor-${input.kind}-${randomUUID()}`;
+    // A withdrawal with no delivery instruction has nowhere to land; failing
+    // here keeps a half-specified payout from being recorded as money moved.
+    if (input.kind === "withdrawal" && !input.payout) {
+      throw new ExternalServiceError(
+        "Anchor withdrawal requires a local payout instruction",
+      );
+    }
+    const rail = input.payout?.rail;
+    const reference = `anchor-${input.kind}${rail ? `-${rail}` : ""}-${randomUUID()}`;
     const transfer: AnchorTransferDTO = {
       id: randomUUID(),
       kind: input.kind,
@@ -80,6 +106,10 @@ export class SandboxAnchorGateway implements AnchorGateway {
       currency: input.currency,
       reference,
       customerId: input.customerId,
+      // Only the rail and the fingerprint are retained. `input.payout.fields`
+      // holds the raw handle and is deliberately dropped here.
+      payoutRail: (rail as AnchorTransferDTO["payoutRail"]) ?? null,
+      destinationFingerprint: input.payout?.fingerprint ?? null,
       createdAt: new Date().toISOString(),
     };
     this.transfers.set(reference, transfer);

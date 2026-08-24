@@ -29,6 +29,29 @@ export const DELIVERY_LIABILITY = "70000000-0000-4000-8000-000000000007";
 export const RWA_PAYOUT_PAYABLE = "a0000000-0000-4000-8000-000000000003";
 export const RWA_PAYOUT_RESERVE = "a0000000-0000-4000-8000-000000000004";
 
+/**
+ * Cross-border settlement accounts (migration 0011 seeds).
+ *
+ * These use their own `b0…` prefix: the settlement module previously posted
+ * against `a0…0003`/`a0…0004`, which are the RWA payout accounts above. In
+ * memory that was invisible; resolved against the real chart of accounts it
+ * would have posted FX conversions into the RWA payout reserve.
+ */
+export const SETTLEMENT_SOURCE_ANCHOR_CLEARING =
+  "b0000000-0000-4000-8000-000000000001";
+export const SETTLEMENT_USER_SOURCE_LIABILITY =
+  "b0000000-0000-4000-8000-000000000002";
+export const SETTLEMENT_FX_CONVERSION = "b0000000-0000-4000-8000-000000000003";
+export const SETTLEMENT_USER_DEST_LIABILITY =
+  "b0000000-0000-4000-8000-000000000004";
+export const SETTLEMENT_DEST_ANCHOR_CLEARING =
+  "b0000000-0000-4000-8000-000000000005";
+export const SETTLEMENT_LIQUIDITY_FEE_REVENUE =
+  "b0000000-0000-4000-8000-000000000006";
+/** Flat local-rail fee (UPI/IMPS/SEPA/ACH/NIP) retained on the payout leg. */
+export const SETTLEMENT_PAYOUT_FEE_REVENUE =
+  "b0000000-0000-4000-8000-000000000007";
+
 export const SYNTHETIC_ACCOUNT_NAME: Readonly<Record<string, string>> =
   Object.freeze({
     [COMMITMENT_ASSET]: "commitment_asset",
@@ -40,6 +63,13 @@ export const SYNTHETIC_ACCOUNT_NAME: Readonly<Record<string, string>> =
     [DELIVERY_LIABILITY]: "delivery_confirmation_liability",
     [RWA_PAYOUT_PAYABLE]: "rwa_payout_payable",
     [RWA_PAYOUT_RESERVE]: "rwa_payout_reserve",
+    [SETTLEMENT_SOURCE_ANCHOR_CLEARING]: "settlement_source_anchor_clearing",
+    [SETTLEMENT_USER_SOURCE_LIABILITY]: "settlement_user_source_liability",
+    [SETTLEMENT_FX_CONVERSION]: "settlement_fx_conversion",
+    [SETTLEMENT_USER_DEST_LIABILITY]: "settlement_user_dest_liability",
+    [SETTLEMENT_DEST_ANCHOR_CLEARING]: "settlement_dest_anchor_clearing",
+    [SETTLEMENT_LIQUIDITY_FEE_REVENUE]: "settlement_liquidity_fee_revenue",
+    [SETTLEMENT_PAYOUT_FEE_REVENUE]: "settlement_payout_fee_revenue",
   });
 
 /** The seeded account name for a synthetic id, or a named failure. */

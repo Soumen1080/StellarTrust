@@ -70,7 +70,10 @@ import { StellarClient } from "./modules/stellar/stellar.client.js";
 import { createWalletBalancesRouter } from "./modules/stellar/wallet-balances.routes.js";
 import { createAnchorGateway } from "./modules/settlement/anchor.gateway.js";
 import { createLiquidityGateway } from "./modules/settlement/liquidity.gateway.js";
-import { InMemorySettlementRepository } from "./modules/settlement/settlement.repository.js";
+import {
+  InMemorySettlementRepository,
+  type SettlementRepository,
+} from "./modules/settlement/settlement.repository.js";
 import { SettlementService } from "./modules/settlement/settlement.service.js";
 import { SettlementReconciliationJob } from "./modules/settlement/settlement.reconciliation.job.js";
 import { createSettlementRouter } from "./modules/settlement/settlement.routes.js";
@@ -83,6 +86,7 @@ import {
   type DisputeRepository,
 } from "./modules/disputes/dispute.repository.js";
 import { PgDisputeRepository } from "./modules/disputes/pg-dispute.repository.js";
+import { PgSettlementRepository } from "./modules/settlement/pg-settlement.repository.js";
 import { DisputeService } from "./modules/disputes/dispute.service.js";
 import { createDisputeRouter } from "./modules/disputes/dispute.routes.js";
 import { createRwaGateway } from "./modules/rwa/rwa.gateway.js";
@@ -409,7 +413,11 @@ export function createApp(): Express {
   app.locals.rwaReconciliationJob = rwaReconciliation;
 
   // ── Phase 3: Cross-Border Settlement ─────────────────────────────────────
-  const settlementRepository = new InMemorySettlementRepository();
+  // Settlement moves fiat across borders; its records must outlive the process
+  // that made them (migration 0011).
+  const settlementRepository: SettlementRepository = usePersistentStore
+    ? new PgSettlementRepository(getPool())
+    : new InMemorySettlementRepository();
   const liquidityGateway = createLiquidityGateway();
   const anchorGateway = createAnchorGateway();
   const settlement = new SettlementService(

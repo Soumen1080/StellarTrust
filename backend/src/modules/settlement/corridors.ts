@@ -10,7 +10,10 @@
 import {
   AnchorProtocol,
   CurrencyCode,
+  payoutCountryForCurrency,
+  railsForCurrency,
   type CorridorDTO,
+  type PayoutRailSpec,
 } from "@stellartrust/shared";
 
 interface CorridorSeed {
@@ -68,7 +71,15 @@ function toDTO(
   seed: CorridorSeed,
   source: CurrencyCode,
   destination: CurrencyCode,
-): CorridorDTO {
+): CorridorDTO | undefined {
+  // A corridor is only real if fiat can actually be delivered on the far side.
+  // Without a local rail the transfer would convert on-chain and then strand at
+  // the anchor, so an unserviceable direction is dropped from the catalog
+  // rather than offered and failed at payout time.
+  const country = payoutCountryForCurrency(destination);
+  const rails = railsForCurrency(destination);
+  if (!country || rails.length === 0) return undefined;
+
   return {
     id: corridorId(source, destination),
     sourceCurrency: source,
@@ -78,6 +89,8 @@ function toDTO(
     bridgeAsset: BRIDGE_ASSET,
     anchorProtocol: seed.protocol,
     estimatedSeconds: seed.estimatedSeconds,
+    destinationCountry: country,
+    payoutRails: rails as PayoutRailSpec[],
   };
 }
 
@@ -86,9 +99,9 @@ const CORRIDOR_MAP: ReadonlyMap<string, CorridorDTO> = (() => {
   for (const seed of SEEDS) {
     const forward = toDTO(seed, seed.source, seed.destination);
     const reverse = toDTO(seed, seed.destination, seed.source);
-    map.set(forward.id, forward);
+    if (forward) map.set(forward.id, forward);
     // Do not overwrite a directed corridor that already exists.
-    if (!map.has(reverse.id)) map.set(reverse.id, reverse);
+    if (reverse && !map.has(reverse.id)) map.set(reverse.id, reverse);
   }
   return map;
 })();
@@ -104,4 +117,25 @@ export function findCorridor(
 
 export function findCorridorById(id: string): CorridorDTO | undefined {
   return CORRIDOR_MAP.get(id);
+}
+
+/**
+ * The rail a corridor delivers on when the caller does not choose one: the
+ * fastest scheme serving the destination currency (rails are stored fastest
+ * first). UPI for India, SEPA Instant for the euro area, NIP for Nigeria.
+ */
+export function defaultRailFor(corridor: CorridorDTO): PayoutRailSpec {
+  const rail = corridor.payoutRails[0];
+  if (!rail) {
+    throw new Error(`Corridor ${corridor.id} has no payout rail`);
+  }
+  return rail;
+}
+
+/** The corridor's spec for a rail, or undefined if that rail is not offered. */
+export function railForCorridor(
+  corridor: CorridorDTO,
+  rail: string,
+): PayoutRailSpec | undefined {
+  return corridor.payoutRails.find((spec) => spec.rail === rail);
 }

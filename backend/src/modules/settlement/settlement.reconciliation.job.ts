@@ -14,6 +14,7 @@ import {
   ChainTxStatus,
   ReconciliationStatus,
   SettlementTransition,
+  type AnchorTransferDTO,
   type SettlementReconciliationMismatchDTO,
   type SettlementReconciliationReportDTO,
 } from "@stellartrust/shared";
@@ -125,6 +126,9 @@ export class SettlementReconciliationJob {
       ) {
         return "anchor transfer amount/currency does not match the ledger";
       }
+      if (transition.transition === SettlementTransition.Payout) {
+        return this.checkPayoutDelivery(transition.settlementId, observed);
+      }
       return undefined;
     }
 
@@ -133,6 +137,36 @@ export class SettlementReconciliationJob {
     if (!chain) return "conversion chain record is missing";
     if (chain.status !== ChainTxStatus.Success) {
       return `conversion chain status is ${chain.status}`;
+    }
+    return undefined;
+  }
+
+  /**
+   * The payout leg is the only point where money leaves for a third party, so
+   * it is checked against the settlement's own delivery record: the anchor must
+   * have paid the rail we chose, the handle we fingerprinted, and the net
+   * amount we promised. Fingerprints — not account numbers — are compared, so
+   * this holds without either side storing a beneficiary's details.
+   */
+  private async checkPayoutDelivery(
+    settlementId: string,
+    observed: AnchorTransferDTO,
+  ): Promise<string | undefined> {
+    const settlement = await this.repository.findSettlement(settlementId);
+    if (!settlement) return "settlement record for this payout is missing";
+    const payout = settlement.payout;
+
+    if (observed.payoutRail !== payout.rail) {
+      return `anchor paid over ${observed.payoutRail ?? "an unrecorded rail"}, expected ${payout.rail}`;
+    }
+    if (observed.destinationFingerprint !== payout.destination.fingerprint) {
+      return "anchor payout went to a different beneficiary than the settlement records";
+    }
+    if (
+      observed.amount !== payout.netAmount.amount ||
+      observed.currency !== payout.netAmount.currency
+    ) {
+      return "anchor payout amount does not match the net amount promised to the beneficiary";
     }
     return undefined;
   }

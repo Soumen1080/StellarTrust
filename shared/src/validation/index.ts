@@ -15,6 +15,11 @@ import {
   PaymentTransition,
   SUPPORTED_CURRENCIES,
 } from "../constants/index.js";
+import {
+  PAYOUT_RAILS,
+  PayoutFieldName,
+  PayoutRail,
+} from "../payouts/index.js";
 
 /** Positive integer minor-unit amount, as a string (no floats for money). */
 export const minorUnitAmountSchema = z
@@ -23,6 +28,10 @@ export const minorUnitAmountSchema = z
 
 export const currencySchema = z.enum(
   SUPPORTED_CURRENCIES as [CurrencyCode, ...CurrencyCode[]],
+);
+
+export const payoutRailSchema = z.enum(
+  Object.values(PayoutRail) as [PayoutRail, ...PayoutRail[]],
 );
 
 export const moneySchema = z.object({
@@ -197,6 +206,7 @@ export const settlementQuoteInputSchema = z
     // Basis points (1% = 100 bps). 0..10000.
     maxSlippageBps: z.number().int().min(0).max(10_000).optional(),
     maxFeeAmount: minorUnitAmountSchema.optional(),
+    payoutRail: payoutRailSchema.optional(),
   })
   .superRefine((value, ctx) => {
     if (value.sourceCurrency === value.destinationCurrency) {
@@ -206,11 +216,44 @@ export const settlementQuoteInputSchema = z
         message: "source and destination currencies must differ",
       });
     }
+    // A rail only exists for the currency it clears in; catching the mismatch
+    // here keeps the quote from being priced against the wrong scheme's fee.
+    const rail = value.payoutRail ? PAYOUT_RAILS[value.payoutRail] : undefined;
+    if (rail && rail.currency !== value.destinationCurrency) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["payoutRail"],
+        message: `${rail.label} settles in ${rail.currency}, not ${value.destinationCurrency}`,
+      });
+    }
   });
+
+/**
+ * Beneficiary handle. The schema enforces presence and length; the scheme
+ * checksums (IBAN mod-97, ABA, NUBAN, IFSC, VPA shape) run in
+ * {@link validatePayoutDestination}, which the service calls next — keeping
+ * one implementation of those rules shared with the browser.
+ */
+export const payoutDestinationInputSchema = z.object({
+  rail: payoutRailSchema,
+  fields: z
+    .record(
+      z.enum(
+        Object.values(PayoutFieldName) as [PayoutFieldName, ...PayoutFieldName[]],
+      ),
+      z.string().min(1).max(140),
+    )
+    .refine((value) => Object.keys(value).length > 0, {
+      message: "beneficiary details are required",
+    }),
+  // Remittance memo: reaches the beneficiary's statement, so it must never be
+  // used to smuggle an account number past the masking rules.
+  reference: z.string().min(3).max(140).optional(),
+});
 
 export const settlementExecuteInputSchema = z.object({
   quoteId: z.string().uuid(),
-  destinationReference: z.string().min(3).max(256),
+  destination: payoutDestinationInputSchema,
 });
 
 // ── Phase 4: Disputes + AI (advisory) ─────────────────────────────────────────
