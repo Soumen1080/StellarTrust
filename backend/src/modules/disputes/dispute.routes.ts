@@ -37,11 +37,16 @@ export function createDisputeRouter(
     },
   );
 
-  // List the caller's own disputes.
+  // Disputes the caller is a party to (buyer or seller). `?orderId=` narrows to
+  // one order — how the escrow view asks "is there a claim on this order?".
   router.get("/", requireAuth(verifier), async (req, res, next) => {
     try {
       const actor = requireActor(req as AuthedRequest);
-      res.json({ disputes: await service.list(actor.userId) });
+      const orderId = req.query.orderId;
+      if (orderId !== undefined && typeof orderId !== "string") {
+        throw new ValidationError("orderId must be a single value");
+      }
+      res.json({ disputes: await service.list(actor.userId, orderId) });
     } catch (err) {
       next(err);
     }
@@ -56,6 +61,25 @@ export function createDisputeRouter(
       next(err);
     }
   });
+
+  // Append-only history of the dispute, role-labelled for the parties.
+  // Declared before "/:disputeId" so "log" is never read as a dispute id.
+  router.get(
+    "/:disputeId/log",
+    requireAuth(verifier),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        const disputeId = String(req.params.disputeId);
+        res.json({
+          disputeId,
+          entries: await service.log(disputeId, actor),
+        });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   router.get("/:disputeId", requireAuth(verifier), async (req, res, next) => {
     try {

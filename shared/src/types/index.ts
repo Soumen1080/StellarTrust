@@ -23,7 +23,9 @@ import type {
   SettlementStatus,
   SettlementTransition,
   DisputeDecisionMaker,
+  DisputeLogActor,
   DisputeResolution,
+  DisputeSettlementStatus,
   EvidenceKind,
 } from "../constants/index.js";
 import type {
@@ -278,6 +280,20 @@ export interface DisputeDecisionInput {
   reason: string;
 }
 
+/**
+ * Whether the funds a resolution ordered actually moved.
+ *
+ * Kept beside the decision rather than only in the audit log, because both
+ * parties read the dispute record — and a decision whose transfer failed must
+ * not present itself to them as money delivered.
+ */
+export interface DisputeSettlementOutcomeDTO {
+  status: DisputeSettlementStatus;
+  /** Failure message or the reason no transfer was owed. */
+  detail: string | null;
+  updatedAt: string;
+}
+
 export interface DisputeResolutionDTO {
   outcome: DisputeResolution;
   decidedBy: DisputeDecisionMaker;
@@ -285,6 +301,33 @@ export interface DisputeResolutionDTO {
   actor: string;
   reason: string;
   decidedAt: string;
+  /** Execution state of the fund movement this decision ordered. */
+  settlement: DisputeSettlementOutcomeDTO;
+}
+
+/**
+ * One line of a dispute's append-only history, projected from the audit log.
+ *
+ * The audit log is already the record of what happened (Rules.md #6); this is
+ * that record rendered for the people involved — role-labelled, with ids
+ * reduced to roles so a counterparty reads "Seller submitted evidence" rather
+ * than a UUID they cannot resolve.
+ */
+export interface DisputeLogEntryDTO {
+  id: string;
+  /** Raw audit action, e.g. "dispute.evidence_submitted". */
+  action: string;
+  actor: DisputeLogActor;
+  /** Human-readable one-liner for the timeline. */
+  summary: string;
+  /** Non-sensitive detail already present in the audit metadata. */
+  metadata: Record<string, unknown>;
+  at: string;
+}
+
+export interface DisputeLogResponse {
+  disputeId: string;
+  entries: DisputeLogEntryDTO[];
 }
 
 export interface DisputeDTO {
@@ -305,6 +348,15 @@ export interface DisputeDTO {
   status: DisputeStatus;
   amount: Money;
   openedBy: string;
+  /**
+   * Both sides of the order, captured when the dispute is opened.
+   *
+   * A dispute is between two people, so both must be able to find it: without
+   * the parties on the record the counterparty cannot list the claim against
+   * them, and therefore cannot answer it inside the evidence window.
+   */
+  buyerId: string;
+  sellerId: string;
   reason: string;
   evidence: DisputeEvidenceDTO[];
   /** Latest advisory snapshot (reproducible from the stored evidence). */

@@ -194,3 +194,169 @@ describe("AI advisory + human gate", () => {
     ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });
+
+describe("both parties can see and answer a claim", () => {
+  it("lists the dispute for the seller it was filed against, not just the opener", async () => {
+    const { service, order } = setup(makeOrder("10000"));
+    const opened = await service.open(buyer, {
+      orderId: order.id,
+      reason: "Item never arrived",
+    });
+
+    // The respondent has to find the claim to defend it inside the window.
+    const sellerView = await service.list(seller.userId);
+    expect(sellerView.map((dispute) => dispute.id)).toContain(opened.id);
+
+    const buyerView = await service.list(buyer.userId);
+    expect(buyerView.map((dispute) => dispute.id)).toContain(opened.id);
+
+    // Someone with no stake in the order still sees nothing.
+    expect(await service.list("intruder")).toHaveLength(0);
+  });
+
+  it("records both parties on the dispute so the log can name roles", async () => {
+    const { service, order } = setup(makeOrder("10000"));
+    const opened = await service.open(seller, { orderId: order.id, reason: "dispute" });
+    expect(opened.buyerId).toBe(buyer.userId);
+    expect(opened.sellerId).toBe(seller.userId);
+    expect(opened.openedBy).toBe(seller.userId);
+  });
+
+  it("narrows the list to one order, which is how escrow asks about a card", async () => {
+    const first = makeOrder("10000");
+    const { service } = setup(first);
+    const opened = await service.open(buyer, { orderId: first.id, reason: "dispute" });
+
+    expect(await service.list(buyer.userId, first.id)).toHaveLength(1);
+    expect(
+      (await service.list(buyer.userId, first.id))[0]?.id,
+    ).toBe(opened.id);
+    expect(
+      await service.list(buyer.userId, "00000000-0000-4000-8000-000000000000"),
+    ).toHaveLength(0);
+  });
+});
+
+describe("disputable order states", () => {
+  it("refuses a dispute on an order whose funds were never committed", async () => {
+    const order = { ...makeOrder("10000"), status: "created" as const };
+    const { service } = setup(order);
+    await expect(
+      service.open(buyer, { orderId: order.id, reason: "too early" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("refuses a dispute on an order that already settled", async () => {
+    const order = { ...makeOrder("10000"), status: "released" as const };
+    const { service } = setup(order);
+    await expect(
+      service.open(buyer, { orderId: order.id, reason: "too late" }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  it("accepts a dispute once funds are deposited", async () => {
+    const order = { ...makeOrder("10000"), status: "deposited" as const };
+    const { service } = setup(order);
+    const dispute = await service.open(buyer, {
+      orderId: order.id,
+      reason: "seller unresponsive",
+    });
+    expect(dispute.status).toBe(DisputeStatus.EvidenceWindow);
+  });
+});
+
+describe("evidence window", () => {
+  /** Force the window shut without waiting out the configured hours. */
+  async function withClosedWindow(service: DisputeService, disputeId: string, repository: InMemoryDisputeRepository) {
+    const dispute = await repository.find(disputeId);
+    if (!dispute) throw new Error("dispute missing");
+    await repository.save({
+      ...dispute,
+      evidenceWindowClosesAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    return service;
+  }
+
+  it("reports a lapsed window as under review rather than still open", async () => {
+    const { service, repository, order } = setup(makeOrder("10000"));
+    const opened = await service.open(buyer, { orderId: order.id, reason: "dispute" });
+    await withClosedWindow(service, opened.id, repository);
+
+    const [listed] = await service.list(buyer.userId);
+    expect(listed?.status).toBe(DisputeStatus.UnderReview);
+    expect((await service.details(opened.id, buyer)).status).toBe(
+      DisputeStatus.UnderReview,
+    );
+  });
+
+  it("lets compliance decide a dispute nobody evidenced once the window closes", async () => {
+    const { service, repository, order } = setup(makeOrder("10000"));
+    const opened = await service.open(buyer, { orderId: order.id, reason: "dispute" });
+
+    // While the window is open, deciding with no evidence is premature.
+    await expect(
+      service.resolve(compliance, opened.id, {
+        decision: DisputeResolution.Refund,
+        reason: "no evidence from either side",
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    await withClosedWindow(service, opened.id, repository);
+
+    // Once closed, the funds must not stay frozen with no path to a decision.
+    const resolved = await service.resolve(compliance, opened.id, {
+      decision: DisputeResolution.Refund,
+      reason: "Neither party submitted evidence; refund the buyer.",
+    });
+    expect(resolved.resolution?.decidedBy).toBe(DisputeDecisionMaker.Human);
+    expect(resolved.resolution?.outcome).toBe(DisputeResolution.Refund);
+  });
+
+  it("still refuses auto-resolve with no advisory", async () => {
+    const { service, repository, order } = setup(makeOrder("10000"));
+    const opened = await service.open(buyer, { orderId: order.id, reason: "dispute" });
+    await withClosedWindow(service, opened.id, repository);
+    await expect(service.resolve(buyer, opened.id)).rejects.toMatchObject({
+      code: "CONFLICT",
+    });
+  });
+});
+
+describe("dispute log", () => {
+  it("projects the audit trail into role-labelled lines for the parties", async () => {
+    const { service, order } = setup(makeOrder("10000"));
+    const opened = await service.open(buyer, { orderId: order.id, reason: "dispute" });
+    await service.submitEvidence(seller, opened.id, releaseEvidence(0.95));
+    await service.submitEvidence(seller, opened.id, releaseEvidence(0.95));
+    await service.resolve(buyer, opened.id);
+
+    const log = await service.log(opened.id, seller);
+    const actions = log.map((entry) => entry.action);
+    expect(actions).toContain("dispute.opened");
+    expect(actions).toContain("dispute.evidence_submitted");
+    expect(actions).toContain("dispute.advisory");
+    expect(actions).toContain("dispute.resolved");
+
+    // Oldest first, so the timeline reads top to bottom.
+    expect([...log].sort((a, b) => a.at.localeCompare(b.at))).toEqual(log);
+
+    // Roles, never raw user ids — the counterparty reads this.
+    expect(log.find((entry) => entry.action === "dispute.opened")?.actor).toBe("buyer");
+    expect(
+      log.find((entry) => entry.action === "dispute.evidence_submitted")?.actor,
+    ).toBe("seller");
+    expect(log.find((entry) => entry.action === "dispute.advisory")?.actor).toBe("ai");
+    expect(log.find((entry) => entry.action === "dispute.resolved")?.actor).toBe(
+      "system",
+    );
+    for (const entry of log) expect(entry.summary.length).toBeGreaterThan(0);
+  });
+
+  it("refuses the log to someone who is not a party or compliance", async () => {
+    const { service, order } = setup(makeOrder("10000"));
+    const opened = await service.open(buyer, { orderId: order.id, reason: "dispute" });
+    await expect(
+      service.log(opened.id, { userId: "intruder", roles: ["user"] }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+});

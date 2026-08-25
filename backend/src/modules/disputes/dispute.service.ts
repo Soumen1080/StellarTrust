@@ -16,8 +16,11 @@ import { randomUUID } from "node:crypto";
 import {
   AiRecommendation,
   CURRENCY_SCALE,
+  DISPUTABLE_ORDER_STATUSES,
   DisputeDecisionMaker,
+  DisputeLogActor,
   DisputeResolution,
+  DisputeSettlementStatus,
   DisputeStatus,
   disputeEvidenceInputSchema,
   openDisputeInputSchema,
@@ -26,6 +29,7 @@ import {
   type DisputeDTO,
   type DisputeEvidenceDTO,
   type DisputeEvidenceInput,
+  type DisputeLogEntryDTO,
   type OpenDisputeInput,
   type OrderDTO,
 } from "@stellartrust/shared";
@@ -82,6 +86,17 @@ export class DisputeService {
 
     const order = await this.requireOrderParty(parsed.data.orderId, actor);
 
+    // A dispute is a claim over money that is actually held. Before `deposited`
+    // nothing has been committed, and after release/refund/cancellation there is
+    // nothing left to adjudicate — opening a claim there produces a record that
+    // can never be executed, which reads to the parties as protection they do
+    // not have.
+    if (!DISPUTABLE_ORDER_STATUSES.includes(order.status)) {
+      throw new ConflictError(
+        `An order in "${order.status}" cannot be disputed — a dispute needs funds committed and not yet settled`,
+      );
+    }
+
     const existing = await this.repository.findOpenByOrder(order.id);
     if (existing) {
       throw new ConflictError("An open dispute already exists for this order");
@@ -99,6 +114,8 @@ export class DisputeService {
       status: DisputeStatus.EvidenceWindow,
       amount: order.amount,
       openedBy: actor.userId,
+      buyerId: order.buyerId,
+      sellerId: order.sellerId,
       reason: parsed.data.reason,
       evidence: [],
       advisory: null,
@@ -121,6 +138,9 @@ export class DisputeService {
         amountCurrency: order.amount.currency,
         escrowId: dispute.escrowId,
         contractId: dispute.contractId,
+        // Role, not id: the log is read by the counterparty.
+        openedByRole: this.roleOf(dispute, actor.userId),
+        orderStatus: order.status,
       },
     });
     await this.freezeCustody(dispute, actor);
@@ -250,7 +270,13 @@ export class DisputeService {
       action: "dispute.evidence_submitted",
       entity: "dispute",
       entityId: dispute.id,
-      metadata: { evidenceId: evidence.id, kind: evidence.kind },
+      metadata: {
+        evidenceId: evidence.id,
+        kind: evidence.kind,
+        supports: evidence.supports,
+        weight: evidence.weight,
+        submittedByRole: this.roleOf(dispute, actor.userId),
+      },
     });
     // Advisory decisions are audited separately (AI is accountable and logged).
     await this.audit.append({
@@ -284,11 +310,6 @@ export class DisputeService {
     if (dispute.resolution) {
       throw new ConflictError("Dispute is already resolved");
     }
-    if (!dispute.advisory) {
-      throw new ConflictError(
-        "Dispute cannot be resolved before any evidence and advisory exist",
-      );
-    }
 
     let resolutionOutcome: DisputeResolution;
     let decidedBy: DisputeDecisionMaker;
@@ -300,11 +321,25 @@ export class DisputeService {
       if (!actor.roles.includes("compliance")) {
         throw new ForbiddenError("A dispute decision requires compliance access");
       }
+      // A compliance reviewer may decide without an advisory once the evidence
+      // window has closed. Requiring one unconditionally deadlocks the case
+      // nobody evidenced: the funds stay frozen with no path to a decision,
+      // which is the worst outcome for both parties.
+      if (!dispute.advisory && !this.evidenceWindowClosed(dispute)) {
+        throw new ConflictError(
+          "No evidence has been submitted yet — wait for the evidence window to close before deciding",
+        );
+      }
       resolutionOutcome = decision.decision;
       decidedBy = DisputeDecisionMaker.Human;
       resolvedActor = `user:${actor.userId}`;
       reason = decision.reason;
     } else {
+      if (!dispute.advisory) {
+        throw new ConflictError(
+          "Dispute cannot be auto-resolved before any evidence and advisory exist",
+        );
+      }
       // Auto path — only permitted strictly within the policy thresholds.
       if (!dispute.autoResolvable) {
         throw new ForbiddenError(
@@ -330,6 +365,13 @@ export class DisputeService {
         actor: resolvedActor,
         reason,
         decidedAt: now,
+        // The transfer has not been attempted yet; the record says so rather
+        // than implying the money has already moved.
+        settlement: {
+          status: DisputeSettlementStatus.Pending,
+          detail: null,
+          updatedAt: now,
+        },
       },
       updatedAt: now,
     };
@@ -345,30 +387,60 @@ export class DisputeService {
         decidedBy,
         orderId: dispute.orderId,
         // Snapshot the advisory the decision was made against (reproducible).
-        advisoryRecommendation: dispute.advisory.recommendation,
-        advisoryConfidence: dispute.advisory.confidence,
+        advisoryRecommendation: dispute.advisory?.recommendation ?? null,
+        advisoryConfidence: dispute.advisory?.confidence ?? null,
+        decidedWithoutAdvisory: dispute.advisory === null,
       },
     });
 
     // Phase 6: update the advisory reputation prior and auto-execute the
-    // resolved fund movement through the arbiter payments path. Both are
-    // best-effort and non-fatal — the dispute record is the authority, and a
-    // settlement failure is audited and retryable via the compliance arbiter.
+    // resolved fund movement through the arbiter payments path. Reputation is
+    // best-effort; the settlement attempt's OUTCOME is written back onto the
+    // dispute so the parties can see whether the money actually moved.
     await this.updateReputation(dispute.orderId, resolutionOutcome, dispute.id);
-    await this.autoExecuteSettlement(dispute, resolutionOutcome);
-
-    return resolved;
+    return this.autoExecuteSettlement(resolved, resolutionOutcome);
   }
 
-  async list(userId: string): Promise<DisputeDTO[]> {
-    return this.repository.listForUser(userId);
+  /** Disputes the user is party to — as buyer or seller, not just the opener. */
+  async list(userId: string, orderId?: string): Promise<DisputeDTO[]> {
+    const disputes = await this.repository.listForParty(userId);
+    const scoped = orderId
+      ? disputes.filter((dispute) => dispute.orderId === orderId)
+      : disputes;
+    return scoped.map((dispute) => this.withDerivedStatus(dispute));
+  }
+
+  /**
+   * The dispute's history, projected from the append-only audit log into lines
+   * the parties can read. Same access rule as the dispute itself.
+   */
+  async log(
+    disputeId: string,
+    actor: DisputeActor,
+  ): Promise<DisputeLogEntryDTO[]> {
+    const dispute = await this.details(disputeId, actor);
+    const events = await this.audit.listForEntity("dispute", dispute.id);
+    return events
+      .map((event) => ({
+        id: event.id,
+        action: event.action,
+        actor: this.logActorFor(dispute, event.actor, event.metadata),
+        summary: this.summarize(event.action, event.metadata),
+        metadata: event.metadata,
+        at: event.createdAt,
+      }))
+      .sort((left, right) => left.at.localeCompare(right.at));
   }
 
   async queue(actor: DisputeActor): Promise<DisputeDTO[]> {
     if (!actor.roles.includes("compliance")) {
       throw new ForbiddenError("The dispute queue requires compliance access");
     }
-    return this.repository.listOpen();
+    const open = await this.repository.listOpen();
+    // Same derivation as the party-facing list: a reviewer sorting the queue
+    // needs to see which cases have closed their evidence window and are
+    // actually waiting on them.
+    return open.map((dispute) => this.withDerivedStatus(dispute));
   }
 
   async details(disputeId: string, actor: DisputeActor): Promise<DisputeDTO> {
@@ -377,10 +449,99 @@ export class DisputeService {
     if (!isParty && !actor.roles.includes("compliance")) {
       throw new ForbiddenError("Only an order party or compliance may view this dispute");
     }
-    return dispute;
+    return this.withDerivedStatus(dispute);
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
+
+  private evidenceWindowClosed(dispute: DisputeDTO): boolean {
+    return new Date().toISOString() > dispute.evidenceWindowClosesAt;
+  }
+
+  /**
+   * Reflect a lapsed evidence window in the status the parties are shown.
+   *
+   * The window closing is a real transition — no more evidence is accepted —
+   * but nothing was writing it down, so a dispute nobody evidenced kept
+   * advertising "evidence window" forever while silently rejecting evidence.
+   * Derived at read time rather than by a sweep job: the closing time is
+   * already on the record, so a second source of truth would only be a way for
+   * the two to disagree.
+   */
+  private withDerivedStatus(dispute: DisputeDTO): DisputeDTO {
+    if (
+      dispute.status === DisputeStatus.EvidenceWindow &&
+      this.evidenceWindowClosed(dispute)
+    ) {
+      return { ...dispute, status: DisputeStatus.UnderReview };
+    }
+    return dispute;
+  }
+
+  /** Which side of the order a user id is on, for role-labelled log lines. */
+  private roleOf(dispute: DisputeDTO, userId: string): DisputeLogActor {
+    if (userId === dispute.buyerId) return DisputeLogActor.Buyer;
+    if (userId === dispute.sellerId) return DisputeLogActor.Seller;
+    return DisputeLogActor.Compliance;
+  }
+
+  /**
+   * Map an audit event's actor string onto a role. Party ids are resolved
+   * against the dispute so the log never leaks a raw user id to the other side.
+   */
+  private logActorFor(
+    dispute: DisputeDTO,
+    auditActor: string,
+    metadata: Record<string, unknown>,
+  ): DisputeLogActor {
+    if (auditActor.startsWith("ai:")) return DisputeLogActor.Ai;
+    if (auditActor.startsWith("system:") || auditActor === "auto_policy") {
+      return DisputeLogActor.System;
+    }
+    if (auditActor.startsWith("user:")) {
+      const userId = auditActor.slice("user:".length);
+      return this.roleOf(dispute, userId);
+    }
+    const recorded = metadata.submittedByRole ?? metadata.openedByRole;
+    return typeof recorded === "string"
+      ? (recorded as DisputeLogActor)
+      : DisputeLogActor.System;
+  }
+
+  /** One readable line per audited action. Unknown actions degrade gracefully. */
+  private summarize(
+    action: string,
+    metadata: Record<string, unknown>,
+  ): string {
+    switch (action) {
+      case "dispute.opened":
+        return `Dispute opened against order ${String(metadata.orderId ?? "")}`;
+      case "dispute.custody_frozen":
+        return "Escrow custody frozen on-chain — neither party can move the funds";
+      case "dispute.custody_freeze_failed":
+        return "Could not freeze escrow custody on-chain; escalated to compliance";
+      case "dispute.evidence_submitted":
+        return `Evidence submitted (${String(metadata.kind ?? "item")}, supports ${String(
+          metadata.supports ?? "—",
+        )})`;
+      case "dispute.advisory":
+        return `AI advisory: ${String(metadata.recommendation ?? "")} at ${Math.round(
+          Number(metadata.confidence ?? 0) * 100,
+        )}% confidence${metadata.autoResolvable === true ? " (within auto-resolve policy)" : " (human decision required)"}`;
+      case "dispute.resolved":
+        return `Resolved: ${String(metadata.outcome ?? "")} — decided by ${String(
+          metadata.decidedBy ?? "",
+        ).replace(/_/g, " ")}`;
+      case "dispute.settlement_executed":
+        return `Funds moved through the arbiter path (${String(metadata.outcome ?? "")})`;
+      case "dispute.settlement_failed":
+        return `Fund movement failed: ${String(metadata.error ?? "unknown error")}`;
+      case "dispute.settlement_skipped":
+        return `No funds to move: ${String(metadata.reason ?? "no locked custody")}`;
+      default:
+        return action.replace(/^dispute\./, "").replace(/_/g, " ");
+    }
+  }
 
   /**
    * A dispute may auto-resolve only strictly within the configured thresholds:
@@ -441,41 +602,80 @@ export class DisputeService {
   }
 
   /**
-   * Auto-execute the resolved outcome through the arbiter payments path. The
-   * dispute record is the authorization; a failure is audited and left for a
-   * manual compliance retry (money movement never silently succeeds/fails).
+   * Auto-execute the resolved outcome through the arbiter payments path, then
+   * write the RESULT back onto the dispute.
+   *
+   * The dispute record is the authorization, so a failed transfer never undoes
+   * the decision — but it must not be invisible either. Previously the failure
+   * went only to the audit log, leaving both parties looking at a dispute that
+   * said "Resolved: refund" while the funds sat untouched in escrow. The
+   * returned snapshot carries the execution state so the UI can say which of
+   * the two happened, and compliance can find the ones owed a retry.
    */
   private async autoExecuteSettlement(
-    dispute: DisputeDTO,
+    resolved: DisputeDTO,
     outcome: DisputeResolution,
-  ): Promise<void> {
-    if (!this.settlement) return;
+  ): Promise<DisputeDTO> {
+    if (!this.settlement || !resolved.resolution) {
+      return this.recordSettlementOutcome(
+        resolved,
+        DisputeSettlementStatus.NotApplicable,
+        "No arbiter settlement path is configured for this deployment",
+      );
+    }
     try {
       await this.settlement.settle({
-        orderId: dispute.orderId,
+        orderId: resolved.orderId,
         outcome,
-        disputeId: dispute.id,
+        disputeId: resolved.id,
       });
       await this.audit.append({
         actor: "system:dispute-settlement",
         action: "dispute.settlement_executed",
         entity: "dispute",
-        entityId: dispute.id,
-        metadata: { orderId: dispute.orderId, outcome },
+        entityId: resolved.id,
+        metadata: { orderId: resolved.orderId, outcome },
       });
+      return this.recordSettlementOutcome(
+        resolved,
+        DisputeSettlementStatus.Executed,
+        null,
+      );
     } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
       await this.audit.append({
         actor: "system:dispute-settlement",
         action: "dispute.settlement_failed",
         entity: "dispute",
-        entityId: dispute.id,
-        metadata: {
-          orderId: dispute.orderId,
-          outcome,
-          error: err instanceof Error ? err.message : String(err),
-        },
+        entityId: resolved.id,
+        metadata: { orderId: resolved.orderId, outcome, error },
       });
+      return this.recordSettlementOutcome(
+        resolved,
+        DisputeSettlementStatus.Failed,
+        error,
+      );
     }
+  }
+
+  /** Persist and return the resolution's execution state. */
+  private async recordSettlementOutcome(
+    resolved: DisputeDTO,
+    status: DisputeSettlementStatus,
+    detail: string | null,
+  ): Promise<DisputeDTO> {
+    if (!resolved.resolution) return resolved;
+    const now = new Date().toISOString();
+    const next: DisputeDTO = {
+      ...resolved,
+      resolution: {
+        ...resolved.resolution,
+        settlement: { status, detail, updatedAt: now },
+      },
+      updatedAt: now,
+    };
+    await this.repository.save(next);
+    return next;
   }
 
   private async requireOrderParty(

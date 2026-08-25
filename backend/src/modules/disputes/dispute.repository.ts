@@ -59,7 +59,12 @@ export interface DisputeRepository {
   save(dispute: DisputeDTO): Promise<void>;
   find(disputeId: string): Promise<DisputeDTO | undefined>;
   findOpenByOrder(orderId: string): Promise<DisputeDTO | undefined>;
-  listForUser(userId: string): Promise<DisputeDTO[]>;
+  /**
+   * Every dispute the user is a party to — as buyer OR seller, not merely the
+   * one who opened it. Listing by opener alone hid a claim from the person it
+   * was filed against, who then could not answer it inside the evidence window.
+   */
+  listForParty(userId: string): Promise<DisputeDTO[]>;
   listOpen(): Promise<DisputeDTO[]>;
 }
 
@@ -83,9 +88,12 @@ export class InMemoryDisputeRepository implements DisputeRepository {
     );
   }
 
-  async listForUser(userId: string): Promise<DisputeDTO[]> {
+  async listForParty(userId: string): Promise<DisputeDTO[]> {
     return [...this.disputes.values()]
-      .filter((dispute) => dispute.openedBy === userId)
+      .filter(
+        (dispute) =>
+          dispute.buyerId === userId || dispute.sellerId === userId,
+      )
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   }
 

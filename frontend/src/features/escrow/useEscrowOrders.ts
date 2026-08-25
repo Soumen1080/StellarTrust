@@ -20,6 +20,7 @@ import {
   OrderStatus,
   PaymentTransition,
   type AuthSessionResponse,
+  type DisputeDTO,
   type OrderDetailsResponse,
   type PaymentCapabilitiesResponse,
 } from "@stellartrust/shared";
@@ -64,6 +65,10 @@ export const PHASE_LABEL: Record<ActionPhase, string> = {
 
 export function useEscrowOrders(session: AuthSessionResponse | null) {
   const [orders, setOrders] = useState<OrderDetailsResponse[]>([]);
+  // Claims filed on these orders, by either side. An escrow card that cannot
+  // say "there is a dispute on this order" sends the user hunting through a
+  // separate page for a UUID they have to copy by hand.
+  const [disputes, setDisputes] = useState<DisputeDTO[]>([]);
   const [capabilities, setCapabilities] =
     useState<PaymentCapabilitiesResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -75,13 +80,22 @@ export function useEscrowOrders(session: AuthSessionResponse | null) {
   const refresh = useCallback(async () => {
     if (!session) return;
     const version = ++requestVersion.current;
-    const response = await api.listOrders(session.accessToken);
-    if (version === requestVersion.current) setOrders(response.orders);
+    const [response, claims] = await Promise.all([
+      api.listOrders(session.accessToken),
+      // Dispute context is decoration on an order card: a failure here must
+      // not take the orders down with it.
+      api.listDisputes(session.accessToken).catch(() => ({ disputes: [] })),
+    ]);
+    if (version === requestVersion.current) {
+      setOrders(response.orders);
+      setDisputes(claims.disputes);
+    }
   }, [session]);
 
   useEffect(() => {
     if (!session) {
       setOrders([]);
+      setDisputes([]);
       setCapabilities(null);
       setLoading(false);
       return;
@@ -91,17 +105,21 @@ export function useEscrowOrders(session: AuthSessionResponse | null) {
     setError(null);
     void (async () => {
       try {
-        const [list, caps] = await Promise.all([
+        const [list, caps, claims] = await Promise.all([
           api.listOrders(session.accessToken),
           // Capabilities are advisory for the UI: if the lookup fails we still
           // show orders and fall back to the single-call path.
           api
             .paymentCapabilities(session.accessToken)
             .catch(() => null),
+          api
+            .listDisputes(session.accessToken)
+            .catch(() => ({ disputes: [] })),
         ]);
         if (cancelled) return;
         setOrders(list.orders);
         setCapabilities(caps);
+        setDisputes(claims.disputes);
       } catch (err) {
         if (!cancelled) setError(describe(err));
       } finally {
@@ -212,8 +230,23 @@ export function useEscrowOrders(session: AuthSessionResponse | null) {
     [needsWallet, refresh, running, session],
   );
 
+  /**
+   * The dispute on an order, if any. Newest wins: an order can be disputed,
+   * resolved, and disputed again, and the current claim is the relevant one.
+   */
+  const disputeForOrder = useMemo(() => {
+    const byOrder = new Map<string, DisputeDTO>();
+    for (const dispute of [...disputes].sort((left, right) =>
+      left.createdAt.localeCompare(right.createdAt),
+    )) {
+      byOrder.set(dispute.orderId, dispute);
+    }
+    return byOrder;
+  }, [disputes]);
+
   return {
     orders,
+    disputeForOrder,
     capabilities,
     loading,
     error,

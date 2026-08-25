@@ -347,6 +347,53 @@ export const DisputeDecisionMaker = {
 export type DisputeDecisionMaker =
   (typeof DisputeDecisionMaker)[keyof typeof DisputeDecisionMaker];
 
+/**
+ * Whether the money a resolution ordered has actually moved.
+ *
+ * A decision and its execution are two different facts. Recording only the
+ * decision is how a dispute reads "Resolved: refund" to both parties while the
+ * funds are still sitting in escrow because the arbiter transfer failed.
+ */
+export const DisputeSettlementStatus = {
+  /** Decided, but the arbiter transfer has not run (or is retrying). */
+  Pending: "pending",
+  /** Funds moved through the arbiter payments path. */
+  Executed: "executed",
+  /** The transfer failed; the decision stands and a retry is owed. */
+  Failed: "failed",
+  /**
+   * There was nothing to move — the order had no locked custody, so the
+   * resolution is a record rather than an instruction.
+   */
+  NotApplicable: "not_applicable",
+} as const;
+export type DisputeSettlementStatus =
+  (typeof DisputeSettlementStatus)[keyof typeof DisputeSettlementStatus];
+
+/**
+ * Who acted, in the reader's terms, on one line of a dispute's log. Roles —
+ * not user ids — because a dispute log is read by the counterparty, who should
+ * see "Seller submitted evidence", not an opaque UUID.
+ */
+export const DisputeLogActor = {
+  Buyer: "buyer",
+  Seller: "seller",
+  Compliance: "compliance",
+  /** The advisory model. Never moves money; always labelled as advisory. */
+  Ai: "ai",
+  /** Platform automation: policy auto-resolve, arbiter settlement, custody. */
+  System: "system",
+} as const;
+export type DisputeLogActor =
+  (typeof DisputeLogActor)[keyof typeof DisputeLogActor];
+
+/** Order states in which a dispute may be opened: funds committed, not final. */
+export const DISPUTABLE_ORDER_STATUSES: readonly OrderStatus[] = [
+  OrderStatus.Deposited,
+  OrderStatus.Locked,
+  OrderStatus.Confirmed,
+  OrderStatus.Disputed,
+];
 
 
 // ── Phase 5: RWA Tokenization (opt-in module) ─────────────────────────────────

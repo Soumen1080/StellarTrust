@@ -144,12 +144,16 @@ describe("Phase 6 dispute auto-execution", () => {
 
   it("keeps resolution non-fatal and audited when settlement cannot execute", async () => {
     const { payments, paymentRepository, disputes, audit } = setup();
-    // Order never locked (still 'created') → settlement guard rejects it.
+    // Deposited but never locked: disputable (the buyer's funds are committed)
+    // while the arbiter settlement guard still rejects it, which is the case
+    // this test is about.
     const created = await payments.createOrder(buyer.userId, {
       sellerId: seller.userId,
       amount: { amount: "10000", currency: "USDC" },
     });
     const orderId = created.order.id;
+    await payments.transition(orderId, PaymentTransition.Accept, seller);
+    await payments.transition(orderId, PaymentTransition.Deposit, buyer);
 
     const opened = await disputes.open(buyer, { orderId, reason: "dispute" });
     await disputes.submitEvidence(seller, opened.id, releaseEvidence(0.95));
@@ -158,11 +162,27 @@ describe("Phase 6 dispute auto-execution", () => {
     // Resolution still succeeds (the dispute record is the authority)...
     const resolved = await disputes.resolve(buyer, opened.id);
     expect(resolved.status).toBe("resolved");
-    // ...but the order was not moved and the failure is audited for retry.
+    // ...but the failure is on the record the parties read, not only in the
+    // audit log — the dispute must not claim money moved when it did not.
+    expect(resolved.resolution?.settlement.status).toBe("failed");
+    expect(resolved.resolution?.settlement.detail).toBeTruthy();
+
     const order = await paymentRepository.findOrder(orderId);
-    expect(order?.status).toBe("created");
+    expect(order?.status).toBe("deposited");
     const events = await audit.listForEntity("dispute", opened.id);
     expect(events.map((e) => e.action)).toContain("dispute.settlement_failed");
+  });
+
+  it("marks the settlement executed on the dispute when funds do move", async () => {
+    const { payments, disputes } = setup();
+    const orderId = await lockOrder(payments);
+    const opened = await disputes.open(buyer, { orderId, reason: "no delivery" });
+    await disputes.submitEvidence(seller, opened.id, releaseEvidence(0.95));
+    await disputes.submitEvidence(seller, opened.id, releaseEvidence(0.95));
+
+    const resolved = await disputes.resolve(buyer, opened.id);
+    expect(resolved.resolution?.settlement.status).toBe("executed");
+    expect(resolved.resolution?.settlement.detail).toBeNull();
   });
 });
 

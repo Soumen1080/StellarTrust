@@ -1,8 +1,9 @@
 "use client";
 
-import { CurrencyCode, EscrowState, LEDGER_CURRENCY_DECIMALS, OrderStatus, type OrderDetailsResponse } from "@stellartrust/shared";
+import { CurrencyCode, DISPUTABLE_ORDER_STATUSES, EscrowState, LEDGER_CURRENCY_DECIMALS, OrderStatus, type DisputeDTO, type OrderDetailsResponse } from "@stellartrust/shared";
 import Link from "next/link";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CopyableId } from "@/components/CopyableId";
 import { Icon } from "@/components/Icon";
 import { useIdentity } from "@/components/IdentityProvider";
@@ -24,14 +25,18 @@ const ACTION_LABEL: Record<EscrowAction, string> = { accept: "Accept order", dep
 
 export function EscrowDashboard() {
   const { session } = useIdentity();
-  const { orders, capabilities, loading, error, running, needsWallet, runAction, refresh, clearError } = useEscrowOrders(session);
+  const { orders, disputeForOrder, capabilities, loading, error, running, needsWallet, runAction, refresh, clearError } = useEscrowOrders(session);
   const [sellerId, setSellerId] = useState("");
   const [amount, setAmount] = useState("");
   const [currency, setCurrency] = useState<CurrencyCode>(CurrencyCode.XLM);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
-  const [query, setQuery] = useState("");
+  // Arriving from a dispute's "Open in escrow" link. The list already filters
+  // by order id, so the deep link seeds that filter rather than adding a
+  // second, parallel way of selecting one order.
+  const linkedOrderId = useSearchParams().get("order") ?? "";
+  const [query, setQuery] = useState(linkedOrderId);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Bumped after every escrow action so the wallet balance widget re-fetches
   // from Horizon and actually shows funds moving, instead of only the order
@@ -96,14 +101,20 @@ export function EscrowDashboard() {
 
         {loading ? <div className="space-y-md">{Array.from({ length: 3 }).map((_, index) => <div key={index} className="panel-dark h-44 animate-pulse" />)}</div> : visibleOrders.length === 0 ? <div className="panel-dark px-lg py-xxl text-center"><span className="mx-auto grid h-12 w-12 place-items-center rounded-full bg-surface-elevated-dark text-muted"><Icon name="document" /></span><h2 className="mt-md font-semibold text-on-dark">{orders.length ? "No matching orders" : "No escrow orders yet"}</h2><p className="mx-auto mt-xs max-w-md text-sm text-muted">{orders.length ? "Try a different filter or search term." : "Create your first protected payment using the order form."}</p>{orders.length ? <button type="button" onClick={() => { setFilter("all"); setQuery(""); }} className="mt-md text-sm font-semibold text-primary">Clear filters</button> : null}</div> : <div className="space-y-md">{visibleOrders.map((details) => {
           const action = nextAction(details, session.user.id);
+          const dispute = disputeForOrder.get(details.order.id) ?? null;
           const expanded = expandedId === details.order.id;
           const orderStatus = String(details.order.status);
           const branchState = ["refunded", "disputed", "cancelled"].includes(orderStatus) ? orderStatus : null;
           const currentIndex = Math.max(0, FLOW.indexOf(orderStatus));
           const timeline = branchState ? [...FLOW.slice(0, Math.min(Math.max(details.transitions.length, 1), FLOW.length - 1)), branchState] : FLOW;
           const active = running?.orderId === details.order.id ? running : null;
-          const canDispute = details.escrow?.state === EscrowState.Locked && needsWallet("dispute");
-          return <article key={details.order.id} className="panel-dark overflow-hidden"><div className="p-md sm:p-lg"><div className="flex flex-col justify-between gap-md sm:flex-row sm:items-start"><div className="min-w-0"><div className="flex flex-wrap items-center gap-sm"><StatusPill status={details.order.status}/>{action ? <span className="rounded-pill border border-primary/30 bg-primary/10 px-sm py-xs text-xs font-semibold text-primary">Action required</span> : null}{action && needsWallet(action) ? <span className="rounded-pill border border-hairline-dark px-sm py-xs text-xs font-medium text-muted-strong" title="This step is authorized by your wallet signature, not the server">Wallet signature</span> : null}</div><p className="mt-md break-words font-mono text-xl font-semibold text-on-dark sm:text-2xl">{fromMinorUnits(details.order.amount.amount, details.order.amount.currency).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 })} <span className="text-base text-muted">{details.order.amount.currency}</span></p><p className="mt-xs font-mono text-[11px] text-muted" title={details.order.id}>Order · {shortId(details.order.id)}</p></div><div className="flex flex-col gap-sm sm:flex-row sm:flex-wrap">{action ? <button type="button" disabled={busy || details.blockedByReconciliation} onClick={() => void runActionAndSyncBalance(details.order.id, action)} className="btn-primary w-full sm:w-auto">{active ? PHASE_LABEL[active.phase] : ACTION_LABEL[action]}<Icon name="arrow-right" className="h-4 w-4" /></button> : null}{canDispute ? <button type="button" disabled={busy || details.blockedByReconciliation} onClick={() => void runActionAndSyncBalance(details.order.id, "dispute")} className="btn-secondary-dark w-full sm:w-auto">{active?.action === "dispute" ? PHASE_LABEL[active.phase] : "Raise dispute"}</button> : null}<button type="button" aria-expanded={expanded} aria-controls={`order-details-${details.order.id}`} onClick={() => setExpandedId(expanded ? null : details.order.id)} className="btn-secondary-dark w-full sm:w-auto">{expanded ? "Hide details" : "View details"}<Icon name="chevron-down" className={`h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} /></button></div></div>
+          // Filing a claim and freezing the contract are two different acts.
+          // Filing needs a reason and evidence, so it happens on the disputes
+          // page; freezing needs the party's own signature, which only this
+          // page can collect — and is only owed once a claim actually exists.
+          const canFileDispute = !dispute && DISPUTABLE_ORDER_STATUSES.includes(details.order.status);
+          const needsCustodyFreeze = Boolean(dispute && !dispute.resolution) && details.escrow?.state === EscrowState.Locked && needsWallet("dispute");
+          return <article key={details.order.id} className="panel-dark overflow-hidden"><div className="p-md sm:p-lg"><div className="flex flex-col justify-between gap-md sm:flex-row sm:items-start"><div className="min-w-0"><div className="flex flex-wrap items-center gap-sm"><StatusPill status={details.order.status}/>{action ? <span className="rounded-pill border border-primary/30 bg-primary/10 px-sm py-xs text-xs font-semibold text-primary">Action required</span> : null}{action && needsWallet(action) ? <span className="rounded-pill border border-hairline-dark px-sm py-xs text-xs font-medium text-muted-strong" title="This step is authorized by your wallet signature, not the server">Wallet signature</span> : null}{dispute ? <span className={`rounded-pill border px-sm py-xs text-xs font-semibold ${dispute.resolution ? "border-status-verified/30 bg-status-verified/10 text-status-verified" : "border-status-disputed/30 bg-status-disputed/10 text-status-disputed"}`}>{dispute.resolution ? `Dispute ${dispute.resolution.outcome}` : "Dispute open"}</span> : null}</div><p className="mt-md break-words font-mono text-xl font-semibold text-on-dark sm:text-2xl">{fromMinorUnits(details.order.amount.amount, details.order.amount.currency).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 7 })} <span className="text-base text-muted">{details.order.amount.currency}</span></p><OrderIdRow orderId={details.order.id} dispute={dispute} /></div><div className="flex flex-col gap-sm sm:flex-row sm:flex-wrap">{action ? <button type="button" disabled={busy || details.blockedByReconciliation} onClick={() => void runActionAndSyncBalance(details.order.id, action)} className="btn-primary w-full sm:w-auto">{active ? PHASE_LABEL[active.phase] : ACTION_LABEL[action]}<Icon name="arrow-right" className="h-4 w-4" /></button> : null}{canFileDispute ? <Link href={`/disputes?order=${details.order.id}`} className="btn-secondary-dark w-full justify-center sm:w-auto">File a dispute<Icon name="shield" className="h-4 w-4" /></Link> : null}{needsCustodyFreeze ? <button type="button" disabled={busy || details.blockedByReconciliation} onClick={() => void runActionAndSyncBalance(details.order.id, "dispute")} className="btn-secondary-dark w-full sm:w-auto" title="Your dispute is filed, but the contract still lets the funds move. Signing this freezes them until the dispute resolves.">{active?.action === "dispute" ? PHASE_LABEL[active.phase] : "Freeze custody"}</button> : null}{dispute ? <Link href={`/disputes?order=${details.order.id}`} className="btn-secondary-dark w-full justify-center sm:w-auto">View dispute<Icon name="arrow-right" className="h-4 w-4" /></Link> : null}<button type="button" aria-expanded={expanded} aria-controls={`order-details-${details.order.id}`} onClick={() => setExpandedId(expanded ? null : details.order.id)} className="btn-secondary-dark w-full sm:w-auto">{expanded ? "Hide details" : "View details"}<Icon name="chevron-down" className={`h-4 w-4 transition ${expanded ? "rotate-180" : ""}`} /></button></div></div>
           <div className="mt-lg grid grid-cols-2 gap-md border-t border-hairline-dark pt-md sm:grid-cols-4"><Detail label="Your role" value={details.order.buyerId === session.user.id ? "Buyer" : details.order.sellerId === session.user.id ? "Seller" : "Participant"}/><Detail label="Chain steps" value={String(details.transitions.length)}/><Detail label="Escrow" value={escrowLabel(details)}/><Detail label="Reconciliation" value={details.blockedByReconciliation ? "Mismatch" : "Healthy"} alert={details.blockedByReconciliation}/></div>
           {(() => {
             const lastOnChain = [...details.transitions].reverse().find((t) => t.stellarTransaction.hash);
@@ -119,6 +130,42 @@ export function EscrowDashboard() {
 
       <aside className="panel-light overflow-hidden text-ink xl:sticky xl:top-24"><div className="border-b border-hairline-light bg-canvas-dark/60 p-lg"><p className="text-xs font-medium text-muted-strong">Your wallet balance</p><div className="mt-sm"><WalletBalances accessToken={session.accessToken} refreshKey={walletRefreshTick} /></div></div><div className="border-b border-hairline-light p-lg"><div className="flex items-center gap-sm"><span className="grid h-10 w-10 place-items-center rounded-lg bg-primary/20 text-primary-active"><Icon name="lock" /></span><div><h2 className="font-semibold">Create escrow order</h2><p className="text-xs text-muted">Protected {capabilities?.network === "public" ? "mainnet" : "testnet"} payment</p></div></div></div><form onSubmit={createOrder} className="p-lg"><CopyableId label="Your user ID" value={session.user.id} hint="Share this with a buyer so they can open an order with you as the seller." /><div className="mt-md space-y-md"><label className="block text-sm font-medium">Seller user ID<span className="mt-xs block"><input required value={sellerId} onChange={(event) => setSellerId(event.target.value)} placeholder="3f2b1a90-5c47-4d1e-9a8b-7c6d5e4f3a2b" className="input font-mono" /></span><span className="mt-xs block text-xs leading-5 text-muted">The seller&apos;s user ID, which they copy from this page. Not a wallet address.</span></label><label className="block text-sm font-medium">Amount<span className="relative mt-xs block"><input required min={minStep(currency)} step={minStep(currency)} type="number" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" className="input pr-20 font-mono text-lg"/><select value={currency} onChange={(event) => setCurrency(event.target.value as CurrencyCode)} aria-label="Currency" className="absolute right-1 top-1/2 -translate-y-1/2 rounded-md border-0 bg-transparent font-mono text-xs font-semibold text-muted">{currencyOptions.map((code) => <option key={code} value={code}>{code}</option>)}</select></span></label></div><div className="mt-lg rounded-lg bg-surface-strong-light p-md"><div className="flex justify-between text-xs"><span className="text-muted">Network</span><span className="font-medium">Stellar {capabilities?.network ?? "testnet"}</span></div><div className="mt-sm flex justify-between text-xs"><span className="text-muted">Settlement record</span><span className="font-medium">Ledger + chain</span></div><div className="mt-sm flex justify-between text-xs"><span className="text-muted">Lock authorization</span><span className="font-medium">{capabilities?.walletSignedTransitions.length ? "Your wallet" : "Server signer"}</span></div></div><button disabled={busy} className="btn-primary mt-lg w-full">{creating ? "Creating order…" : "Create protected order"}<Icon name="arrow-right" className="h-4 w-4" /></button><p className="mt-md flex items-start gap-xs text-xs leading-5 text-muted"><Icon name="shield" className="mt-0.5 h-4 w-4 shrink-0"/>{capabilities?.walletSignedTransitions.length ? "No funds move when the order is created. You approve the transfer in your wallet at the lock step." : "Funds are not moved when the order is created. The buyer explicitly deposits in a later step."}</p></form></aside>
     </div>
+  </div>;
+}
+
+/**
+ * The order id, copyable, with the dispute it is referenced by.
+ *
+ * This id is the join between escrow and disputes: it is what the dispute form
+ * asks for and what a support conversation is about. It used to be rendered
+ * truncated and unselectable, so the only way to file a claim was to retype a
+ * UUID from an ellipsis — which is to say, not to file one.
+ */
+function OrderIdRow({ orderId, dispute }: { orderId: string; dispute: DisputeDTO | null }) {
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+
+  async function copy() {
+    window.clearTimeout(timer.current);
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(orderId);
+      setCopied(true);
+      timer.current = window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard needs a secure context, which a demo over plain HTTP is not.
+      // The value is `select-all`, so it stays copyable by hand.
+    }
+  }
+
+  return <div className="mt-xs flex flex-wrap items-center gap-x-sm gap-y-xxs">
+    <span className="text-[11px] text-muted">Order ID</span>
+    <code className="select-all break-all font-mono text-[11px] text-body" title="Reference this in a dispute">{orderId}</code>
+    <button type="button" onClick={() => void copy()} aria-live="polite" className="flex items-center gap-xxs rounded-md px-xs py-0.5 text-[11px] font-medium text-primary hover:bg-primary/10">
+      <Icon name={copied ? "check" : "copy"} className="h-3 w-3" />{copied ? "Copied" : "Copy"}
+    </button>
+    {dispute ? <Link href={`/disputes?order=${orderId}`} className="text-[11px] font-medium text-primary hover:underline">Dispute {dispute.id.slice(0, 8)}…</Link> : null}
   </div>;
 }
 

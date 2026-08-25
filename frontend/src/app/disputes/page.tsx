@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { DisputeConsole } from "@/features/disputes/DisputeConsole";
 
 export const metadata: Metadata = {
@@ -24,7 +25,11 @@ export default function DisputesPage() {
             <span>AI advisory · Human-gated</span>
           </div>
         </header>
-        <DisputeConsole />
+        {/* The console reads `?order=` to deep-link from an escrow card, which
+            opts it out of static prerendering without a boundary here. */}
+        <Suspense fallback={<div className="panel-dark h-96 animate-pulse" />}>
+          <DisputeConsole />
+        </Suspense>
       </div>
     </main>
   );

@@ -14,6 +14,7 @@ import type {
   DisputeDTO,
   DisputeDecisionInput,
   DisputeEvidenceInput,
+  DisputeLogResponse,
   OpenDisputeInput,
   OrderDetailsResponse,
   OrderMutationResponse,
@@ -360,8 +361,18 @@ export const api = {
       headers: { "idempotency-key": idempotencyKey },
       body: JSON.stringify(decision ?? {}),
     }),
-  listDisputes: (accessToken: string) =>
-    request<{ disputes: DisputeDTO[] }>("/api/disputes", { accessToken }),
+  /** Disputes the caller is party to; `orderId` narrows it to one order. */
+  listDisputes: (accessToken: string, orderId?: string) =>
+    request<{ disputes: DisputeDTO[] }>(
+      orderId
+        ? `/api/disputes?orderId=${encodeURIComponent(orderId)}`
+        : "/api/disputes",
+      { accessToken },
+    ),
+  getDisputeLog: (accessToken: string, disputeId: string) =>
+    request<DisputeLogResponse>(`/api/disputes/${disputeId}/log`, {
+      accessToken,
+    }),
   listDisputeQueue: (accessToken: string) =>
     request<{ disputes: DisputeDTO[] }>("/api/disputes/queue", { accessToken }),
   getDispute: (accessToken: string, disputeId: string) =>

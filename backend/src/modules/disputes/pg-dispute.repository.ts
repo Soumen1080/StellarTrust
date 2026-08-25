@@ -29,9 +29,9 @@ export class PgDisputeRepository implements DisputeRepository {
     // indexable column, not a string buried in JSONB.
     await this.pool.query(
       `insert into dispute_records
-         (id, order_id, escrow_id, contract_id, opened_by, status, resolved,
-          data, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)
+         (id, order_id, escrow_id, contract_id, opened_by, buyer_id, seller_id,
+          status, resolved, data, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
        on conflict (id) do update
          set escrow_id = excluded.escrow_id,
              contract_id = excluded.contract_id,
@@ -45,6 +45,8 @@ export class PgDisputeRepository implements DisputeRepository {
         dispute.escrowId,
         dispute.contractId,
         dispute.openedBy,
+        dispute.buyerId,
+        dispute.sellerId,
         dispute.status,
         dispute.resolution !== null,
         JSON.stringify(dispute),
@@ -73,10 +75,12 @@ export class PgDisputeRepository implements DisputeRepository {
     return rows[0]?.data;
   }
 
-  async listForUser(userId: string): Promise<DisputeDTO[]> {
+  async listForParty(userId: string): Promise<DisputeDTO[]> {
+    // Both sides of the order, so the party a claim is filed against can see
+    // and answer it (migration 0012 adds the columns and the index).
     const { rows } = await this.pool.query<DisputeRow>(
       `select data from dispute_records
-       where opened_by = $1
+       where buyer_id = $1 or seller_id = $1
        order by created_at desc`,
       [userId],
     );
