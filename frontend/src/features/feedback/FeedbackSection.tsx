@@ -9,6 +9,7 @@ import { useCallback, useEffect, useId, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { useIdentity } from "@/components/IdentityProvider";
 import { ApiClientError, api } from "@/lib/api";
+import { Stars } from "./Stars";
 
 /**
  * Public feedback wall plus the form that writes to it.
@@ -118,30 +119,51 @@ export function FeedbackSection() {
     "";
 
   return (
-    <section className="mt-xl">
-      <div className="flex flex-wrap items-end justify-between gap-md border-b border-hairline-dark pb-md">
-        <div>
-          <p className="eyebrow">Community</p>
-          <h2 className="mt-xs text-xl font-semibold text-on-dark">Feedback</h2>
-          <p className="mt-xs max-w-2xl text-sm text-muted">
-            Everything posted here is public. Your email and wallet address are
-            not.
-          </p>
-        </div>
-        {summary && summary.total > 0 ? (
-          <div className="text-right">
-            <div className="flex items-center justify-end gap-sm">
-              <span className="font-mono text-2xl font-semibold text-on-dark">
-                {summary.averageRating?.toFixed(2)}
-              </span>
-              <Stars value={Math.round(summary.averageRating ?? 0)} />
-            </div>
+    <section>
+      {/* Score board. Hidden until there is something to average, because a
+          "0.00 out of 5" on an empty wall reads as a bad product rather than
+          a new one. */}
+      {summary && summary.total > 0 ? (
+        <div className="panel-dark flex flex-wrap items-center gap-lg p-lg">
+          <div className="flex items-baseline gap-sm">
+            <span className="font-mono text-4xl font-bold text-on-dark">
+              {summary.averageRating?.toFixed(2)}
+            </span>
+            <span className="text-sm text-muted">/ {FEEDBACK_RATING_MAX}</span>
+          </div>
+          <div>
+            <Stars
+              value={Math.round(summary.averageRating ?? 0)}
+              className="h-5 w-5"
+            />
             <p className="mt-xs text-xs text-muted">
-              {summary.total} {summary.total === 1 ? "review" : "reviews"}
+              from {summary.total} {summary.total === 1 ? "review" : "reviews"}
             </p>
           </div>
-        ) : null}
-      </div>
+          <div className="ml-auto hidden min-w-[220px] flex-col gap-[3px] sm:flex">
+            {[5, 4, 3, 2, 1].map((star) => {
+              const count = summary.distribution[String(star)] ?? 0;
+              const share = summary.total ? (count / summary.total) * 100 : 0;
+              return (
+                <div key={star} className="flex items-center gap-sm">
+                  <span className="w-3 text-right font-mono text-[11px] text-muted">
+                    {star}
+                  </span>
+                  <span className="h-1.5 flex-1 overflow-hidden rounded-pill bg-surface-elevated-dark">
+                    <span
+                      className="block h-full rounded-pill bg-status-review"
+                      style={{ width: `${share}%` }}
+                    />
+                  </span>
+                  <span className="w-5 font-mono text-[11px] text-muted">
+                    {count}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       <div className="mt-lg grid items-start gap-lg xl:grid-cols-[360px_minmax(0,1fr)]">
         {mine ? (
@@ -373,29 +395,6 @@ function RatingInput({
         </span>
       </div>
     </fieldset>
-  );
-}
-
-/** Read-only star display. */
-function Stars({ value }: { value: number }) {
-  return (
-    <span
-      className="inline-flex items-center gap-[2px]"
-      aria-label={`${value} out of ${FEEDBACK_RATING_MAX} stars`}
-    >
-      {Array.from({ length: FEEDBACK_RATING_MAX }, (_, index) => index + 1).map(
-        (star) => (
-          <Icon
-            key={star}
-            name="star"
-            className={`h-4 w-4 ${
-              star <= value ? "text-status-review" : "text-muted/40"
-            }`}
-            fill={star <= value ? "currentColor" : "none"}
-          />
-        ),
-      )}
-    </span>
   );
 }
 
