@@ -945,3 +945,57 @@ export interface ReputationDTO {
 export interface ReputationResponse {
   reputation: ReputationDTO;
 }
+
+// ── Phase 6: Product feedback (public wall) ───────────────────────────────────
+// Feedback is collected with contact details and published WITHOUT them. The
+// submitter gives name, email, wallet address, a message and a 1..5 rating; the
+// public wall shows only the name, the message and the rating.
+//
+// Email and wallet address are contact PII and never appear in any response
+// (Rules.md §7): they exist so the team can reach the author and tie feedback to
+// a real testnet participant. The split is enforced by the type system — the
+// repository record carries them, `FeedbackDTO` does not, and the DTO is the
+// only shape any route returns.
+
+/** What the submitter fills in. `email` and `wallet` are write-only. */
+export interface FeedbackInput {
+  name: string;
+  email: string;
+  /** Stellar `G…` account the feedback is associated with. */
+  walletAddress: string;
+  message: string;
+  /** Whole stars, 1..5. */
+  rating: number;
+}
+
+/**
+ * The public projection — everything a visitor is allowed to see.
+ *
+ * Deliberately has no `email` or `walletAddress` field, so a route cannot leak
+ * one by forgetting to strip it: there is nowhere for the value to go.
+ */
+export interface FeedbackDTO {
+  id: string;
+  name: string;
+  message: string;
+  rating: number;
+  createdAt: string;
+}
+
+/** Aggregate shown above the wall. */
+export interface FeedbackSummaryDTO {
+  total: number;
+  /** Mean rating rounded to 2dp, or null when there is no feedback yet. */
+  averageRating: number | null;
+  /** Count per star value, indexed by the rating as a string ("1".."5"). */
+  distribution: Record<string, number>;
+}
+
+export interface FeedbackListResponse {
+  feedback: FeedbackDTO[];
+  summary: FeedbackSummaryDTO;
+}
+
+export interface FeedbackMutationResponse {
+  feedback: FeedbackDTO;
+}

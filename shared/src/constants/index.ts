@@ -501,3 +501,7 @@ export const TokenHoldingStatus = {
 } as const;
 export type TokenHoldingStatus =
   (typeof TokenHoldingStatus)[keyof typeof TokenHoldingStatus];
+
+/** Inclusive bounds of a product-feedback star rating. */
+export const FEEDBACK_RATING_MIN = 1;
+export const FEEDBACK_RATING_MAX = 5;

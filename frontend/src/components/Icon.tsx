@@ -12,6 +12,7 @@ export type IconName =
   | "menu"
   | "network"
   | "shield"
+  | "star"
   | "sparkles"
   | "user-check"
   | "wallet"
@@ -29,6 +30,7 @@ const paths: Record<IconName, React.ReactNode> = {
   menu: <><path d="M4 7h16M4 12h16M4 17h16"/></>,
   network: <><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="m11 7-5 9M13 7l5 9M7 18h10"/></>,
   shield: <><path d="M12 3 5 6v5c0 4.6 2.9 8.2 7 10 4.1-1.8 7-5.4 7-10V6z"/><path d="m9 12 2 2 4-4"/></>,
+  star: <path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.7l5.9-.8z"/>,
   sparkles: <><path d="m12 3 1.4 3.6L17 8l-3.6 1.4L12 13l-1.4-3.6L7 8l3.6-1.4z"/><path d="m18.5 14 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8zM5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8z"/></>,
   "user-check": <><circle cx="9" cy="8" r="3"/><path d="M3 20c.5-4 2.5-6 6-6 1.4 0 2.6.3 3.5.9M15 18l2 2 4-5"/></>,
   wallet: <><path d="M4 6h14a2 2 0 0 1 2 2v10H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h12"/><path d="M15 11h5v4h-5a2 2 0 0 1 0-4z"/></>,

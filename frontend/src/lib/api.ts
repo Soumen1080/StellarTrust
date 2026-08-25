@@ -15,6 +15,10 @@ import type {
   DisputeDecisionInput,
   DisputeEvidenceInput,
   DisputeLogResponse,
+  FeedbackDTO,
+  FeedbackInput,
+  FeedbackListResponse,
+  FeedbackMutationResponse,
   OpenDisputeInput,
   OrderDetailsResponse,
   OrderMutationResponse,
@@ -482,6 +486,19 @@ export const api = {
     ),
   getRwaPortfolio: (accessToken: string) =>
     request<InvestorPortfolioResponse>("/api/rwa/portfolio", { accessToken }),
+  /** The public feedback wall. No session — anyone may read it. */
+  listFeedback: () => request<FeedbackListResponse>("/api/feedback"),
+  /** The caller's own entry, or null. Used to hide the form once used. */
+  getMyFeedback: (accessToken: string) =>
+    request<{ feedback: FeedbackDTO | null }>("/api/feedback/me", {
+      accessToken,
+    }),
+  submitFeedback: (accessToken: string, input: FeedbackInput) =>
+    request<FeedbackMutationResponse>("/api/feedback", {
+      method: "POST",
+      accessToken,
+      body: JSON.stringify(input),
+    }),
   distributeRwaPayout: (
     accessToken: string,
     tokenizationId: string,

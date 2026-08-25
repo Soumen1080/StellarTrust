@@ -10,6 +10,8 @@ import {
   CurrencyCode,
   DisputeResolution,
   EntryDirection,
+  FEEDBACK_RATING_MAX,
+  FEEDBACK_RATING_MIN,
   EvidenceKind,
   HumanKycDecision,
   PaymentTransition,
@@ -294,6 +296,31 @@ export const disputeDecisionInputSchema = z.object({
   reason: z.string().min(5).max(1_000),
 });
 
+// ── Phase 6: Product feedback ─────────────────────────────────────────────────
+
+/**
+ * A feedback submission.
+ *
+ * `email` and `walletAddress` are validated as strictly as any other contact
+ * detail even though they are never published: a wall entry is only useful as
+ * evidence of a real testnet participant if the wallet on it is a real account.
+ */
+export const feedbackInputSchema = z.object({
+  name: z.string().trim().min(2, "name must be at least 2 characters").max(80),
+  email: z.string().trim().toLowerCase().email("invalid email address").max(254),
+  walletAddress: stellarAccountSchema,
+  message: z
+    .string()
+    .trim()
+    .min(10, "feedback must be at least 10 characters")
+    .max(1_000),
+  rating: z
+    .number()
+    .int("rating must be a whole number of stars")
+    .min(FEEDBACK_RATING_MIN)
+    .max(FEEDBACK_RATING_MAX),
+});
+
 export type LedgerTransactionInputParsed = z.infer<
   typeof ledgerTransactionInputSchema
 >;
@@ -321,3 +348,5 @@ export type DisputeEvidenceInputParsed = z.infer<
 export type DisputeDecisionInputParsed = z.infer<
   typeof disputeDecisionInputSchema
 >;
+
+export type FeedbackInputParsed = z.infer<typeof feedbackInputSchema>;

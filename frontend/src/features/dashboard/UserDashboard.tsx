@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Icon } from "@/components/Icon";
 import { useIdentity } from "@/components/IdentityProvider";
 import { StatusPill } from "@/components/StatusPill";
+import { FeedbackSection } from "@/features/feedback/FeedbackSection";
 import { ApiClientError, api } from "@/lib/api";
 import { clearSession } from "@/lib/wallet-auth";
 
@@ -175,6 +176,8 @@ export function UserDashboard() {
           </section>
         </aside>
       </section>
+
+      <FeedbackSection />
     </div>
   );
 }

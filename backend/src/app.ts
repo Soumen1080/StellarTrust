@@ -101,6 +101,13 @@ import { createRwaRouter } from "./modules/rwa/rwa.routes.js";
 import { InMemoryReputationRepository } from "./modules/reputation/reputation.repository.js";
 import { ReputationService } from "./modules/reputation/reputation.service.js";
 import { createReputationRouter } from "./modules/reputation/reputation.routes.js";
+import {
+  type FeedbackRepository,
+  InMemoryFeedbackRepository,
+} from "./modules/feedback/feedback.repository.js";
+import { PgFeedbackRepository } from "./modules/feedback/pg-feedback.repository.js";
+import { FeedbackService } from "./modules/feedback/feedback.service.js";
+import { createFeedbackRouter } from "./modules/feedback/feedback.routes.js";
 
 type HelmetFactory = () => RequestHandler;
 
@@ -377,6 +384,15 @@ export function createApp(): Express {
     audit,
   );
 
+  // ── Phase 6: Product feedback (public wall) ───────────────────────────────
+  // Persisted when a database is configured: the wall is public evidence of
+  // real users, and evidence that disappears on restart proves nothing
+  // (migration 0013).
+  const feedbackRepository: FeedbackRepository = usePersistentStore
+    ? new PgFeedbackRepository(getPool())
+    : new InMemoryFeedbackRepository();
+  const feedback = new FeedbackService(feedbackRepository, audit);
+
   // Wire RWA + reputation into payment service. RWA payout distributes on
   // release; a completed release also records a positive reputation signal.
   const paymentRepository: PaymentRepository = usePersistentStore
@@ -500,6 +516,8 @@ export function createApp(): Express {
     "/api/reputation",
     createReputationRouter(reputationService, bearerVerifier),
   );
+  // Public wall: GET is unauthenticated by design, POST is not.
+  app.use("/api/feedback", createFeedbackRouter(feedback, bearerVerifier));
 
   // ── Error boundary ──────────────────────────────────────────────────────
   app.use(notFoundHandler);
