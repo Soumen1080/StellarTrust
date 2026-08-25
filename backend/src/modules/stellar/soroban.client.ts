@@ -14,7 +14,7 @@
  * the required `require_auth()`; multi-party auth (e.g. a buyer authorizing an
  * escrow lock) needs client-side signing and is out of scope for this adapter.
  */
-import { contract, rpc, TransactionBuilder } from "@stellar/stellar-sdk";
+import { contract, rpc, StrKey, TransactionBuilder } from "@stellar/stellar-sdk";
 import { ChainTxStatus } from "@stellartrust/shared";
 import { config } from "../../config/index.js";
 import { ChainError } from "../../lib/errors.js";
@@ -56,6 +56,27 @@ export function toSignTransaction(signer: Signer): contract.SignTransaction {
 }
 
 /**
+ * Reject a contract id this adapter can never talk to, before the SDK does.
+ *
+ * Records written while a gateway ran in its deterministic local mode carry
+ * synthetic ids (`escrow-contract-<uuid>`, `rwa-contract-<uuid>`), and those
+ * rows outlive the switch to `soroban-rpc`. Handed one, `Client.from` throws a
+ * bare `Error: Invalid contract ID`, which is untyped and so reaches the
+ * boundary as a 500 "Internal server error" — the operator learns nothing and
+ * the user is told the server is broken when the row simply predates the
+ * chain. A typed {@link ChainError} names the id and the reason instead.
+ */
+function assertDeployedContractId(contractId: string): void {
+  if (!StrKey.isValidContract(contractId)) {
+    throw new ChainError(
+      `Contract id '${contractId}' is not a deployed Soroban contract. ` +
+        "It was recorded by the local gateway, so it exists in the database " +
+        "but not on chain; redeploy this record's contract to transact on it.",
+    );
+  }
+}
+
+/**
  * Build a spec-aware client for an already-deployed contract. The `publicKey`
  * is the transaction source for simulation and the signing account for writes.
  */
@@ -63,6 +84,7 @@ export async function getContractClient(
   contractId: string,
   signer: Signer,
 ): Promise<contract.Client> {
+  assertDeployedContractId(contractId);
   const publicKey = await signer.getPublicKey();
   return contract.Client.from({
     contractId,
@@ -88,6 +110,7 @@ export async function getUnsignedContractClient(
   contractId: string,
   sourceAddress: string,
 ): Promise<contract.Client> {
+  assertDeployedContractId(contractId);
   return contract.Client.from({
     contractId,
     rpcUrl: config.SOROBAN_RPC_URL,
