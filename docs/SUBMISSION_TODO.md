@@ -24,8 +24,8 @@ grep -n "REPLACE_WITH\|REPLACE_TX" README.md
 
 | Placeholder | Where to get it |
 |---|---|
-| `REPLACE_WITH_ESCROW_WASM_HASH` | `ESCROW_WASM_HASH` in `backend/.env` |
-| `REPLACE_WITH_RWA_WASM_HASH` | `RWA_WASM_HASH` in `backend/.env` |
+| ~~`REPLACE_WITH_ESCROW_WASM_HASH`~~ | Done - filled from `ESCROW_WASM_HASH` in `backend/.env.render.example` |
+| ~~`REPLACE_WITH_RWA_WASM_HASH`~~ | Done - filled from `RWA_WASM_HASH` in `backend/.env.render.example` |
 | `REPLACE_WITH_ESCROW_CONTRACT_ID` | Run a real testnet order, then copy the deployed instance ID |
 | `REPLACE_WITH_RWA_CONTRACT_ID` | Same, from a real tokenization |
 | `REPLACE_WITH_TX_HASH` | The transaction hash from a real escrow lock or release |

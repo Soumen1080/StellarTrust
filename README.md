@@ -49,14 +49,24 @@
 
 | Item | Value |
 |---|---|
+| **Escrow WASM hash** (installed) | `6d86a2c2a2b198a8d127d0b13fe2e21c27028e642b90cf5b09017fe9375ad061` |
+| **RWA token WASM hash** (installed) | `62528880b648b1cc33130a25c0590e4c8cb1fe686e7e1ad98c76986740918885` |
 | **Escrow contract (live instance)** | `REPLACE_WITH_ESCROW_CONTRACT_ID` |
-| **Escrow WASM hash** | `REPLACE_WITH_ESCROW_WASM_HASH` |
 | **RWA token contract (live instance)** | `REPLACE_WITH_RWA_CONTRACT_ID` |
-| **RWA WASM hash** | `REPLACE_WITH_RWA_WASM_HASH` |
 | **Sample interaction tx hash** | `REPLACE_WITH_TX_HASH` |
 | **Arbiter / backend signer** | `GCD32N3MW23NYDOYNQ4OX5STW6COAQX3M5PN3BVV36SVHMUCKENRJW7I` |
 | **Test USDC issuer** | `GC53S46OCINPU3WM5XNPMJUQED6ASJHSZ2X5TPNZZ6JPFL27OMIRZ6XQ` |
-| **USDC Stellar Asset Contract** | `CAB4KXQRRX5JJT5MMLSYDAA2WCJ6UKLNOBUZSKJ6MQI2MHZT3E766HQA` |
+| **USDC Stellar Asset Contract** | `CAM2DIT4LPF55FTMA2LXSFI5UXZB75PAKIFC4QMF37XBRRKMJYWWN2LG` |
+| **XLM Stellar Asset Contract** | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
+
+> ⚙️ **These values come from the deployment environment, not hand-written constants.**
+> The two WASM hashes and both asset contracts are read straight from the backend's
+> environment - `ESCROW_WASM_HASH`, `RWA_WASM_HASH` and `STELLAR_TOKEN_CONTRACTS` in
+> [`backend/.env.render.example`](backend/.env.render.example), the annotated copy of the
+> gitignored `backend/.env`. Change them there and update this table to match; no address
+> is hardcoded in the code. The two *live instance* IDs and the tx hash are **runtime**
+> artifacts - a fresh escrow instance is deployed per order - so they cannot come from
+> `.env`; copy them from a real testnet run.
 
 > 💡 StellarTrust deploys **one escrow contract instance per order** from an installed WASM hash. That is cheaper than a monolithic contract and gives every order its own isolated custody account. The address above is a real order instance — verify it on [Stellar Expert](https://stellar.expert/explorer/testnet).
 
@@ -252,7 +262,7 @@ Lighthouse on the production Vercel deployment:
 ### ⚙️ CI/CD Pipeline
 
 <div align="center">
-<img src="docs/screenshots/cicd-pipeline.png" alt="GitHub Actions pipeline running green" width="92%" />
+<img src="docs/screenshots/ciCD.png" alt="GitHub Actions pipeline running green" width="92%" />
 <br/><em>GitHub Actions — 5 parallel jobs: backend, frontend, AI, contracts, database</em>
 </div>
 
