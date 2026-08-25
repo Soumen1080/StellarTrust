@@ -52,4 +52,14 @@ create unique index product_feedback_one_per_user_idx
   on product_feedback (user_id)
   where user_id is not null;
 
+-- Deny-by-default RLS (the backend uses a privileged role; matches 0003/0004/0011).
+--
+-- Load-bearing here, not boilerplate. `product_feedback` is the only public-
+-- facing table that also stores contact PII, and the split between the two is
+-- enforced in the API projection. A PostgREST client holding the anon key would
+-- bypass that projection entirely and read `email` and `wallet_address`
+-- directly. Deny-by-default means the wall is reachable only through
+-- `GET /api/feedback`, which cannot return those columns.
+alter table product_feedback enable row level security;
+
 commit;
