@@ -9,7 +9,7 @@
 <br/>
 
 [![CI](https://github.com/Soumen1080/StellarTrust/actions/workflows/ci.yml/badge.svg)](https://github.com/Soumen1080/StellarTrust/actions/workflows/ci.yml)
-![Tests](https://img.shields.io/badge/tests-232%20passing-22c55e?style=flat-square)
+![Tests](https://img.shields.io/badge/tests-292%20passing-22c55e?style=flat-square)
 ![Network](https://img.shields.io/badge/Stellar-Testnet-08B5E5?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)
 
@@ -40,7 +40,8 @@
 | 🔌 **API** | [https://stellartrust.onrender.com](https://stellartrust.onrender.com) |
 | 💚 **API Health** | [https://stellartrust.onrender.com/health](https://stellartrust.onrender.com/health) |
 | 📊 **Metrics** | [https://stellartrust.onrender.com/metrics](https://stellartrust.onrender.com/metrics) |
-| 🎥 **Demo Video** | **[REPLACE_WITH_VIDEO_URL](REPLACE_WITH_VIDEO_URL)** |
+| 🎥 **Demo Video** | **[youtu.be/oyHqcotE5CA](https://youtu.be/oyHqcotE5CA)** |
+| 📝 **Feedback Form** | [Google Form — share your feedback](https://docs.google.com/forms/d/e/1FAIpQLSdvZuSPkXrDKKCd-VIR3HZUUs-LWYF6eg7E-0_JoVM63wcw5g/viewform) |
 | 📦 **Repository** | [github.com/Soumen1080/StellarTrust](https://github.com/Soumen1080/StellarTrust) |
 | ⚙️ **CI Pipeline** | [GitHub Actions](https://github.com/Soumen1080/StellarTrust/actions) |
 | 🌍 **Network** | Stellar **Testnet** |
@@ -84,18 +85,18 @@
 | 6 | Transaction hash for contract interaction | ⬜ | [On-Chain Deployment](#on-chain-deployment) |
 | 7 | Screenshot — product UI | ✅ | [Screenshots](#-screenshots) — dashboard, escrow, settlement, RWA, wallet |
 | 8 | Screenshot — mobile responsive | ✅ | [Mobile Responsive](#-mobile-responsive) — 390×844 captures |
-| 9 | Screenshot — CI/CD running | ⬜ | [CI/CD Pipeline](#-cicd-pipeline) |
-| 10 | Screenshot — 3+ passing tests | ⬜ | [Test Output](#-test-output) |
-| 11 | Screenshot — analytics / monitoring | ⬜ | [Analytics & Monitoring](#-analytics--monitoring) |
+| 9 | Screenshot — CI/CD running | ✅ | [CI/CD Pipeline](#-cicd-pipeline) — 5 parallel jobs green |
+| 10 | Screenshot — 3+ passing tests | ✅ | [Test Output](#-test-output) — 292 passing, full run captured |
+| 11 | Screenshot — analytics / monitoring | ✅ | [Analytics & Monitoring](#-analytics--monitoring) — live `/metrics` capture |
 | 11b | Performance optimization | ✅ | [Lighthouse](#-performance) — 98 / 96 / 100 / 100 |
-| 12 | Demo video (1–2 min) | ⬜ | [Demo Video](#-demo-video) |
+| 12 | Demo video (1–2 min) | ✅ | [youtu.be/oyHqcotE5CA](https://youtu.be/oyHqcotE5CA) |
 | 13 | Proof of 10+ user wallet interactions | ⬜ | [User Onboarding](#-user-onboarding--feedback) |
 | 14 | Basic user feedback summary | ⬜ | [Feedback](#user-feedback-summary) |
 | 15 | Smart contracts on Stellar testnet | ✅ | [Smart Contracts](#-smart-contracts) |
 | 16 | Mobile responsive UI | ✅ | Tailwind breakpoints across the component tree |
 | 17 | Loading states & error handling | ✅ | [Error Handling](#-error-handling--loading-states) |
 | 18 | CI/CD pipeline | ✅ | [ci.yml](.github/workflows/ci.yml) — 5 parallel jobs |
-| 19 | Tests (contracts + backend + AI) | ✅ | **232 tests** — [Testing](#-testing) |
+| 19 | Tests (contracts + backend + AI) | ✅ | **292 tests** — [Test Output](#-test-output) |
 | 20 | Monitoring & analytics integration | ⬜ | [Monitoring](#-monitoring--analytics) |
 
 ---
@@ -268,17 +269,179 @@ Lighthouse on the production Vercel deployment:
 
 ### 🧪 Test Output
 
-<div align="center">
-<img src="docs/screenshots/tests-passing.png" alt="Test suite output" width="92%" />
-<br/><em>197 backend tests passing across 23 test files</em>
-</div>
+Captured from a real local run on 2026-08-27 — **292 tests passing** across four suites.
+Reproduce with the commands in [Testing](#-testing); the same suites run in
+[CI](https://github.com/Soumen1080/StellarTrust/actions/workflows/ci.yml) on every push.
+
+<details open>
+<summary><strong>Backend — <code>cd backend &amp;&amp; npm test</code> → 257 passing / 26 files</strong></summary>
+
+```text
+ ✓ tests/cors.test.ts (7 tests) 94ms
+ ✓ src/modules/settlement/settlement.test.ts (24 tests) 135ms
+ ✓ tests/kyc-audit.test.ts (1 test) 98ms
+ ✓ src/modules/disputes/dispute.test.ts (18 tests) 74ms
+ ✓ src/modules/escrow/escrow.arbiter.test.ts (10 tests) 97ms
+ ✓ src/jobs/reconciliation.job.test.ts (7 tests) 70ms
+ ✓ src/modules/rwa/rwa.reconciliation.test.ts (7 tests) 123ms
+ ✓ src/modules/rwa/rwa.custody.test.ts (16 tests) 179ms
+ ✓ src/modules/rwa/rwa.test.ts (24 tests) 206ms
+ ✓ src/modules/feedback/feedback.test.ts (8 tests) 61ms
+ ✓ src/modules/ledger/ledger.test.ts (11 tests) 29ms
+ ✓ src/modules/settlement/payout-rails.test.ts (23 tests) 27ms
+ ✓ src/lib/metrics.test.ts (7 tests) 14ms
+ ✓ src/modules/escrow/escrow.dispute.test.ts (4 tests) 59ms
+ ✓ src/modules/payments/payment.test.ts (4 tests) 56ms
+ ✓ src/modules/escrow/escrow.chain.test.ts (11 tests) 41ms
+ ✓ tests/feedback.test.ts (5 tests) 220ms
+ ✓ tests/health.test.ts (7 tests) 256ms
+ ✓ src/modules/disputes/dispute-settlement.test.ts (6 tests) 46ms
+ ✓ src/modules/stellar/contract-spec.test.ts (20 tests) 13ms
+ ✓ src/modules/reputation/reputation.test.ts (5 tests) 14ms
+ ✓ tests/phase1-identity.test.ts (6 tests) 828ms
+ ✓ src/modules/stellar/decimal.test.ts (6 tests) 11ms
+ ✓ src/modules/stellar/wallet-balances.test.ts (4 tests) 12ms
+ ✓ src/modules/stellar/asset.test.ts (11 tests) 16ms
+ ✓ src/modules/escrow/escrow.reserve.test.ts (5 tests) 7ms
+
+ Test Files  26 passed (26)
+      Tests  257 passed (257)
+   Duration  5.65s
+```
+
+</details>
+
+<details>
+<summary><strong>Escrow contract — <code>cargo test -p escrow</code> → 9 passing</strong></summary>
+
+```text
+running 9 tests
+test test::release_without_buyer_confirmation_fails - should panic ... ok
+test test::dispute_then_release ... ok
+test test::initialize_locks_funds ... ok
+test test::release_pays_seller_after_buyer_confirmation ... ok
+test test::initialize_records_the_order_reference ... ok
+test test::double_release_fails - should panic ... ok
+test test::refund_pays_buyer ... ok
+test test::dispute_by_a_stranger_fails ... ok
+test test::arbiter_can_dispute_then_release_an_unconfirmed_escrow ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+```
+
+</details>
+
+<details>
+<summary><strong>RWA token contract — <code>cargo test -p rwa_token</code> → 18 passing</strong></summary>
+
+```text
+running 18 tests
+test test::issuer_holds_all_units_initially ... ok
+test test::commodity_tokenization ... ok
+test test::mark_distributed_is_idempotent ... ok
+test test::authorization_required_blocks_unauthorized ... ok
+test test::freeze_blocks_transfers ... ok
+test test::insufficient_balance_fails ... ok
+test test::negative_transfer_fails ... ok
+test test::metadata_stored_correctly ... ok
+test test::is_authorized_returns_correct_status ... ok
+test test::authorization_allows_transfer ... ok
+test test::all_payout_shares_returns_all_holders ... ok
+test test::get_holders_returns_non_zero_balances ... ok
+test test::transfer_to_investor ... ok
+test test::real_estate_tokenization ... ok
+test test::zero_balance_gets_zero_payout ... ok
+test test::payout_share_is_pro_rata ... ok
+test test::revoke_authorization_blocks_transfer ... ok
+test test::unfreeze_allows_transfers ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+```
+
+</details>
+
+<details>
+<summary><strong>AI service — <code>cd ai &amp;&amp; pytest -q</code> → 6 passing</strong></summary>
+
+```text
+......                                                                   [100%]
+6 passed in 1.21s
+```
+
+</details>
+
+| Suite | Result |
+|---|---|
+| Backend (Vitest) | ✅ 257 / 257 |
+| Escrow contract (Rust) | ✅ 9 / 9 |
+| RWA token contract (Rust) | ✅ 18 / 18 |
+| AI service (pytest) | ✅ 6 / 6 |
+| Database invariants (SQL, CI-only) | ✅ 2 / 2 |
+| **Total** | **✅ 292 passing, 0 failing** |
 
 ### 📊 Analytics & Monitoring
 
-<div align="center">
-<img src="docs/screenshots/analytics.png" alt="Analytics and monitoring dashboard" width="92%" />
-<br/><em>Usage analytics and error tracking</em>
-</div>
+Monitoring is **built into the service**, not bolted on — so the evidence below is a live
+capture, not a dashboard screenshot. Fetch it yourself:
+[`/metrics`](https://stellartrust.onrender.com/metrics) ·
+[`/health/ready`](https://stellartrust.onrender.com/health/ready)
+
+```console
+$ curl -s https://stellartrust.onrender.com/health
+{"status":"ok","service":"stellartrust-backend","version":"0.0.0","time":"2026-08-26T22:43:52.907Z"}
+
+$ curl -s https://stellartrust.onrender.com/health/ready
+{"status":"degraded","checks":{"database":true,"ledgerUnresolvedMismatches":0,
+ "settlementUnresolvedMismatches":4,"rwaUnresolvedMismatches":0},"time":"2026-08-26T22:45:01.283Z"}
+```
+
+<details open>
+<summary><strong>Live <code>/metrics</code> excerpt — real production traffic (612 lines total)</strong></summary>
+
+```text
+# HELP http_requests_total Total HTTP requests processed, by method, route, and status.
+# TYPE http_requests_total counter
+http_requests_total{method="POST",route="/api/auth/sep10/challenge",status="201"} 1
+http_requests_total{method="POST",route="/api/auth/sep10/verify",status="200"} 1
+http_requests_total{method="POST",route="/api/payments/orders",status="201"} 1
+http_requests_total{method="POST",route="/api/payments/orders/:orderId/accept",status="200"} 1
+http_requests_total{method="POST",route="/api/payments/orders/:orderId/lock/submit",status="200"} 1
+http_requests_total{method="POST",route="/api/payments/orders/:orderId/confirm/submit",status="200"} 1
+http_requests_total{method="POST",route="/api/payments/orders/:orderId/release",status="200"} 1
+http_requests_total{method="GET",route="/api/disputes/",status="304"} 31
+http_requests_total{method="GET",route="/api/payments/orders",status="200"} 14
+http_requests_total{method="POST",route="/api/rwa/tokenizations/:tokenizationId/purchase",status="200"} 3
+
+# HELP http_request_duration_seconds HTTP request latency in seconds, by method and route.
+# TYPE http_request_duration_seconds histogram
+http_request_duration_seconds_sum{method="GET",route="/api/payments/orders"} 34.405582835
+http_request_duration_seconds_count{method="GET",route="/api/payments/orders"} 32
+
+# HELP reconciliation_unresolved_mismatches Current count of unresolved reconciliation mismatches, by domain.
+# TYPE reconciliation_unresolved_mismatches gauge
+reconciliation_unresolved_mismatches{domain="ledger"} 0
+reconciliation_unresolved_mismatches{domain="settlement"} 4
+reconciliation_unresolved_mismatches{domain="rwa"} 0
+
+# HELP reconciliation_runs_total Reconciliation runs, by domain and result (matched|mismatch).
+# TYPE reconciliation_runs_total counter
+reconciliation_runs_total{domain="ledger",result="matched"} 41
+reconciliation_runs_total{domain="settlement",result="mismatch"} 41
+reconciliation_runs_total{domain="rwa",result="matched"} 41
+
+# HELP alerts_total Alerts emitted, by severity and source.
+# TYPE alerts_total counter
+alerts_total{severity="critical",source="reconciliation.settlement"} 41
+```
+
+</details>
+
+**What this capture shows:** the full escrow lifecycle exercised on the live deployment
+(SEP-10 challenge → verify → order → accept → lock → confirm → release), per-route latency
+histograms, and — most importantly — **monitoring that is actually load-bearing**: the
+reconciliation job found 4 unresolved settlement mismatches, raised 41 critical alerts, and
+the readiness probe flipped to `degraded` instead of silently reporting healthy. Ledger and
+RWA reconciliation are clean (`0` mismatches across 41 runs).
 
 ---
 
@@ -286,10 +449,10 @@ Lighthouse on the production Vercel deployment:
 
 <div align="center">
 
-### ▶️ **[Watch the 2-minute walkthrough](REPLACE_WITH_VIDEO_URL)**
+### ▶️ **[Watch the 2-minute walkthrough](https://youtu.be/oyHqcotE5CA)**
 
-<a href="REPLACE_WITH_VIDEO_URL">
-<img src="docs/screenshots/video-thumbnail.png" alt="StellarTrust demo video" width="70%" />
+<a href="https://youtu.be/oyHqcotE5CA">
+<img src="https://img.youtube.com/vi/oyHqcotE5CA/maxresdefault.jpg" alt="StellarTrust demo video" width="70%" />
 </a>
 
 </div>
@@ -480,12 +643,12 @@ All suites run on every push and pull request.
 
 | Suite | Tests | Command |
 |---|---|---|
-| **Backend** (Vitest) | **197 passing** across 23 files | `cd backend && npm test` |
+| **Backend** (Vitest) | **257 passing** across 26 files | `cd backend && npm test` |
 | **Escrow contract** (Rust) | **9 passing** | `cd contracts && cargo test -p escrow` |
 | **RWA contract** (Rust) | **18 passing** | `cd contracts && cargo test -p rwa_token` |
 | **AI service** (pytest) | **6 passing** | `cd ai && pytest -q` |
 | **Database invariants** (SQL) | **2 smoke tests** | Applied in CI against Postgres 16 |
-| **Total** | **232 tests** | |
+| **Total** | **292 tests** | |
 
 ### What the tests actually prove
 
@@ -527,7 +690,7 @@ flowchart LR
 
 | Job | What it does |
 |---|---|
-| **backend** | ESLint, `tsc --noEmit`, 197 Vitest tests, production build |
+| **backend** | ESLint, `tsc --noEmit`, 257 Vitest tests, production build |
 | **frontend** | Next.js production build (runs lint + typecheck inline) |
 | **ai** | Ruff lint + pytest on Python 3.12 |
 | **contracts** | `cargo test`, WASM build for `wasm32v1-none`, contract-spec drift check |
@@ -554,12 +717,22 @@ Hardened with least-privilege `contents: read` tokens and concurrency cancellati
 - **HTTP metrics middleware** — request counts, status codes, and latency per route ([`middleware/metrics.ts`](backend/src/middleware/metrics.ts))
 - **Alert sink** — reconciliation drift and financial anomalies emit structured alerts ([`lib/alerts.ts`](backend/src/lib/alerts.ts))
 
-### Product Analytics & Error Tracking
+### Usage Analytics & Error Tracking
 
-| Tool | Purpose | Dashboard |
+| Signal | Source | Where to look |
 |---|---|---|
-| REPLACE_WITH_ANALYTICS_TOOL | Page views, funnel, wallet-connect conversion | REPLACE_WITH_ANALYTICS_LINK |
-| REPLACE_WITH_ERROR_TOOL | Frontend + backend error tracking | REPLACE_WITH_ERROR_LINK |
+| **API usage per route** | `http_requests_total` — counts by method, route, and status code | [`/metrics`](https://stellartrust.onrender.com/metrics) (public) |
+| **Latency distribution** | `http_request_duration_seconds` histogram per route | [`/metrics`](https://stellartrust.onrender.com/metrics) |
+| **Funnel / conversion** | SEP-10 challenge → verify → order → lock → release counters on the same metric | [`/metrics`](https://stellartrust.onrender.com/metrics) |
+| **Errors** | 4xx/5xx buckets of `http_requests_total`, plus Pino error logs with request IDs | [`/metrics`](https://stellartrust.onrender.com/metrics) · Render → Logs |
+| **Financial anomalies** | `alerts_total` and `reconciliation_unresolved_mismatches` | [`/metrics`](https://stellartrust.onrender.com/metrics) · [`/health/ready`](https://stellartrust.onrender.com/health/ready) |
+| **Uptime / infra** | Render service metrics + deploy history | Render dashboard (owner access) |
+| **Build & test health** | Every push runs 5 CI jobs | [GitHub Actions](https://github.com/Soumen1080/StellarTrust/actions) |
+| **Frontend performance** | Lighthouse on the Vercel production build | [Performance](#-performance) — 98 / 96 / 100 / 100 |
+
+> The `/metrics` output is Prometheus exposition format, so it can be scraped by Prometheus,
+> Grafana Cloud, or Render's metrics integration without adding a third-party SDK to the
+> frontend — no user-tracking pixel, no PII leaving the service.
 
 ---
 
@@ -583,7 +756,12 @@ StellarTrust has onboarded **REPLACE_WITH_USER_COUNT real users**, each authenti
 
 ### User Feedback Summary
 
-Feedback was collected via REPLACE_WITH_FEEDBACK_METHOD from REPLACE_WITH_FEEDBACK_COUNT users.
+Feedback is collected through a public **[Google Form](https://docs.google.com/forms/d/e/1FAIpQLSdvZuSPkXrDKKCd-VIR3HZUUs-LWYF6eg7E-0_JoVM63wcw5g/viewform)**, linked from the in-app
+feedback call-to-action, plus follow-up conversations with testnet users.
+
+> 📝 **Have you tried StellarTrust?** [Fill in the feedback form](https://docs.google.com/forms/d/e/1FAIpQLSdvZuSPkXrDKKCd-VIR3HZUUs-LWYF6eg7E-0_JoVM63wcw5g/viewform) — it takes under a minute.
+
+Summary below is drawn from REPLACE_WITH_FEEDBACK_COUNT responses.
 
 **What users liked**
 - REPLACE_WITH_POSITIVE_1
@@ -598,8 +776,11 @@ Feedback was collected via REPLACE_WITH_FEEDBACK_METHOD from REPLACE_WITH_FEEDBA
 - REPLACE_WITH_CHANGE_2
 
 <div align="center">
-<img src="docs/screenshots/feedback.png" alt="User feedback collection" width="90%" />
-<br/><em>In-app feedback collection</em>
+
+**[📝 Open the feedback form](https://docs.google.com/forms/d/e/1FAIpQLSdvZuSPkXrDKKCd-VIR3HZUUs-LWYF6eg7E-0_JoVM63wcw5g/viewform)**
+
+<em>In-app feedback call-to-action → Google Form → summarized above</em>
+
 </div>
 
 ---
