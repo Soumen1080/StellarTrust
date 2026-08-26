@@ -174,6 +174,43 @@ export function isMissingContractError(err: unknown): boolean {
 }
 
 /**
+ * Translate an untyped SDK failure into a {@link ChainError} that names what
+ * actually went wrong.
+ *
+ * `contract.Client` loads the source account over RPC before it can build
+ * anything, so a signer whose account was never created on-chain fails with a
+ * bare `Error: Account not found: G...`. Untyped, that reaches the boundary as
+ * a 500 "Internal server error" — the operator learns nothing and the user is
+ * told the server is broken, when the real fact is that this deployment has no
+ * funded signing key and one line of configuration fixes it. The same holds
+ * once the account exists but cannot pay the fee.
+ */
+export function asChainError(label: string, err: unknown): ChainError {
+  if (err instanceof ChainError) return err;
+  const message = err instanceof Error ? err.message : String(err);
+
+  const unfunded = /Account not found:\s*(G[A-Z2-7]{55})/.exec(message);
+  if (unfunded) {
+    return new ChainError(
+      `Cannot ${label}: the server's signing account ${unfunded[1]} does not ` +
+        `exist on ${config.STELLAR_NETWORK}, so it cannot pay the transaction ` +
+        "fee. Fund that account, or point DEMO_SIGNER_SECRET at a funded " +
+        "testnet seed — the local stub signer mints a fresh, never-funded key " +
+        "on every boot.",
+      err,
+    );
+  }
+  if (/insufficient balance|txInsufficientBalance/i.test(message)) {
+    return new ChainError(
+      `Cannot ${label}: the server's signing account cannot afford the ` +
+        `transaction fee on ${config.STELLAR_NETWORK}.`,
+      err,
+    );
+  }
+  return new ChainError(`Stellar could not ${label}: ${message}`, err);
+}
+
+/**
  * Unwrap a contract call's `Result<T, E>`, turning a contract-level `Err` into
  * a {@link ChainError} naming the call.
  *
@@ -216,14 +253,20 @@ export async function signAndSendChecked<T>(
   // fee is paid and before the books are told anything happened.
   unwrapContractResult(label, tx.result);
 
-  const sent = await tx.signAndSend();
-  const hash = sent.sendTransactionResponse?.hash;
-  if (!hash) {
-    throw new ChainError(`The ${label} transaction was not accepted by the network`);
+  try {
+    const sent = await tx.signAndSend();
+    const hash = sent.sendTransactionResponse?.hash;
+    if (!hash) {
+      throw new ChainError(
+        `The ${label} transaction was not accepted by the network`,
+      );
+    }
+    // Settled result: simulation is a prediction, this is what actually ran.
+    unwrapContractResult(label, sent.result);
+    return hash;
+  } catch (err) {
+    throw asChainError(`submit ${label}`, err);
   }
-  // Settled result: simulation is a prediction, this is what actually ran.
-  unwrapContractResult(label, sent.result);
-  return hash;
 }
 
 function isContractResult<T>(value: unknown): value is contract.Result<T> {
@@ -317,15 +360,19 @@ export async function deployFromWasmHash(
   signer: Signer,
 ): Promise<string> {
   const publicKey = await signer.getPublicKey();
-  const deployTx = await contract.Client.deploy(null, {
-    wasmHash,
-    format: "hex",
-    rpcUrl: config.SOROBAN_RPC_URL,
-    networkPassphrase: networkPassphrase(),
-    allowHttp: allowHttp(),
-    publicKey,
-    signTransaction: toSignTransaction(signer),
-  });
-  const sent = await deployTx.signAndSend();
-  return sent.result.options.contractId;
+  try {
+    const deployTx = await contract.Client.deploy(null, {
+      wasmHash,
+      format: "hex",
+      rpcUrl: config.SOROBAN_RPC_URL,
+      networkPassphrase: networkPassphrase(),
+      allowHttp: allowHttp(),
+      publicKey,
+      signTransaction: toSignTransaction(signer),
+    });
+    const sent = await deployTx.signAndSend();
+    return sent.result.options.contractId;
+  } catch (err) {
+    throw asChainError("deploy a contract instance", err);
+  }
 }

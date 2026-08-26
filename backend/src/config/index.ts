@@ -343,6 +343,28 @@ const envSchema = z.object({
         message: "Required when RWA_GATEWAY=soroban-rpc",
       });
     }
+    // On-chain writes are paid for by the server signer, and the local stub
+    // mints a fresh, never-funded keypair on every boot. That combination
+    // boots cleanly and then fails at the first deploy with "Account not
+    // found" — after the user has filled in a form. Refuse it here instead.
+    if (
+      (env.ESCROW_GATEWAY === "soroban-rpc" ||
+        env.RWA_GATEWAY === "soroban-rpc") &&
+      env.SIGNER_PROVIDER === "local-stub" &&
+      !(env.DEMO_MODE && env.DEMO_SIGNER_SECRET)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["DEMO_SIGNER_SECRET"],
+        message:
+          "Required when ESCROW_GATEWAY or RWA_GATEWAY=soroban-rpc and " +
+          "SIGNER_PROVIDER=local-stub. On-chain deploys need a stable, funded " +
+          "signing key; the stub signer mints an unfunded one per boot, so " +
+          "every deploy would fail. Set DEMO_MODE=true and DEMO_SIGNER_SECRET " +
+          "to the seed of a friendbot-funded testnet account (or configure a " +
+          "KMS signer).",
+      });
+    }
     if (
       env.ESCROW_GATEWAY === "soroban-rpc" &&
       Object.keys(env.STELLAR_TOKEN_CONTRACTS).length === 0
