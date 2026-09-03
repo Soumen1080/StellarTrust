@@ -20,7 +20,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const accountLink = isVerified
     ? { href: "/dashboard", label: "Dashboard" }
     : { href: "/kyc", label: "Verification" };
-  const links = [...baseLinks, accountLink];
+  const links = isVerified ? [...baseLinks, accountLink] : baseLinks;
   const [open, setOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobileNavRef = useRef<HTMLElement>(null);
@@ -70,9 +70,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             })}
           </nav>
 
-          {/* Waits for lg: between md and lg the six nav links already fill the
-              bar, and adding this cluster overran it. The account link stays
-              reachable there because it is one of those links. */}
+          {/* Waits for lg: between md and lg the nav links already fill the
+              bar, and adding this cluster overran it. Unverified users still
+              reach verification through the mobile drawer's CTA below. */}
           <div className="hidden items-center gap-sm lg:flex">
             <span className={`rounded-pill border px-sm py-xs font-mono text-[11px] uppercase tracking-wider ${light ? "border-hairline-light text-muted" : "border-hairline-dark text-muted-strong"}`}><span className="mr-xs inline-block h-1.5 w-1.5 rounded-full bg-status-verified" />Testnet</span>
             <Link href={accountLink.href} className="btn-primary">{isVerified ? "Open dashboard" : "Start verification"} <Icon name="arrow-right" className="h-4 w-4" /></Link>
