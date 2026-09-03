@@ -2,7 +2,7 @@
 
 > **Status:** Living document. Update on any scope, feature, or user change.
 > **Track:** Production (real product for real users).
-> **Last updated:** 2026-08-18
+> **Last updated:** 2026-09-03
 >
 > This document describes the **product**, which has not changed. For what is
 > actually built and verified, see `Memory.md` §1 and `devlopement.md` §0.
@@ -120,7 +120,8 @@ working capital.
 - AI KYC **risk aggregation** (combines provider signals into a score).
 - KYC decision: **Approve / Review / Reject** (human review on borderline).
 - Verified user + business profile creation.
-- Stellar wallet connect (Stellar Wallets Kit; Freighter/xBull) with SEP-10 auth.
+- Stellar wallet connect (Stellar Wallets Kit; Freighter, Albedo, xBull,
+  Fordefi, Rabet) with SEP-10 auth.
 
 ### 6.2 Payments & Settlement
 - Cross-currency payment via path payments.
@@ -142,15 +143,18 @@ working capital.
   delivery, dispute) are **signed in that party's wallet**, not by the platform.
   Release and refund are signed by the platform as the designated arbiter.
 
-**Implementation status (2026-08-18):** The full escrow lifecycle is implemented
+**Implementation status (2026-09-03):** The full escrow lifecycle is implemented
 end to end, including the on-chain path: custody deploy, wallet-signed
 lock/confirm/dispute, arbiter-signed release/refund, read-back verification
 before any ledger posting, and ledger↔chain reconciliation that asserts on-chain
-custody state. Payments, identity, auth, audit, disputes, and RWA are
-Postgres-backed. **Not yet verified against a live network or database:** the
-contracts are not deployed, the migrations have never been executed, and
-production signing (`KmsSigner`) and cross-instance idempotency (Redis) are not
-implemented. This cannot process real funds yet.
+custody state. Postgres-backed when `DATABASE_URL` is set: payments, identity,
+auth, audit, ledger, disputes, RWA, settlement, and feedback. Both contract
+WASMs are installed on testnet and migrations `0001`–`0015` have been applied to
+a deployed database (`0014`/`0015` are repairs for drift found there).
+**Still outstanding before real funds:** production signing (`KmsSigner` throws),
+cross-instance idempotency (Redis — the stores are in-memory), Postgres
+repositories for kyc and reputation, and live anchor/liquidity adapters in place
+of the sandbox and deterministic ones.
 
 ### 6.4 Dispute Resolution
 - 24-hour evidence window for both parties.

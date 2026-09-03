@@ -9,10 +9,10 @@
 > **Read this together with:** `Memory.md` (project memory), `Rules.md`
 > (golden rules), `Phases.md` (roadmap), `Architecture.md` (target design).
 >
-> **Last updated:** 2026-08-18
+> **Last updated:** 2026-09-03
 > **Audit basis:** re-verified against the repository tree, `package.json`
-> files, and a full local run of `cargo test`, `vitest run`, `tsc`, `eslint`,
-> and `next build` on this date. The 2026-07-22 audit that opened this file is
+> files, and a full local run of `cargo test`, `vitest run`, and `tsc` on this
+> date. The 2026-07-22 audit that opened this file is
 > preserved below as history; **most of its blockers are now resolved** and each
 > is marked with what closed it.
 
@@ -22,19 +22,20 @@
 
 | Layer | Code exists | Builds/tests | Verified against a real network | Blocker |
 |---|---|---|---|---|
-| Frontend (Next.js) | ✅ | ✅ typecheck + lint + build, 10 app routes | ⚠️ needs a reachable backend | — |
-| Backend (Express) | ✅ | ✅ **102 tests pass**, 13 files | ⚠️ | Redis; KMS for real money |
-| Auth (SEP-10) | ✅ | ✅ | ⚠️ works via `DEMO_MODE` testnet signer | `KmsSigner` unimplemented |
-| Persistence (DB) | ✅ 6 Postgres repos | ⚠️ code only | ❌ migrations never executed | provision + run `0001`–`0008` |
-| Escrow contract | ✅ Rust, on-chain path wired | ✅ **9 tests pass locally** | ❌ not deployed | funded testnet identity |
-| RWA contract | ✅ Rust + real gateway | ✅ **18 tests pass locally** | ❌ not deployed | funded testnet identity + 3 gaps (§2 I) |
-| AI service | ✅ FastAPI | ⚠️ CI-only (pytest blocked here) | ❌ not deployed | not hosted; engines are placeholders |
+| Frontend (Next.js) | ✅ | ✅ typecheck clean, 10 app routes | ✅ deployed on Vercel | zero frontend tests |
+| Backend (Express) | ✅ | ✅ **257 tests pass**, 26 files | ✅ deployed on Render | Redis; KMS for real money |
+| Auth (SEP-10) | ✅ | ✅ | ✅ works via `DEMO_MODE` testnet signer | `KmsSigner` unimplemented |
+| Persistence (DB) | ✅ 9 Postgres repos | ✅ | ✅ `0001`–`0015` applied (drift repaired by `0014`/`0015`) | kyc + reputation still in-memory |
+| Escrow contract | ✅ Rust, on-chain path wired | ✅ **9 tests pass locally** | 🔧 WASM installed; no recorded live instance | run one real order end-to-end |
+| RWA contract | ✅ Rust + real gateway | ✅ **18 tests pass locally** | 🔧 WASM installed; no recorded live instance | run one real tokenization |
+| AI service | ✅ FastAPI | ⚠️ CI-only (pytest blocked here), 6 tests | ❌ not deployed | not hosted; engines are placeholders |
 
-**One-line status:** The code now has a **complete, tested path from the UI to
-the Soroban contracts**, and the money-critical repositories are Postgres-backed.
-Nothing has yet been executed against a real Stellar network or a real database,
-so every on-chain and persistence claim is *implemented and unit-covered*, not
-*proven*.
+**One-line status:** The code has a **complete, tested path from the UI to the
+Soroban contracts**, the money-critical repositories are Postgres-backed, and
+both frontend and backend are deployed with the migrations applied against a
+real database. What is still *implemented and unit-covered* rather than *proven*
+is the on-chain path: both WASMs are installed on testnet, but no live contract
+instance or transaction hash from a real order has been recorded.
 
 **What changed since the original audit:** the three stacked structural gaps
 that made the demo non-functional (auth can't sign → state doesn't persist →
@@ -69,27 +70,27 @@ provisioning, not architecture.
 Severity: 🔴 blocker · 🟠 major · 🟡 minor / hygiene
 Status: ✅ resolved · 🔧 partially resolved · ⬜ still open
 
-### Status summary (2026-08-18)
+### Status summary (2026-09-03)
 
 | ID | Issue | Status |
 |---|---|---|
 | A1 | Wallet auth 500 in production (no signer) | 🔧 `DemoEnvSigner` unblocks testnet; `KmsSigner` still throws |
-| A2 | Everything in-memory | 🔧 identity/auth/audit/payments/disputes/rwa on Postgres; kyc/reputation/settlement/idempotency still in-memory |
+| A2 | Everything in-memory | 🔧 identity/auth/audit/ledger/payments/disputes/rwa/settlement/feedback on Postgres; kyc/reputation/idempotency still in-memory |
 | A3 | Serverless host vs long-lived scheduler | ⬜ open — pick a persistent host |
 | A4 | Two conflicting serverless entrypoints | ✅ only `backend/api/index.ts` remains; no root `vercel.json` |
 | A5 | Hardcoded env values in source | 🔧 `FRONTEND_ORIGINS` still defaults to a specific Vercel URL; `frontend/src/lib/api.ts` still defaults to a Render URL |
 | B1 | Exposed Supabase secret | ⬜ **open — must still be rotated** |
 | B2 | No real signing boundary | ⬜ open — `KmsSigner` unimplemented |
 | B3 | Single global rate limiter | ⬜ open |
-| C1 | Postgres repositories unimplemented | 🔧 six exist; kyc/reputation/settlement do not |
+| C1 | Postgres repositories unimplemented | 🔧 nine exist; kyc and reputation do not |
 | C2 | No Redis idempotency / job state | ⬜ open — Golden Rule #4 is not enforced across instances |
-| C3 | Migrations never validated | ⬜ open — `0001`–`0008` have still never been executed |
-| D1 | Contract not deployed to testnet | ⬜ open — needs a funded identity |
+| C3 | Migrations never validated | ✅ `0001`–`0015` applied against a real database. Doing so exposed drift — settlement/dispute-party and on-chain-escrow schema were missing — fixed by repair migrations `0014` and `0015` |
+| D1 | Contract not deployed to testnet | 🔧 both WASMs installed on testnet; no live instance from a real order recorded yet |
 | D2 | No `SorobanRpcEscrowGateway` | ✅ implemented, with prepare/sign/submit and read-back |
 | D3 | Contract tests Windows-blocked | ✅ **wrong** — `cargo test` runs here; all 27 pass |
 | E1 | AI service not deployed/wired | ⬜ open |
 | E2 | Engines are placeholder heuristics | ⬜ open (acceptable for now — keep them labeled) |
-| F1 | Frontend can't complete a flow | 🔧 unblocked locally and on a `DEMO_MODE` testnet deploy |
+| F1 | Frontend can't complete a flow | ✅ deployed on Vercel against the Render API; the `/metrics` capture in the README shows a full challenge → verify → order → lock → confirm → release run |
 | F2 | Very dense single-line JSX | ⬜ open — `KycOnboarding.tsx`, `EscrowDashboard.tsx` |
 | F3 | Session in `sessionStorage` only | ✅ intentional (D27) |
 | G1 | Scratch file `awsedrfgyhuji.md` | ✅ deleted |
@@ -413,7 +414,7 @@ decision engine → human review) is already implemented and takes over.
 | S2 | AI risk/dispute call skipped (deterministic fallback) | ⬜ in effect | Deploy AI service, wire client | E1 |
 | S3 | KYC auto-verify after 10s | ⬜ in effect | `KYC_AUTO_APPROVE=false` | §6 |
 | S4 | Testnet demo signer instead of KMS | ⬜ in effect | Implement `KmsSigner`, remove the demo signer | A1/B2 |
-| S5 | In-memory stores | 🔧 six repos on Postgres; kyc/reputation/settlement and **all idempotency stores** remain in memory | Write the rest; Redis for idempotency | A2/C1/C2 |
+| S5 | In-memory stores | 🔧 nine repos on Postgres; kyc/reputation and **all idempotency stores** remain in memory | Write the rest; Redis for idempotency | A2/C1/C2 |
 | S6 | OpenAI configured but bypassed by auto-approve | ⬜ in effect | Disable S3 | §11 |
 
 > S5's idempotency half is the one with teeth: `InMemoryIdempotencyStore` cannot
@@ -429,21 +430,23 @@ Code, in dependency order:
 1. ~~Fix the three RWA gaps (I1–I3).~~ ✅ done — see §13.
 2. **Redis-backed idempotency store** (C2) — this is what makes Golden Rule #4
    true rather than aspirational in a real deployment. Highest-value item left.
-3. **Postgres repositories for kyc, reputation, settlement** (C1 remainder), and
-   a forward-only settlement schema.
+3. **Postgres repositories for kyc and reputation** (C1 remainder). Settlement
+   landed in migration `0011` with `PgSettlementRepository`.
 4. **Include `*.test.ts` in the typecheck.** `backend/tsconfig.json` excludes
    them, so a constructor signature change compiled clean and only failed at
    runtime. Cheap fix, real safety.
 5. **Move the remaining hardcoded origins/URLs to env** (A5).
 6. **Implement `KmsSigner`** (B2) — the gate on any real-money path.
 
-Operational, and blocking all on-chain verification:
+Operational, and blocking the remaining on-chain verification:
 
-6. **Provision Postgres and run migrations `0001`–`0008`** (C3). Every
-   persistence claim is unverified until this happens.
-7. **Fund a Stellar testnet identity**, run
-   `contracts/scripts/deploy-testnet.ps1`, and set `ESCROW_WASM_HASH` /
-   `RWA_WASM_HASH`.
+6. ~~Provision Postgres and run the migrations~~ ✅ done — `0001`–`0015` applied.
+   Doing so surfaced real drift, fixed by repair migrations `0014`/`0015`.
+7. ~~Fund a testnet identity and install the contract WASMs~~ ✅ done — both
+   hashes are installed and recorded in the backend environment.
+7b. **Run one real order end-to-end** with `ESCROW_GATEWAY=soroban-rpc` and
+   record the deployed instance id + transaction hash. This is the last thing
+   standing between "implemented and unit-covered" and "proven".
 8. **Bind a token per currency** (`STELLAR_TOKEN_CONTRACTS`) and give the test
    buyer a balance + trustline in it — `initialize` transfers *from the buyer*,
    so without this the first lock fails no matter how correct the code is.
@@ -464,6 +467,7 @@ Operational, and blocking all on-chain verification:
 
 | Date | Change |
 |---|---|
+| 2026-09-03 | Documentation accuracy pass across every `.md`. Re-measured: backend 257 tests / 26 files, contracts 27, 10 app routes. Corrected the TL;DR (migrations *have* run; both WASMs installed; frontend and backend deployed), the issue register (C3 ✅, D1/F1 revised, A2/C1 now nine Postgres repos), and §7/§8. |
 | 2026-07-22 | Created development log. Full codebase audit: catalogued 25+ issues across deployment, security, persistence, contracts, AI, frontend, and repo hygiene. Root-caused the "demo doesn't work" (auth signer + in-memory state + undeployed chain/AI). Recorded current strategy (frontend+backend first; stub contract+AI; 10s KYC auto-verify) and a 5-stage plan to production. Folded in and marked for deletion the `awsedrfgyhuji.md` scratch notes. |
 
 

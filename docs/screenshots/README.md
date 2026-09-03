@@ -1,12 +1,14 @@
 # Screenshots
 
-Images referenced by the root `README.md`.
+Images referenced by the root [`README.md`](../../README.md). Filenames are
+load-bearing — the README links them by exact name, so a new capture replaces a
+file in place rather than arriving under a new name.
 
-## ✅ Already here
+## Present
 
 | File | Shows | Used in README as |
 |---|---|---|
-| `landing.png` | Landing page hero, dark theme | Hero image at the top |
+| `landing.png` | Landing hero, dark theme | Hero image at the top |
 | `dashboard.png` | Account dashboard, SEP-10 wallet, recent orders | Account Dashboard |
 | `escrow.png` | Escrow workspace, released orders, on-chain hashes, mismatch guard | Escrow Workspace |
 | `settlement-completed.png` | Completed INR → USD path payment with rate/fee/slippage | Cross-Border Settlement |
@@ -16,20 +18,19 @@ Images referenced by the root `README.md`.
 | `mobile-landing.png` | Landing page at 390×844 | Mobile Responsive |
 | `mobile-escrow.png` | Escrow page at 390×844 | Mobile Responsive |
 | `lighthouse.png` | Lighthouse 98 / 96 / 100 / 100 on production | Performance |
+| `ciCD.png` | GitHub Actions run, all jobs green | CI/CD Pipeline |
 
-## ⬜ Still needed
+## Still needed
 
 Drop these in with **exactly these filenames** and they render automatically —
 no README edits required.
 
 | File | What to capture | How |
 |---|---|---|
-| `cicd-pipeline.png` | GitHub Actions run with all 5 jobs green | Open the [Actions tab](https://github.com/Soumen1080/StellarTrust/actions), click the latest green run on `main`, screenshot the job list |
-| `tests-passing.png` | Terminal showing `197 passed` | `cd backend && npm test` — capture the summary block |
-| `analytics.png` | Analytics or error-tracking dashboard with real data | Requires installing analytics first — see `docs/SUBMISSION_TODO.md` |
-| `video-thumbnail.png` | Still frame from the demo video | Any clear frame; it becomes the clickable play image |
-| `user-interactions.png` | Proof of 10+ wallet interactions | Stellar Expert account/operations view, or your own orders table |
-| `feedback.png` | Feedback form or collected responses | Requires building feedback collection first |
+| `user-interactions.png` | Proof of 10+ wallet interactions | Stellar Expert account/operations view, or the orders table filtered to real testnet runs |
+
+The README's test-output and analytics evidence are pasted terminal captures
+rather than images, so no `tests-passing.png` or `analytics.png` is required.
 
 ### Capturing the test output
 
@@ -37,11 +38,11 @@ no README edits required.
 cd backend && npm test
 ```
 
-Make sure these lines are visible:
+The summary block is the part worth capturing:
 
 ```
-Test Files  23 passed (23)
-     Tests  197 passed (197)
+Test Files  26 passed (26)
+     Tests  257 passed (257)
 ```
 
 ### Capturing mobile shots
@@ -49,14 +50,14 @@ Test Files  23 passed (23)
 Chrome DevTools → `Ctrl+Shift+M` → **iPhone 12 Pro** (390×844) → `Ctrl+Shift+P`
 → "Capture screenshot".
 
-> ⚠️ Capture mobile shots against the **production** URL, not localhost — a
+> Capture mobile shots against the **production** URL, not localhost — a
 > localhost capture can surface CORS errors that make the app look broken.
 
-## 🗑 Not used
+## Loose captures in `docs/`
 
 `docs/Screenshot 2026-08-23 033506.png` is a DevTools capture showing CORS
-failures against the Render API. It is still tracked in git. Recommend deleting
-it before submission — it shows the app failing to fetch:
+failures against the Render API, and is still tracked in git. It shows the app
+failing to fetch and is referenced by nothing:
 
 ```bash
 git rm "docs/Screenshot 2026-08-23 033506.png"

@@ -1,7 +1,7 @@
 # StellarTrust — Delivery Phases
 
 > **Status:** Living document. Update as phases progress or scope changes.
-> **Last updated:** 2026-08-18
+> **Last updated:** 2026-09-03
 > **Track:** Production.
 >
 > **Reading the checkboxes:** `[x]` means implemented **and covered by an
@@ -111,8 +111,9 @@ binding per currency, and a real KMS signer.
 ## Phase 3 — Cross-Border Settlement
 
 **Status:** Application implementation complete (sandbox anchor + deterministic
-liquidity behind interfaces). Live anchor per corridor, Horizon path-finding/AMM
-adapter, and production persistence remain manual/operational prerequisites.
+liquidity behind interfaces), now with durable Postgres persistence. A live
+anchor per corridor and a Horizon path-finding/AMM adapter remain
+manual/operational prerequisites.
 
 **Goal:** Multi-currency settlement with a real fiat ramp.
 
@@ -130,8 +131,10 @@ adapter, and production persistence remain manual/operational prerequisites.
 - [ ] Replace the sandbox anchor and deterministic liquidity adapters with a
   live per-corridor anchor client and a Horizon path-finding + AMM adapter for
   staging/production.
-- [ ] Forward-only Postgres schema for settlement quotes/transitions and
-  settlement reconciliation persistence.
+- [x] Forward-only Postgres schema for settlement quotes/transitions and
+  settlement reconciliation persistence (migration `0011`; repaired on a drifted
+  deployed database by `0014`). `PgSettlementRepository` replaces the in-memory
+  store when `DATABASE_URL` is set.
 
 **Acceptance criteria**
 - [x] USD→X and X→USD test corridor settles end-to-end via anchor + path
@@ -271,6 +274,9 @@ third parties, and legal processes outside the codebase.
   - Dispute auto-execution: a resolved dispute now drives the escrow
     release/refund automatically via the arbiter payments path (the Phase 4
     deferred "release-path state-machine work").
+- [x] Public product feedback wall (migration `0013`): one entry per verified
+  account, contact fields (email, wallet) stored but never returned by any
+  endpoint, and row-level security protecting that PII at the database layer.
 - [ ] Security audit of Soroban contracts (independent, external).
 - [ ] Real anchor partnerships; multi-currency + stablecoin pools (external).
 - [ ] Compliance/licensing (money-transmitter/MSB) for launch corridors

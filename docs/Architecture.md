@@ -1,8 +1,9 @@
 # StellarTrust — Architecture
 
 > **Status:** Living document. Update on any structural, stack, or data-model change.
-> **Last updated:** 2026-08-18
-> **Verified against:** the repository tree, `package.json` files, and
+> **Last updated:** 2026-09-03
+> **Verified against:** the repository tree, `package.json` files, the route
+> tables in `backend/src/modules/*/*.routes.ts`, and
 > `infra/supabase/migrations/` as of this date. Sections 3–6 describe what is
 > **actually built**, not the target design; anything not yet built is marked
 > *planned*.
@@ -104,7 +105,7 @@ RWA (opt-in, separate module)
 └─────────────┘  │ Soroban escrow · issuance  │  └──────────────────────────────────────────┘
 ┌─────────────┐  │ Anchors (SEP-31/24/6/10/12)│  ┌──────────────────────────────────────────┐
 │ KMS / HSM   │◄─┤                            │  │ In-process scheduler (reconciliation)    │
-│ *planned*   │  └────────────────────────────┘  │ Redis + BullMQ are *planned*, not built  │
+│ *planned*   │  └────────────────────────────┘  │ Redis is *planned*, not built            │
 └─────────────┘                                   └──────────────────────────────────────────┘
 ```
 
@@ -196,6 +197,7 @@ stellartrust/
 │  │  │  ├─ disputes/         #   evidence + AI advisory + human gate
 │  │  │  ├─ rwa/              #   tokenization + investor payouts
 │  │  │  ├─ reputation/       #   advisory 0..1 prior for disputes
+│  │  │  ├─ feedback/         #   public product feedback wall
 │  │  │  ├─ audit/            #   append-only audit trail
 │  │  │  └─ stellar/          #   SDK wrappers, signer, addresses, assets
 │  │  │
@@ -242,7 +244,7 @@ stellartrust/
 │  └─ package.json
 │
 ├─ infra/
-│  ├─ supabase/migrations/    # 0001–0008, forward-only
+│  ├─ supabase/migrations/    # 0001–0015, forward-only
 │  ├─ supabase/tests/         # SQL assertions (ledger balance, transitions)
 │  ├─ docker/                 # backend/frontend/ai Dockerfiles
 │  └─ docker-compose.yml
@@ -283,12 +285,12 @@ Versions are the pinned ones in each `package.json` / `Cargo.toml`.
 | Database | **PostgreSQL via Supabase**, `pg` 8 with raw parameterized SQL | built | ACID, RLS; no ORM magic |
 | AI service | Python 3.12 + FastAPI | built, not deployed | ML/OCR ecosystem |
 | Blockchain | `@stellar/stellar-sdk` 16.0.1 (Horizon + Soroban RPC) | built | Native |
-| Contracts | Soroban `soroban-sdk` 27.0.2 (Rust) | built, not deployed | Trustless escrow + RWA |
+| Contracts | Soroban `soroban-sdk` 27.0.2 (Rust) | built; WASM installed on testnet | Trustless escrow + RWA |
 | Logging | `pino` + `pino-http` | built | Structured, PII-safe |
 | Security | `helmet`, `express-rate-limit`, `jose` (JWKS) | built | Baseline hardening |
 | Validation | `zod` 3.23.8 (shared schemas) | built | One schema, both portions |
 | Observability | In-process Prometheus registry + `/metrics` + health probes | built | No extra dependency |
-| Cache/Queue | Redis + BullMQ | **planned — not installed** | Cross-instance idempotency + workers |
+| Cache/Queue | Redis | **planned — not installed** | Cross-instance idempotency |
 | KYC/liveness | 3rd-party (Sumsub/Onfido/Persona/Veriff) | **planned** — sandbox adapter today | Compliance; don't build |
 | Key mgmt | Cloud KMS / HSM | **planned** — `KmsSigner` throws | Secure signing |
 | Infra | Docker + Render (backend) / Vercel (frontend) | partial | Simple ops |
@@ -313,6 +315,16 @@ Defined by the forward-only migrations in `infra/supabase/migrations/`:
 | `0006` | Phase 5 RWA: assets, tokenizations, token_holdings, payout_distributions, payout_records, RWA ledger accounts, over-sell/auto-fund triggers, RLS |
 | `0007` | Durable dispute persistence (`dispute_records`, DTO snapshot) |
 | `0008` | On-chain escrow: `escrow_state` gains `pending`, `payment_transition` gains `dispute` |
+| `0009` | Links a dispute to the custody it is about |
+| `0010` | RWA issuer self-custody, including token-holding status |
+| `0011` | Phase 3 durable settlement: `settlements`, `settlement_quotes`, `settlement_transitions`, `settlement_reconciliation_mismatches` |
+| `0012` | Dispute parties (both sides of the claim) and the dispute log |
+| `0013` | Phase 6 product feedback wall (`product_feedback`) |
+| `0014` | **Repair** — re-applies `0011` + `0012` schema where those migrations never ran |
+| `0015` | **Repair** — re-applies `0008`, `0009`, `0010` schema where those never ran |
+
+The two repair migrations exist because a deployed database had drifted from the
+migration history. They are idempotent: no-ops where the schema already exists.
 
 Key tables:
 
@@ -331,8 +343,9 @@ Key tables:
 - `dispute_records`, `assets`, `tokenizations`, `token_holdings`,
   `payout_distributions`, `payout_records`
 
-*Planned, not yet in a migration:* `webhook_events` (idempotency +
-signature-verified) and settlement quote/transition persistence.
+Settlement quote/transition persistence landed in `0011`. `webhook_events`
+exists in the schema from `0001` but is not yet written by a
+signature-verified webhook receiver — that receiver is *planned*.
 
 **Rule:** every money movement writes balanced ledger entries **and** a Stellar
 transaction record. A reconciliation job asserts they match — both that the
@@ -345,8 +358,8 @@ Repositories are selected in `app.ts` by `DATABASE_URL` (and never in tests):
 
 | Context | Postgres | In-memory only |
 |---|---|---|
-| identity, auth, audit, payments, disputes, rwa | ✅ | |
-| kyc, reputation, settlement | | ⚠️ |
+| identity, auth, audit, ledger, payments, disputes, rwa, settlement, feedback | ✅ | |
+| kyc, reputation | | ⚠️ |
 | idempotency stores (all routers) | | ⚠️ per-instance |
 
 The in-memory stores are correct for a single long-lived process and wrong for

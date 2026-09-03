@@ -1,7 +1,7 @@
 # StellarTrust — Engineering Rules & Guardrails
 
 > **Status:** Living document. All contributors (human and AI) must follow this.
-> **Last updated:** 2026-08-18
+> **Last updated:** 2026-09-03
 
 These rules exist because StellarTrust moves real money for real users. When in
 doubt, choose the safer, more auditable, more reversible option.
@@ -32,8 +32,8 @@ doubt, choose the safer, more auditable, more reversible option.
 
 - Read `Memory.md` and this file before starting work.
 - Keep bounded contexts isolated: `auth`, `identity`, `kyc`, `payments`,
-  `ledger`, `escrow`, `settlement`, `disputes`, `rwa`, `reputation`, `audit`,
-  `stellar`. Cross-module calls go through service interfaces or an explicit
+  `ledger`, `escrow`, `settlement`, `disputes`, `rwa`, `reputation`, `feedback`,
+  `audit`, `stellar`. Cross-module calls go through service interfaces or an explicit
   port, never direct table access.
 - **Wire dependencies only in `app.ts`.** A module never constructs its own
   adapter or repository; it receives them. That is what makes the
@@ -98,7 +98,7 @@ a decision that belongs in `Memory.md`.
 | `tailwindcss` | 3 | design tokens in `tailwind.config.ts` |
 | `@creit.tech/stellar-wallets-kit` | 2.5.0 | wallet connect, SEP-10, tx signing |
 | `zod` | 3.23.8 | validation (matches shared) |
-| `@tanstack/react-query` | 5.62.7 | **installed but unused** — remove it or use it |
+| `@tanstack/react-query` | 5.62.7 | **installed but unused** — re-verified 2026-09-03: zero imports in `frontend/src`. Remove it or use it; do not describe the app as using it |
 
 State is plain React hooks today (`IdentityProvider`, `useEscrowOrders`). No
 global state library is installed; `zustand` remains *approved if needed*, not

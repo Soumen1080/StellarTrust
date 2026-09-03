@@ -62,10 +62,10 @@
 
 > ⚙️ **These values come from the deployment environment, not hand-written constants.**
 > The two WASM hashes and both asset contracts are read straight from the backend's
-> environment - `ESCROW_WASM_HASH`, `RWA_WASM_HASH` and `STELLAR_TOKEN_CONTRACTS` in
-> [`backend/.env.render.example`](backend/.env.render.example), the annotated copy of the
-> gitignored `backend/.env`. Change them there and update this table to match; no address
-> is hardcoded in the code. The two *live instance* IDs and the tx hash are **runtime**
+> environment - `ESCROW_WASM_HASH`, `RWA_WASM_HASH` and `STELLAR_TOKEN_CONTRACTS`, declared
+> and validated in [`backend/src/config/index.ts`](backend/src/config/index.ts) and supplied
+> through the gitignored `backend/.env` or the host's secret manager. Change them there and
+> update this table to match; no address is hardcoded in the code. The two *live instance* IDs and the tx hash are **runtime**
 > artifacts - a fresh escrow instance is deployed per order - so they cannot come from
 > `.env`; copy them from a real testnet run.
 
@@ -79,7 +79,7 @@
 |---|---|---|---|
 | 1 | Public GitHub repository | ✅ | [Soumen1080/StellarTrust](https://github.com/Soumen1080/StellarTrust) |
 | 2 | README with complete documentation | ✅ | This file |
-| 3 | Minimum 15+ meaningful commits | ✅ | **75+ commits** — [history](https://github.com/Soumen1080/StellarTrust/commits/main) |
+| 3 | Minimum 15+ meaningful commits | ✅ | **90 commits** — [history](https://github.com/Soumen1080/StellarTrust/commits/main) |
 | 4 | Live demo link | ✅ | [stellar-trust-frontend.vercel.app](https://stellar-trust-frontend.vercel.app) |
 | 5 | Contract deployment address | ⬜ | [On-Chain Deployment](#on-chain-deployment) |
 | 6 | Transaction hash for contract interaction | ⬜ | [On-Chain Deployment](#on-chain-deployment) |
@@ -91,7 +91,7 @@
 | 11b | Performance optimization | ✅ | [Lighthouse](#-performance) — 98 / 96 / 100 / 100 |
 | 12 | Demo video (1–2 min) | ✅ | [youtu.be/oyHqcotE5CA](https://youtu.be/oyHqcotE5CA) |
 | 13 | Proof of 10+ user wallet interactions | ⬜ | [User Onboarding](#-user-onboarding--feedback) |
-| 14 | Basic user feedback summary | ⬜ | [Feedback](#user-feedback-summary) |
+| 14 | Basic user feedback summary | 🟡 | In-app [feedback wall](#user-feedback-summary) built; summary awaits real responses |
 | 15 | Smart contracts on Stellar testnet | ✅ | [Smart Contracts](#-smart-contracts) |
 | 16 | Mobile responsive UI | ✅ | Tailwind breakpoints across the component tree |
 | 17 | Loading states & error handling | ✅ | [Error Handling](#-error-handling--loading-states) |
@@ -631,7 +631,8 @@ Base URL: `https://stellartrust.onrender.com`
 | `POST /api/settlement/*` | Cross-border settlement operations |
 | `GET /api/disputes` · `/queue` · `/:disputeId` | Dispute lifecycle and review queue |
 | `GET /api/rwa/assets` · `/tokenizations` · `/portfolio` | RWA tokenization and holdings |
-| `GET /api/reputation/*` | Advisory counterparty scores |
+| `GET /api/reputation/me` · `/:userId` | Advisory counterparty scores |
+| `GET /api/feedback` · `/me` · `POST /api/feedback` | Public product feedback wall (contact fields stored, never returned) |
 
 **Cross-cutting:** Helmet security headers, strict CORS origin validation, rate limiting, request IDs, structured Pino logging, Zod validation on every boundary, and idempotency keys on all money-mutating routes.
 
@@ -800,8 +801,8 @@ Summary below is drawn from REPLACE_WITH_FEEDBACK_COUNT responses.
 
 | Layer | Technology |
 |---|---|
-| **Frontend** | Next.js 15 (App Router), React 19, TypeScript 5, Tailwind CSS, TanStack Query |
-| **Wallet** | Stellar Wallets Kit (Freighter, Albedo, xBull, Rabet) |
+| **Frontend** | Next.js 15 (App Router), React 19, TypeScript 5, Tailwind CSS |
+| **Wallet** | Stellar Wallets Kit (Freighter, Albedo, xBull, Fordefi, Rabet) |
 | **Backend** | Node.js 24, Express 5, TypeScript, Zod, Pino, Helmet |
 | **AI Service** | Python 3.12, FastAPI, Pydantic, OpenAI |
 | **Contracts** | Rust, Soroban SDK, `wasm32v1-none` |
@@ -861,10 +862,17 @@ StellarTrust/
 git clone https://github.com/Soumen1080/StellarTrust.git
 cd StellarTrust
 
-cp backend/.env.render.example backend/.env
-cp frontend/.env.vercel.example frontend/.env
-cp ai/.env.example ai/.env
+cp infra/.env.example infra/.env     # shared local-dev template
+cp ai/.env.example    ai/.env
 ```
+
+`infra/.env.example` carries local Postgres/Redis URLs, public testnet
+endpoints, and the auth/KYC sandbox settings, and is the template the
+docker-compose stack reads. For a non-Docker run, create `backend/.env` and
+`frontend/.env` from the [Key Environment Variables](#key-environment-variables)
+table below — every backend variable is declared and validated in
+[`backend/src/config/index.ts`](backend/src/config/index.ts), which fails boot
+with a named error rather than starting misconfigured.
 
 ### 2 · Database
 
@@ -947,7 +955,8 @@ cargo build --release --target wasm32v1-none
 
 ## 📄 License
 
-Released under the [MIT License](LICENSE).
+Intended to be released under the MIT License. The `LICENSE` file has not been
+added to the repository yet — see [`docs/SUBMISSION_TODO.md`](docs/SUBMISSION_TODO.md).
 
 ---
 

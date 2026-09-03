@@ -1,13 +1,18 @@
 ---
 version: alpha
-lastVerified: 2026-08-18
+lastVerified: 2026-09-03
 implementedIn: frontend/tailwind.config.ts
 verificationNote: >-
   Colors, font stacks, and the status-pill map in this file were checked
   token-for-token against frontend/tailwind.config.ts and
   frontend/src/components/StatusPill.tsx on the date above and match. This is a
   prescriptive spec — some documented components (fx-rate-chart-card,
-  qr-promo-card, feature-photo-card) are design intent and not yet built.
+  qr-promo-card, feature-photo-card) are design intent and not yet built, and
+  the top-nav menu below is the specified set rather than the shipped one. The
+  built nav (frontend/src/components/AppShell.tsx) is Overview, Escrow,
+  Settlement, Disputes, RWA, plus a Dashboard item for verified users; there is
+  no language selector, theme toggle, or Log In link — sign-in is the wallet
+  connect flow.
 name: StellarTrust-design
 description: A confident cross-border-finance interface adapted from Binance's design language. Anchored on a deep near-black canvas where a single signal yellow (#FCD535) carries every primary CTA, brand accent, and value-claim moment. Type runs an open Inter + IBM Plex Mono stack — Inter for editorial/UI, IBM Plex Mono (tabular) for money, rates, wallet addresses, tx hashes, and IDs. Marketing and dashboard surfaces default to the dark theme; transactional surfaces (send payment, deposit, KYC, order forms) flip to a light theme sharing the same yellow CTAs and gray-blue hairlines. Beyond Binance's up/down green/red, StellarTrust adds a small semantic status set (locked / released / refunded / disputed / review) because an escrow platform has more money states than an exchange. AI outputs are always rendered as clearly-labeled advisory, never as authoritative.
 
@@ -688,10 +693,15 @@ drop shadows, no glassmorphism. Depth comes from the lightness jump between
 
 ### Top Navigation
 **`top-nav-dark`** — Dashboard/marketing nav on dark canvas. 64px tall,
-`{colors.canvas-dark}`. Yellow StellarTrust wordmark at left; primary menu
-(Payments, Escrow, Disputes, RWA Marketplace, Wallet, Docs); right cluster with
-language selector, light/dark toggle, "Log In" text link, "Get Started"
-`{component.button-primary}`.
+`{colors.canvas-dark}`. Yellow StellarTrust wordmark at left; primary menu;
+right cluster ending in a `{component.button-primary}` CTA.
+
+*As built* (`AppShell.tsx`): the menu is Overview, Escrow, Settlement, Disputes,
+RWA — plus Dashboard once the account is verified. The right cluster is a
+network pill ("Testnet") and the CTA, and it appears only at `lg` and above:
+between `md` and `lg` the menu items already fill the bar. The CTA reads "Start
+verification" until the account is verified and "Open dashboard" after, and it
+is the route to `/kyc` for an unverified account.
 
 **`top-nav-light`** — Transactional nav (send payment, deposit, KYC). Same layout
 on `{colors.canvas-light}` with `{colors.ink}` items.

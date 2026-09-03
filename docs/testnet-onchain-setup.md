@@ -35,6 +35,14 @@ The USDC Stellar Asset Contract is
 `CAB4KXQRRX5JJT5MMLSYDAA2WCJ6UKLNOBUZSKJ6MQI2MHZT3E766HQA`, wrapping
 `USDC:GC53S46O…`. It reports 7 decimals, which is what `backend/.env` records.
 
+> ⚠️ **Unresolved conflict.** The root `README.md` names a different SAC for
+> USDC (`CAM2DIT4LPF55FTMA2LXSFI5UXZB75PAKIFC4QMF37XBRRKMJYWWN2LG`). Neither id
+> appears anywhere in code — both are documentation-only, and the live value
+> comes from `STELLAR_TOKEN_CONTRACTS` in the backend environment. Resolve it by
+> reading that variable (or running `npm run chain:preflight`, which prints the
+> contract it actually resolved and the decimals it reports) and correcting
+> whichever document is stale. Do not assume this one is right.
+
 This is a **test asset we issue ourselves**, not Circle's testnet USDC. That
 means we can mint to any test account on demand instead of queueing at a faucet.
 Nothing in the code inspects the issuer — `resolveToken` matches on contract id

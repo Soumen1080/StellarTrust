@@ -1,41 +1,39 @@
-# Submission TODO — what you must do manually
+# Submission TODO — what is left, and who can do it
 
-The root `README.md` is written and structured. Everything left is something
-only you can produce: a real deployment, real screenshots, real users.
+The root [`README.md`](../README.md) is written and structured. What remains is
+work only a human with a funded testnet account and real users can produce: live
+contract instances, real wallet interactions, and real feedback.
 
-Search the README for `REPLACE_WITH_` to find every placeholder. There are 21.
+**Last verified:** 2026-09-03, against the repository tree and a full local run
+of `vitest run`, `cargo test`, and `tsc --noEmit`.
+
+Find every remaining placeholder:
 
 ```bash
-grep -n "REPLACE_WITH\|REPLACE_TX" README.md
+grep -n "REPLACE_WITH\|REPLACE_TX" README.md    # 14 lines, 17 distinct tokens
 ```
 
 ---
 
 ## 1. Fill in the placeholders
 
-### Live Demo & Deployment table
-
-| Placeholder | Where to get it |
-|---|---|
-| ~~`REPLACE_WITH_VERCEL_URL`~~ | ✅ Done — `https://stellar-trust-frontend.vercel.app` |
-| `REPLACE_WITH_VIDEO_URL` | YouTube / Loom link (appears twice — table + demo section) |
-
 ### On-Chain Deployment table
 
+Both WASM hashes and both asset contract IDs are already filled from the backend
+environment. What is missing is *runtime* output — a fresh escrow instance is
+deployed per order, so these cannot come from `.env`.
+
 | Placeholder | Where to get it |
 |---|---|
-| ~~`REPLACE_WITH_ESCROW_WASM_HASH`~~ | Done - filled from `ESCROW_WASM_HASH` in `backend/.env.render.example` |
-| ~~`REPLACE_WITH_RWA_WASM_HASH`~~ | Done - filled from `RWA_WASM_HASH` in `backend/.env.render.example` |
-| `REPLACE_WITH_ESCROW_CONTRACT_ID` | Run a real testnet order, then copy the deployed instance ID |
-| `REPLACE_WITH_RWA_CONTRACT_ID` | Same, from a real tokenization |
+| `REPLACE_WITH_ESCROW_CONTRACT_ID` | Run a real testnet order with `ESCROW_GATEWAY=soroban-rpc`, then copy the deployed instance ID |
+| `REPLACE_WITH_RWA_CONTRACT_ID` | Same, from a real tokenization deploy |
 | `REPLACE_WITH_TX_HASH` | The transaction hash from a real escrow lock or release |
 
-### Monitoring & Analytics table
+Confirm which mode you are actually in before capturing anything:
 
-| Placeholder | Notes |
-|---|---|
-| `REPLACE_WITH_ANALYTICS_TOOL` / `_LINK` | Requires actually installing analytics first — see step 3 |
-| `REPLACE_WITH_ERROR_TOOL` / `_LINK` | Requires installing error tracking — see step 3 |
+```bash
+cd backend && npm run chain:preflight
+```
 
 ### User Onboarding & Feedback
 
@@ -43,54 +41,45 @@ grep -n "REPLACE_WITH\|REPLACE_TX" README.md
 |---|---|
 | `REPLACE_WITH_USER_COUNT` | Must be 10 or more |
 | `REPLACE_WITH_WALLET_1..3` + `REPLACE_TX_1..3` | Extend the table to 10+ rows |
-| `REPLACE_WITH_FEEDBACK_METHOD` / `_COUNT` | e.g. "a Google Form" |
+| `REPLACE_WITH_FEEDBACK_COUNT` | Count of responses actually received |
 | `REPLACE_WITH_POSITIVE_1..2`, `_REQUEST_1..2`, `_CHANGE_1..2` | Real quotes and real changes |
 
----
-
-## 2. Add the remaining screenshots
-
-**10 of 16 are done** — your existing captures were renamed into
-[`docs/screenshots/`](screenshots/) and wired into the README.
-
-Still needed: `cicd-pipeline.png`, `tests-passing.png`, `analytics.png`,
-`video-thumbnail.png`, `user-interactions.png`, `feedback.png`.
-
-Exact filenames and capture instructions are in
-[`docs/screenshots/README.md`](screenshots/README.md). They render
-automatically once the files exist.
-
-Also recommended: delete `docs/Screenshot 2026-08-23 033506.png` — it is a
-DevTools capture showing CORS errors and the app failing to fetch.
-
-```bash
-git rm "docs/Screenshot 2026-08-23 033506.png"
-rm "docs/Screenshot 2026-08-24 005133 copy.png"
-```
+The in-app feedback wall is built and live (see §3), so the response count can
+come from the product itself rather than only the Google Form.
 
 ---
 
-## 3. Build the two things that do not exist yet
+## 2. Add the remaining screenshot
 
-These are **real gaps**, not just missing links. Filling in the README rows
-without doing the work would be a false claim.
+11 of 12 referenced captures are in [`docs/screenshots/`](screenshots/). Only
+`user-interactions.png` is still missing — proof of 10+ wallet interactions,
+from Stellar Expert or the orders table.
 
-### Analytics + error tracking (Level 4 requirement #20)
+Exact filenames and capture instructions live in
+[`docs/screenshots/README.md`](screenshots/README.md). Files render automatically
+once they exist.
 
-Nothing is installed on the frontend today. Pick one of:
+---
 
-- **Vercel Analytics** — easiest if you are already on Vercel:
-  `npm i @vercel/analytics`, then add `<Analytics />` to the root layout
-- **PostHog** — better for funnels and wallet-connect conversion
-- **Sentry** — best for error tracking; covers both frontend and backend
+## 3. Built since the last revision of this file
 
-Then screenshot the dashboard with real traffic in it.
+Two items previously listed as real gaps now exist in the codebase:
 
-### User feedback collection (Level 4 requirement #14)
+- **User feedback collection** — a full in-app feedback wall, not a form link.
+  Backend module at [`backend/src/modules/feedback/`](../backend/src/modules/feedback/)
+  (`GET /api/feedback`, `GET /api/feedback/me`, `POST /api/feedback`), table
+  `product_feedback` from migration `0013`, RLS added in a later commit to protect
+  contact PII, and the UI at
+  [`frontend/src/features/feedback/`](../frontend/src/features/feedback/). Contact
+  fields (email, wallet) are stored and never returned; one entry per account.
+- **CI screenshot** — `docs/screenshots/ciCD.png` is captured and wired in.
 
-There is no feedback surface in the app. Cheapest path that satisfies the
-requirement: a Google Form linked from a button in the dashboard header.
-Better: a small in-app modal that POSTs to a `feedback` table.
+**Analytics and error tracking** remain unaddressed by a third-party SDK, and
+this is deliberate: `/metrics` exposes Prometheus counters and latency
+histograms per route, `/health/ready` reports reconciliation drift, and Pino logs
+carry request IDs. The README documents this as the analytics story rather than
+claiming a dashboard that is not installed. If a hosted dashboard is wanted,
+Vercel Analytics or PostHog on the frontend is the smallest addition.
 
 ---
 
@@ -106,19 +95,24 @@ transaction hash per user for the README table.
 
 ### Add a LICENSE file
 
-The README links to one and it does not exist yet. From the repo root:
-
-```bash
-# then commit it
-```
-
-Use MIT unless you have a reason not to. GitHub can generate it:
+The README links to `LICENSE` and states MIT; **the file does not exist**. Until
+it does, the license claim is unbacked. GitHub can generate one:
 **Add file → Create new file → type `LICENSE` → Choose a license template**.
 
-### Remove committed debug files
+### Commit the example env files
 
-13 scratch files are tracked in `backend/` and hurt the "project structure"
-score:
+The README's setup steps say to copy `backend/.env.render.example` and
+`frontend/.env.vercel.example`. **Neither file exists in the working tree**, so
+those instructions currently fail for anyone cloning. Note that `.gitignore`
+ends with a blanket `.env*` rule that overrides the earlier `!.env.example`
+negation — fix the ignore rule before trying to commit them, or the add will be
+silently refused.
+
+Only `ai/.env.example` and `infra/.env.example` exist today.
+
+### Remove committed debug scratch files
+
+13 scratch files are tracked in `backend/`:
 
 ```bash
 git rm --cached backend/_apply_0007.mjs backend/_body.json \
@@ -131,42 +125,34 @@ printf '\n# local debug scratch\nbackend/_*\nbackend/tmp-*\nbackend/test-*.js\n'
 git add .gitignore && git commit -m "chore: remove local debug scratch files from version control"
 ```
 
-### Fix the USDC contract ID mismatch
+### Reconcile the USDC contract ID
 
-`backend/.env.render.example` line 70 says `CAM2DIT4LPF55FTMA2LXSFI5UXZB75PAKIFC4QMF37XBRRKMJYWWN2LG`
-but `docs/testnet-onchain-setup.md` says `CAB4KXQRRX5JJT5MMLSYDAA2WCJ6UKLNOBUZSKJ6MQI2MHZT3E766HQA`.
-One is stale. Decide which is correct and make them agree — the README quotes
-the docs value.
+The README and [`docs/testnet-onchain-setup.md`](testnet-onchain-setup.md) must
+name the same USDC Stellar Asset Contract. Decide which is current and make every
+document agree; the value is deployment configuration read from
+`STELLAR_TOKEN_CONTRACTS`, so the environment is the tiebreaker.
 
 ### Verify the deployment claim
 
 The README says the frontend deploys to Vercel and the backend to Render from
-`main`. Confirm both auto-deploy hooks are actually connected — if the backend
-is deployed manually, reword that line or wire up the hook.
+`main`. Confirm both auto-deploy hooks are connected — if the backend is deployed
+manually, reword that line.
 
-Note: `.vercel/repo.json` currently points at a Vercel project named
-`stellar-trust-backend` mapped to the `backend/` directory, while the live API
-is on Render. Make sure the Vercel project linked to this repo is the
-**frontend**, or the live demo URL will not be what you expect.
+Check that the Vercel project linked to this repo is the **frontend**, not a
+stale `stellar-trust-backend` project mapped to `backend/`, or the live demo URL
+will not be what you expect.
 
 ### Confirm the repo is public
 
 Settings → General → Danger Zone → Change visibility.
 
-### Commit the example env files
-
-`backend/.env.render.example` and `frontend/.env.vercel.example` exist locally
-but are **not tracked in git**, so the setup instructions in the README will
-fail for anyone cloning. Check `.gitignore` is not excluding them, then commit.
-
 ---
 
 ## 6. Optional but scores well
 
-- **Frontend tests** — there are currently zero. Even 5 component tests with
-  Vitest + Testing Library would close a stated requirement.
-- **Event streaming** — contracts emit events, but nothing consumes them. An SSE
-  endpoint that streams escrow state changes would satisfy the "real-time
-  updates" requirement.
-- **CD workflow** — deployment is currently manual/platform-triggered. A
-  `deploy.yml` that runs on green CI makes the "CI/CD" claim stronger.
+- **Frontend tests** — there are currently zero. Even five component tests with
+  Vitest + Testing Library would close a stated requirement. The backend has 257.
+- **Event streaming** — both contracts emit events, but nothing consumes them. An
+  SSE endpoint streaming escrow state changes would satisfy "real-time updates".
+- **CD workflow** — deployment is platform-triggered. A `deploy.yml` gated on
+  green CI would make the CI/CD claim stronger.
