@@ -31,6 +31,19 @@ import { InMemoryRwaRepository } from "./rwa.repository.js";
 import { RwaService, type RwaActor } from "./rwa.service.js";
 import { AssetType } from "./rwa.types.js";
 
+
+/**
+ * A maturity comfortably in the future.
+ *
+ * Financing terms are rejected at creation when maturity is not in the future
+ * (a position born past due would start accruing late yield before anyone
+ * subscribed), so every fixture needs a real date rather than a fixed string
+ * that would eventually go stale and start failing on its own.
+ */
+const FUTURE_MATURITY = new Date(
+  Date.now() + 90 * 24 * 60 * 60 * 1000,
+).toISOString();
+
 const ISSUER_WALLET = "GBUV3T3YDFD232LUXGADFZV2XCMNEHXBMVTQPBD7DKHTP4Q6ZLNOSMEX";
 const INVESTOR1 = "GDYWVMFH5JDIISEZMLDFTN6A5NHPLZGKTTYAAKGB5Z6U7MHKUV6JPVS5";
 
@@ -77,8 +90,11 @@ async function deployedTokenization(service: RwaService) {
   const draft = await service.createTokenization(issuer.userId, {
     assetId: asset.id,
     totalUnits: "1000",
-    pricePerUnitAmount: "1000",
-    pricePerUnitCurrency: "USDC",
+    faceValueAmount: "1000000",
+    faceValueCurrency: "USDC",
+    advanceRateBps: 10_000,
+    discountRateBps: 0,
+    maturityDate: FUTURE_MATURITY,
     requireAuthorization: false,
   });
 
@@ -127,8 +143,11 @@ describe("capabilities advertise who signs", () => {
     const draft = await service.createTokenization(issuer.userId, {
       assetId: asset.id,
       totalUnits: "10",
-      pricePerUnitAmount: "100",
-      pricePerUnitCurrency: "USDC",
+      faceValueAmount: "1000",
+      faceValueCurrency: "USDC",
+      advanceRateBps: 10_000,
+      discountRateBps: 0,
+      maturityDate: FUTURE_MATURITY,
     });
 
     await expect(
@@ -160,8 +179,11 @@ describe("the issuer holds their own supply", () => {
     const draft = await service.createTokenization(issuer.userId, {
       assetId: asset.id,
       totalUnits: "10",
-      pricePerUnitAmount: "100",
-      pricePerUnitCurrency: "USDC",
+      faceValueAmount: "1000",
+      faceValueCurrency: "USDC",
+      advanceRateBps: 10_000,
+      discountRateBps: 0,
+      maturityDate: FUTURE_MATURITY,
     });
 
     const prepared = await service.prepareOperation(
@@ -185,8 +207,11 @@ describe("the issuer holds their own supply", () => {
     const draft = await service.createTokenization(issuer.userId, {
       assetId: asset.id,
       totalUnits: "10",
-      pricePerUnitAmount: "100",
-      pricePerUnitCurrency: "USDC",
+      faceValueAmount: "1000",
+      faceValueCurrency: "USDC",
+      advanceRateBps: 10_000,
+      discountRateBps: 0,
+      maturityDate: FUTURE_MATURITY,
     });
 
     const first = await service.prepareOperation(

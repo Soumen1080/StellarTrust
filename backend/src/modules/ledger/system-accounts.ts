@@ -30,6 +30,25 @@ export const RWA_PAYOUT_PAYABLE = "a0000000-0000-4000-8000-000000000003";
 export const RWA_PAYOUT_RESERVE = "a0000000-0000-4000-8000-000000000004";
 
 /**
+ * RWA subscription accounts (0006 seeds the first two, 0016 the rest).
+ *
+ * `rwa_investment_receivable` and `rwa_investment_liability` were seeded by
+ * 0006 and then posted against by nothing for the module's whole life: an
+ * investor purchase wrote a holding row and an audit entry and never touched
+ * the ledger, so no money moved. These ids are what wiring that up needs.
+ */
+export const RWA_INVESTMENT_RECEIVABLE = "a0000000-0000-4000-8000-000000000001";
+export const RWA_INVESTMENT_LIABILITY = "a0000000-0000-4000-8000-000000000002";
+/** Where an investor's cash lands before it is applied to a subscription. */
+export const RWA_INVESTOR_CASH_CLEARING = "a0000000-0000-4000-8000-000000000005";
+/** Owed to the issuer out of a subscription, net of the investors' discount. */
+export const RWA_ISSUER_PROCEEDS_PAYABLE = "a0000000-0000-4000-8000-000000000006";
+/** The platform's take on the payout waterfall. */
+export const RWA_PLATFORM_FEE_REVENUE = "a0000000-0000-4000-8000-000000000007";
+/** Expected recovery on a defaulted position. */
+export const RWA_RECOVERY_RECEIVABLE = "a0000000-0000-4000-8000-000000000008";
+
+/**
  * Cross-border settlement accounts (migration 0011 seeds).
  *
  * These use their own `b0…` prefix: the settlement module previously posted
@@ -63,6 +82,12 @@ export const SYNTHETIC_ACCOUNT_NAME: Readonly<Record<string, string>> =
     [DELIVERY_LIABILITY]: "delivery_confirmation_liability",
     [RWA_PAYOUT_PAYABLE]: "rwa_payout_payable",
     [RWA_PAYOUT_RESERVE]: "rwa_payout_reserve",
+    [RWA_INVESTMENT_RECEIVABLE]: "rwa_investment_receivable",
+    [RWA_INVESTMENT_LIABILITY]: "rwa_investment_liability",
+    [RWA_INVESTOR_CASH_CLEARING]: "rwa_investor_cash_clearing",
+    [RWA_ISSUER_PROCEEDS_PAYABLE]: "rwa_issuer_proceeds_payable",
+    [RWA_PLATFORM_FEE_REVENUE]: "rwa_platform_fee_revenue",
+    [RWA_RECOVERY_RECEIVABLE]: "rwa_recovery_receivable",
     [SETTLEMENT_SOURCE_ANCHOR_CLEARING]: "settlement_source_anchor_clearing",
     [SETTLEMENT_USER_SOURCE_LIABILITY]: "settlement_user_source_liability",
     [SETTLEMENT_FX_CONVERSION]: "settlement_fx_conversion",

@@ -109,14 +109,29 @@ export function createRwaRouter(
     async (req, res, next) => {
       try {
         const actor = requireActor(req as AuthedRequest);
+        // The unit price is deliberately not accepted from the client: it is
+        // derived server-side from the financing terms, because a price that
+        // disagrees with the terms produces a payout waterfall that cannot be
+        // paid. Callers send the terms; the server does the arithmetic.
         const input = {
           assetId: String(req.body.assetId ?? ""),
           totalUnits: parseIntegerString(req.body.totalUnits, "totalUnits"),
-          pricePerUnitAmount: parseIntegerString(
-            req.body.pricePerUnitAmount,
-            "pricePerUnitAmount",
+          faceValueAmount: parseIntegerString(
+            req.body.faceValueAmount,
+            "faceValueAmount",
           ),
-          pricePerUnitCurrency: parseCurrency(req.body.pricePerUnitCurrency),
+          faceValueCurrency: parseCurrency(req.body.faceValueCurrency),
+          advanceRateBps: parseBps(req.body.advanceRateBps, "advanceRateBps"),
+          discountRateBps: parseBps(req.body.discountRateBps, "discountRateBps"),
+          ...(req.body.platformFeeBps === undefined
+            ? {}
+            : {
+                platformFeeBps: parseBps(
+                  req.body.platformFeeBps,
+                  "platformFeeBps",
+                ),
+              }),
+          maturityDate: String(req.body.maturityDate ?? ""),
           requireAuthorization: Boolean(req.body.requireAuthorization),
           linkedOrderId: req.body.linkedOrderId
             ? String(req.body.linkedOrderId)
@@ -412,6 +427,29 @@ function parseIntegerString(value: unknown, field: string): string {
     return value.trim();
   }
   throw new ValidationError(`${field} must be a non-negative integer`);
+}
+
+/**
+ * A basis-point rate: a whole number in [0, 10000].
+ *
+ * Accepted as a number or a numeric string, because a JSON body typed by hand
+ * and one produced by a form both reach here. The upper bound is enforced at
+ * the boundary as well as in the domain: 10001 bps is not a rate, and rejecting
+ * it here names the field the caller got wrong.
+ */
+function parseBps(value: unknown, field: string): number {
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/.test(value.trim())
+        ? Number(value.trim())
+        : Number.NaN;
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10_000) {
+    throw new ValidationError(
+      `${field} must be a whole number of basis points between 0 and 10000`,
+    );
+  }
+  return parsed;
 }
 
 function parseCurrency(value: unknown): CurrencyCode {

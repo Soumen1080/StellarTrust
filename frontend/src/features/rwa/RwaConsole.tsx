@@ -40,6 +40,26 @@ function toMinorUnits(value: string, currency: CurrencyCode): string {
   return minor;
 }
 
+/**
+ * Convert a percentage typed by a human into basis points.
+ *
+ * The form asks for "80" because that is how people describe an advance rate;
+ * the wire carries 8000 because bps are integers and percentages invite
+ * floats. One decimal place is allowed (7.5% = 750bps), which is as fine as
+ * these terms are ever quoted.
+ */
+function toBps(percent: string): number {
+  const trimmed = percent.trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) {
+    throw new Error("Rates must be a percentage, e.g. 80 or 7.5");
+  }
+  const bps = Math.round(Number(trimmed) * 100);
+  if (bps < 0 || bps > 10_000) {
+    throw new Error("Rates must be between 0% and 100%");
+  }
+  return bps;
+}
+
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "The tokenization operation failed";
 }
@@ -352,8 +372,13 @@ function IssuePanel({
   // Tokenization form state
   const [assetId, setAssetId] = useState("");
   const [totalUnits, setTotalUnits] = useState("");
-  const [pricePerUnit, setPricePerUnit] = useState("");
+  const [faceValue, setFaceValue] = useState("");
   const [priceCurrency, setPriceCurrency] = useState<CurrencyCode>("USDC");
+  // Percentages in the form, basis points on the wire. Defaults are a
+  // conventional net-90 receivable: finance 80%, 4% to the investor.
+  const [advanceRatePct, setAdvanceRatePct] = useState("80");
+  const [discountRatePct, setDiscountRatePct] = useState("4");
+  const [maturityDate, setMaturityDate] = useState("");
   const [requireAuth, setRequireAuth] = useState(false);
   const [creatingToken, setCreatingToken] = useState(false);
 
@@ -383,6 +408,46 @@ function IssuePanel({
     }
   }
 
+  /**
+   * What the terms currently in the form actually mean, in money.
+   *
+   * Mirrors the server's arithmetic so the issuer sees the consequence of a
+   * rate before submitting rather than after. It is a preview, not an
+   * authority: the server recomputes and rejects terms that cannot be paid.
+   * Returns null whenever the inputs are incomplete or invalid, so a
+   * half-typed form shows nothing instead of a misleading number.
+   */
+  const financingPreview = (() => {
+    try {
+      if (!faceValue.trim() || !totalUnits.trim()) return null;
+      const face = BigInt(toMinorUnits(faceValue, priceCurrency));
+      const units = BigInt(totalUnits.trim());
+      if (units <= 0n) return null;
+
+      const advanceBps = BigInt(toBps(advanceRatePct));
+      const discountBps = BigInt(toBps(discountRatePct));
+
+      // Round-half-up, matching applyBps on the server.
+      const principal = (face * advanceBps + 5_000n) / 10_000n;
+      const investorYield = (principal * discountBps + 5_000n) / 10_000n;
+      const proceeds = principal - investorYield;
+      const unitPrice = principal / units;
+      if (unitPrice <= 0n) return null;
+
+      const residual = face - principal - investorYield;
+      if (residual < 0n) return null;
+
+      return {
+        principal: `${formatMinor(principal.toString(), priceCurrency)} ${priceCurrency}`,
+        proceeds: `${formatMinor(proceeds.toString(), priceCurrency)} ${priceCurrency}`,
+        unitPrice: `${formatMinor(unitPrice.toString(), priceCurrency)} ${priceCurrency}`,
+        residual: `${formatMinor(residual.toString(), priceCurrency)} ${priceCurrency}`,
+      };
+    } catch {
+      return null;
+    }
+  })();
+
   async function createTokenization(event: FormEvent) {
     event.preventDefault();
     setCreatingToken(true);
@@ -391,17 +456,23 @@ function IssuePanel({
       if (!/^\d+$/.test(totalUnits.trim()) || BigInt(totalUnits) <= 0n) {
         throw new Error("Total units must be a positive whole number");
       }
-      const pricePerUnitAmount = toMinorUnits(pricePerUnit, priceCurrency);
+      if (!maturityDate) throw new Error("Set a maturity date");
+      // The unit price is not sent: the server derives it from these terms, so
+      // a price and a set of terms can never disagree.
       await api.createTokenization(session.accessToken, crypto.randomUUID(), {
         assetId,
         totalUnits: totalUnits.trim(),
-        pricePerUnitAmount,
-        pricePerUnitCurrency: priceCurrency,
+        faceValueAmount: toMinorUnits(faceValue, priceCurrency),
+        faceValueCurrency: priceCurrency,
+        advanceRateBps: toBps(advanceRatePct),
+        discountRateBps: toBps(discountRatePct),
+        maturityDate: new Date(maturityDate).toISOString(),
         requireAuthorization: requireAuth,
       });
       setAssetId("");
       setTotalUnits("");
-      setPricePerUnit("");
+      setFaceValue("");
+      setMaturityDate("");
       setRequireAuth(false);
       onNotice("Tokenization created as a draft — deploy it to open for investment");
       await onChanged();
@@ -531,12 +602,9 @@ function IssuePanel({
                 ))}
               </select>
             </label>
-            <label className="block text-sm font-medium">Total units
-              <input required value={totalUnits} onChange={(e) => setTotalUnits(e.target.value)} placeholder="1000" inputMode="numeric" className="input mt-xs font-mono" />
-            </label>
             <div className="grid grid-cols-[1fr_auto] gap-sm">
-              <label className="block text-sm font-medium">Price / unit
-                <input required value={pricePerUnit} onChange={(e) => setPricePerUnit(e.target.value)} placeholder="0.00" inputMode="decimal" className="input mt-xs font-mono" />
+              <label className="block text-sm font-medium">Face value
+                <input required value={faceValue} onChange={(e) => setFaceValue(e.target.value)} placeholder="100000.00" inputMode="decimal" className="input mt-xs font-mono" />
               </label>
               <label className="block text-sm font-medium">Currency
                 <select value={priceCurrency} onChange={(e) => setPriceCurrency(e.target.value as CurrencyCode)} className="input mt-xs">
@@ -544,6 +612,29 @@ function IssuePanel({
                 </select>
               </label>
             </div>
+            <p className="text-xs leading-5 text-muted">What the debtor owes you at maturity. Investors advance a share of it now.</p>
+            <label className="block text-sm font-medium">Total units
+              <input required value={totalUnits} onChange={(e) => setTotalUnits(e.target.value)} placeholder="1000" inputMode="numeric" className="input mt-xs font-mono" />
+            </label>
+            <div className="grid grid-cols-2 gap-sm">
+              <label className="block text-sm font-medium">Advance %
+                <input required value={advanceRatePct} onChange={(e) => setAdvanceRatePct(e.target.value)} placeholder="80" inputMode="decimal" className="input mt-xs font-mono" />
+              </label>
+              <label className="block text-sm font-medium">Investor yield %
+                <input required value={discountRatePct} onChange={(e) => setDiscountRatePct(e.target.value)} placeholder="4" inputMode="decimal" className="input mt-xs font-mono" />
+              </label>
+            </div>
+            <label className="block text-sm font-medium">Maturity date
+              <input required type="date" value={maturityDate} onChange={(e) => setMaturityDate(e.target.value)} className="input mt-xs font-mono" />
+            </label>
+            {financingPreview ? (
+              <dl className="space-y-xs rounded-md border border-hairline-light bg-surface-soft-light p-md text-xs">
+                <div className="flex justify-between gap-md"><dt className="text-muted">Raised from investors</dt><dd className="font-mono font-semibold">{financingPreview.principal}</dd></div>
+                <div className="flex justify-between gap-md"><dt className="text-muted">You receive now</dt><dd className="font-mono font-semibold text-status-verified">{financingPreview.proceeds}</dd></div>
+                <div className="flex justify-between gap-md"><dt className="text-muted">Price per unit</dt><dd className="font-mono">{financingPreview.unitPrice}</dd></div>
+                <div className="flex justify-between gap-md border-t border-hairline-light pt-xs"><dt className="text-muted">Your residual at collection</dt><dd className="font-mono">{financingPreview.residual}</dd></div>
+              </dl>
+            ) : null}
             <label className="flex items-center gap-sm text-sm font-medium">
               <input type="checkbox" checked={requireAuth} onChange={(e) => setRequireAuth(e.target.checked)} className="h-4 w-4 rounded border-hairline-light" />
               Require holder authorization (compliance-controlled)
@@ -553,7 +644,7 @@ function IssuePanel({
             </button>
             <p className="flex items-start gap-xs text-xs leading-5 text-muted">
               <Icon name="shield" className="mt-0.5 h-4 w-4 shrink-0" />
-              Tokenization is separate from the escrow happy path. Payouts distribute pro-rata to holders when the linked buyer payment is released.
+              Investors are repaid first at collection, then the platform fee, and you keep the residual. Late payment accrues extra yield from your residual.
             </p>
           </form>
         </div>

@@ -29,9 +29,18 @@ import {
 import { logger } from "../../lib/logger.js";
 import { assertStellarAddress } from "../stellar/address.js";
 import {
+  RWA_INVESTMENT_LIABILITY,
+  RWA_INVESTOR_CASH_CLEARING,
+  RWA_ISSUER_PROCEEDS_PAYABLE,
   RWA_PAYOUT_PAYABLE,
   RWA_PAYOUT_RESERVE,
 } from "../ledger/system-accounts.js";
+import {
+  applyBps,
+  pricePerUnitFor,
+  validateTerms,
+  type FinancingTerms,
+} from "./rwa.financing.js";
 import type { WalletAddressResolver } from "../identity/wallet.resolver.js";
 import type { AuditRepository } from "../audit/audit.repository.js";
 import type { RwaGateway } from "./rwa.gateway.js";
@@ -120,7 +129,7 @@ export class RwaService {
     issuerUserId: string,
     input: CreateTokenizationInput,
   ): Promise<TokenizationDTO> {
-    this.validateTokenizationInput(input);
+    const { terms, totalUnits } = this.validateTokenizationInput(input);
 
     const asset = await this.repository.findAsset(input.assetId);
     if (!asset) {
@@ -130,10 +139,17 @@ export class RwaService {
       throw new ForbiddenError("Only the asset owner can tokenize it");
     }
 
-    const tokenization = await this.repository.createTokenization(
-      issuerUserId,
-      input,
-    );
+    // The unit price is derived, never supplied. A price inconsistent with the
+    // financing terms is the easiest way to end up with a waterfall that cannot
+    // be paid, so the server computes it from the terms it just validated.
+    const pricePerUnitAmount = pricePerUnitFor(terms, totalUnits).toString();
+
+    const tokenization = await this.repository.createTokenization(issuerUserId, {
+      ...input,
+      pricePerUnitAmount,
+      pricePerUnitCurrency: input.faceValueCurrency,
+      platformFeeBps: input.platformFeeBps ?? 0,
+    });
 
     await this.audit.append({
       actor: `user:${issuerUserId}`,
@@ -143,8 +159,13 @@ export class RwaService {
       metadata: {
         assetId: input.assetId,
         totalUnits: input.totalUnits,
-        pricePerUnit: input.pricePerUnitAmount,
-        currency: input.pricePerUnitCurrency,
+        faceValue: input.faceValueAmount,
+        advanceRateBps: input.advanceRateBps,
+        discountRateBps: input.discountRateBps,
+        platformFeeBps: input.platformFeeBps ?? 0,
+        maturityDate: input.maturityDate,
+        pricePerUnit: pricePerUnitAmount,
+        currency: input.faceValueCurrency,
       },
     });
 
@@ -287,6 +308,29 @@ export class RwaService {
       "holderAddress",
     );
 
+    // ── The money moves here, before any units do ───────────────────────────
+    //
+    // This posting is the whole difference between a subscription and a
+    // giveaway. Until it existed, `purchaseUnits` wrote a holding row and an
+    // audit entry and charged nobody: the investor paid nothing and the issuer
+    // received nothing.
+    //
+    // It runs before the chain transfer for the same reason the escrow path
+    // settles the chain before the ledger, inverted: here the ledger *is* the
+    // obligation being created, and a transfer of units against an unrecorded
+    // payment would hand out ownership for free. If the posting throws, no
+    // units have moved and no holding exists.
+    //
+    // The reference id is derived from what caused the purchase, not from a
+    // timestamp, so a retried click converges on one posting instead of
+    // charging twice.
+    const ledgerReferenceId = `rwa-subscription:${tokenizationId}:${actor.userId}:${units}`;
+    const ledgerTransaction = await this.recordSubscriptionLedger(
+      ledgerReferenceId,
+      tokenization,
+      purchaseAmount,
+    );
+
     // Under issuer custody the platform holds no key for the issuer's account,
     // so it cannot deliver the units itself. The purchase is still real — the
     // units are reserved and paid for — but delivery waits for the issuer's
@@ -344,10 +388,95 @@ export class RwaService {
         units: units.toString(),
         purchaseAmount: purchaseAmount.toString(),
         currency: tokenization.pricePerUnitCurrency,
+        ledgerTransactionId: ledgerTransaction.id,
       },
     });
 
     return this.getTokenizationDetails(tokenizationId);
+  }
+
+  /**
+   * Post the balanced entries for an investor subscription.
+   *
+   * Three legs, because a subscription is not a simple transfer — the platform
+   * stands between the investor and the issuer, and the issuer receives *less*
+   * than the investor pays. That difference is the investors' discount, which
+   * is earned back out of the face value when the debtor pays:
+   *
+   *   debit  investor cash clearing     purchaseAmount   (cash in)
+   *   credit issuer proceeds payable    issuerShare      (owed to the issuer)
+   *   credit investment liability       discountHeld     (owed to investors
+   *                                                       at collection)
+   *
+   * The two credits sum to the debit, so the transaction balances and the
+   * database constraint that rejects unbalanced writes is satisfied by
+   * construction rather than by hoping.
+   *
+   * A `ConflictError` means a concurrent attempt at the same subscription won
+   * the race; the ledger already holds the truth, so its id is recovered
+   * rather than failing a purchase that has in fact been paid for.
+   */
+  private async recordSubscriptionLedger(
+    referenceId: string,
+    tokenization: TokenizationDTO,
+    purchaseAmount: bigint,
+  ): Promise<{ id: string }> {
+    const currency = tokenization.pricePerUnitCurrency as CurrencyCode;
+
+    // The discount this investor's share carries, computed from the same terms
+    // the waterfall will use at collection. Deriving both from one function
+    // keeps the two sides of the deal consistent.
+    const discountHeld = applyBps(
+      purchaseAmount,
+      BigInt(tokenization.discountRateBps),
+    );
+    const issuerShare = purchaseAmount - discountHeld;
+
+    const entries: LedgerTransactionInput["entries"] = [
+      {
+        accountId: RWA_INVESTOR_CASH_CLEARING,
+        direction: EntryDirection.Debit,
+        amount: purchaseAmount.toString(),
+        currency,
+      },
+      {
+        accountId: RWA_ISSUER_PROCEEDS_PAYABLE,
+        direction: EntryDirection.Credit,
+        amount: issuerShare.toString(),
+        currency,
+      },
+    ];
+
+    // A zero-amount entry is rejected by the ledger schema, so the discount leg
+    // is only posted when there is a discount to hold. At a 0% rate the
+    // subscription is simply cash in, proceeds out.
+    if (discountHeld > 0n) {
+      entries.push({
+        accountId: RWA_INVESTMENT_LIABILITY,
+        direction: EntryDirection.Credit,
+        amount: discountHeld.toString(),
+        currency,
+      });
+    }
+
+    const input: LedgerTransactionInput = {
+      referenceId,
+      description: `RWA subscription for tokenization ${tokenization.id}`,
+      entries,
+    };
+
+    try {
+      return await this.ledger.record(input);
+    } catch (err) {
+      if (!(err instanceof ConflictError)) throw err;
+      const existing = await this.ledger.getByReference(referenceId);
+      if (!existing) throw err;
+      logger.info(
+        { tokenizationId: tokenization.id, ledgerTransactionId: existing.id },
+        "RWA subscription ledger transaction already posted; reusing it",
+      );
+      return existing;
+    }
   }
 
   // ── Issuer-signed operations (RWA_CUSTODY=issuer) ─────────────────────────
@@ -1182,21 +1311,62 @@ export class RwaService {
     }
   }
 
-  private validateTokenizationInput(input: CreateTokenizationInput): void {
+  /**
+   * Validate the financing terms and return them as exact integers.
+   *
+   * Everything checked here is checked at *creation*, which is the point: the
+   * expensive failure is a tokenization that sells units for months and only
+   * proves unpayable when the debtor finally pays.
+   */
+  private validateTokenizationInput(
+    input: CreateTokenizationInput,
+  ): { terms: FinancingTerms; totalUnits: bigint } {
     if (!/^\d+$/.test(input.totalUnits) || BigInt(input.totalUnits) <= 0n) {
       throw new ValidationError("Total units must be a positive integer");
     }
     if (
-      !/^\d+$/.test(input.pricePerUnitAmount) ||
-      BigInt(input.pricePerUnitAmount) <= 0n
+      !/^\d+$/.test(input.faceValueAmount) ||
+      BigInt(input.faceValueAmount) <= 0n
     ) {
-      throw new ValidationError("Price per unit must be a positive integer");
+      throw new ValidationError("Face value must be a positive integer");
     }
     if (
-      !input.pricePerUnitCurrency ||
-      input.pricePerUnitCurrency.trim().length === 0
+      !input.faceValueCurrency ||
+      input.faceValueCurrency.trim().length === 0
     ) {
-      throw new ValidationError("Price currency is required");
+      throw new ValidationError("Face value currency is required");
     }
+    for (const [name, value] of [
+      ["Advance rate", input.advanceRateBps],
+      ["Discount rate", input.discountRateBps],
+      ["Platform fee", input.platformFeeBps ?? 0],
+    ] as const) {
+      if (!Number.isInteger(value)) {
+        throw new ValidationError(`${name} must be a whole number of basis points`);
+      }
+    }
+
+    // A maturity in the past means the position is born defaulted, and late
+    // yield would start accruing before anyone had subscribed.
+    const maturity = new Date(input.maturityDate);
+    if (Number.isNaN(maturity.getTime())) {
+      throw new ValidationError("Maturity date must be a valid ISO-8601 date");
+    }
+    if (maturity.getTime() <= Date.now()) {
+      throw new ValidationError("Maturity date must be in the future");
+    }
+
+    const terms: FinancingTerms = {
+      faceValue: BigInt(input.faceValueAmount),
+      advanceRateBps: BigInt(input.advanceRateBps),
+      discountRateBps: BigInt(input.discountRateBps),
+      platformFeeBps: BigInt(input.platformFeeBps ?? 0),
+    };
+    const totalUnits = BigInt(input.totalUnits);
+
+    // Range checks, payability, and a representable unit price.
+    validateTerms(terms, totalUnits);
+
+    return { terms, totalUnits };
   }
 }

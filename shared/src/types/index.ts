@@ -779,6 +779,28 @@ export interface TokenizationDTO {
   /** Escrow order whose release triggers the payout (null if none). */
   linkedOrderId: string | null;
   status: import("../constants/index.js").TokenizationStatus;
+
+  // ── Financing terms (discount / factoring model) ────────────────────────
+  // Investors buy the claim below face value and are repaid at face value on
+  // collection; their yield is the discount. The recurring-coupon alternative
+  // is deliberately not modelled — see plane.md §8.1 before adding one.
+  /** What the debtor owes at maturity (minor-unit integer string). */
+  faceValueAmount: MinorUnitAmount;
+  faceValueCurrency: CurrencyCode;
+  /**
+   * Share of face value financed, in basis points (8000 = 80%). The unfinanced
+   * remainder is the seller's retained first-loss.
+   */
+  advanceRateBps: number;
+  /** Investor yield on the principal, in basis points. */
+  discountRateBps: number;
+  /** Platform take, in basis points of face value, paid after investors. */
+  platformFeeBps: number;
+  /** When collection is due (ISO-8601). */
+  maturityDate: string;
+  /** When collection actually happened, so late yield accrues to a real date. */
+  collectedAt: string | null;
+
   createdAt: string;
   updatedAt: string;
 }
@@ -849,8 +871,19 @@ export interface CreateAssetInput {
 export interface CreateTokenizationInput {
   assetId: string;
   totalUnits: string;
-  pricePerUnitAmount: MinorUnitAmount;
-  pricePerUnitCurrency: CurrencyCode;
+  /**
+   * Financing terms. The unit price is *derived* from these
+   * (faceValue x advanceRate / totalUnits) rather than supplied: a price
+   * inconsistent with the terms is the easiest way to make the payout
+   * waterfall unpayable, so the server computes it.
+   */
+  faceValueAmount: MinorUnitAmount;
+  faceValueCurrency: CurrencyCode;
+  advanceRateBps: number;
+  discountRateBps: number;
+  /** Optional; defaults to the platform's configured rate. */
+  platformFeeBps?: number;
+  maturityDate: string;
   requireAuthorization?: boolean;
   linkedOrderId?: string;
 }

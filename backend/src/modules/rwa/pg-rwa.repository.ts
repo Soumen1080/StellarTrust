@@ -22,13 +22,15 @@
 import type pg from "pg";
 import type { CurrencyCode } from "@stellartrust/shared";
 import { ConflictError, NotFoundError } from "../../lib/errors.js";
-import type { RwaRepository } from "./rwa.repository.js";
+import type {
+  PersistTokenizationInput,
+  RwaRepository,
+} from "./rwa.repository.js";
 import {
   PayoutStatus,
   TokenizationStatus,
   type AssetDTO,
   type CreateAssetInput,
-  type CreateTokenizationInput,
   type PayoutDistributionDTO,
   type PayoutRecordDTO,
   type TokenHoldingDTO,
@@ -79,6 +81,13 @@ interface TokenizationRow {
   units_sold: string;
   price_per_unit_amount: string;
   price_per_unit_currency: string;
+  face_value_amount: string | number;
+  face_value_currency: string;
+  advance_rate_bps: number;
+  discount_rate_bps: number;
+  platform_fee_bps: number;
+  maturity_date: Date | string;
+  collected_at: Date | string | null;
   require_authorization: boolean;
   frozen: boolean;
   linked_order_id: string | null;
@@ -156,6 +165,13 @@ export class PgRwaRepository implements RwaRepository {
       unitsSold: toAmount(row.units_sold),
       pricePerUnitAmount: toAmount(row.price_per_unit_amount),
       pricePerUnitCurrency: row.price_per_unit_currency as CurrencyCode,
+      faceValueAmount: toAmount(row.face_value_amount),
+      faceValueCurrency: row.face_value_currency as CurrencyCode,
+      advanceRateBps: Number(row.advance_rate_bps),
+      discountRateBps: Number(row.discount_rate_bps),
+      platformFeeBps: Number(row.platform_fee_bps),
+      maturityDate: toIso(row.maturity_date),
+      collectedAt: toIsoOrNull(row.collected_at),
       requireAuthorization: row.require_authorization,
       frozen: row.frozen,
       linkedOrderId: row.linked_order_id,
@@ -274,7 +290,7 @@ export class PgRwaRepository implements RwaRepository {
 
   async createTokenization(
     issuerUserId: string,
-    input: CreateTokenizationInput,
+    input: PersistTokenizationInput,
   ): Promise<TokenizationDTO> {
     const client = await this.pool.connect();
     try {
@@ -301,8 +317,10 @@ export class PgRwaRepository implements RwaRepository {
       const { rows } = await client.query<TokenizationRow>(
         `insert into tokenizations
            (asset_id, issuer_user_id, total_units, price_per_unit_amount,
-            price_per_unit_currency, require_authorization, linked_order_id, status)
-         values ($1, $2, $3, $4, $5, $6, $7, 'draft')
+            price_per_unit_currency, require_authorization, linked_order_id,
+            face_value_amount, face_value_currency, advance_rate_bps,
+            discount_rate_bps, platform_fee_bps, maturity_date, status)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'draft')
          returning *`,
         [
           input.assetId,
@@ -312,6 +330,12 @@ export class PgRwaRepository implements RwaRepository {
           input.pricePerUnitCurrency,
           input.requireAuthorization ?? false,
           input.linkedOrderId ?? null,
+          input.faceValueAmount,
+          input.faceValueCurrency,
+          input.advanceRateBps,
+          input.discountRateBps,
+          input.platformFeeBps,
+          input.maturityDate,
         ],
       );
       const row = rows[0];

@@ -13,6 +13,19 @@ import { InMemoryRwaRepository } from "./rwa.repository.js";
 import { RwaService, type RwaActor } from "./rwa.service.js";
 import { AssetType, TokenizationStatus, PayoutStatus } from "./rwa.types.js";
 
+
+/**
+ * A maturity comfortably in the future.
+ *
+ * Financing terms are rejected at creation when maturity is not in the future
+ * (a position born past due would start accruing late yield before anyone
+ * subscribed), so every fixture needs a real date rather than a fixed string
+ * that would eventually go stale and start failing on its own.
+ */
+const FUTURE_MATURITY = new Date(
+  Date.now() + 90 * 24 * 60 * 60 * 1000,
+).toISOString();
+
 // Real strkeys: these reach a Soroban `Address` argument, and the service now
 // rejects anything that is not a valid Stellar account.
 const ISSUER_ADDRESS = "GBUV3T3YDFD232LUXGADFZV2XCMNEHXBMVTQPBD7DKHTP4Q6ZLNOSMEX";
@@ -38,7 +51,13 @@ const system: RwaActor = { userId: "system", roles: ["system"] };
 
 async function createActiveTokenization(
   service: RwaService,
-  overrides?: { requireAuthorization?: boolean; totalUnits?: string; linkedOrderId?: string },
+  overrides?: {
+    requireAuthorization?: boolean;
+    totalUnits?: string;
+    linkedOrderId?: string;
+    discountRateBps?: number;
+    advanceRateBps?: number;
+  },
 ) {
   const asset = await service.createAsset(issuer.userId, {
     assetType: AssetType.Invoice,
@@ -50,8 +69,11 @@ async function createActiveTokenization(
   const tokenization = await service.createTokenization(issuer.userId, {
     assetId: asset.id,
     totalUnits: overrides?.totalUnits ?? "1000",
-    pricePerUnitAmount: "1000",
-    pricePerUnitCurrency: "USDC",
+    faceValueAmount: String(BigInt(overrides?.totalUnits ?? "1000") * 1000n),
+    faceValueCurrency: "USDC",
+    advanceRateBps: overrides?.advanceRateBps ?? 10_000,
+    discountRateBps: overrides?.discountRateBps ?? 0,
+    maturityDate: FUTURE_MATURITY,
     requireAuthorization: overrides?.requireAuthorization ?? false,
     linkedOrderId: overrides?.linkedOrderId,
   });
@@ -81,8 +103,11 @@ describe("Phase 5 RWA tokenization", () => {
       service.createTokenization("someone-else", {
         assetId: asset.id,
         totalUnits: "100",
-        pricePerUnitAmount: "100",
-        pricePerUnitCurrency: "USDC",
+        faceValueAmount: "10000",
+        faceValueCurrency: "USDC",
+        advanceRateBps: 10_000,
+        discountRateBps: 0,
+        maturityDate: FUTURE_MATURITY,
       }),
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
@@ -101,8 +126,11 @@ describe("Phase 5 RWA tokenization", () => {
     const draft = await service.createTokenization(issuer.userId, {
       assetId: asset.id,
       totalUnits: "10",
-      pricePerUnitAmount: "10",
-      pricePerUnitCurrency: "USDC",
+      faceValueAmount: "100",
+      faceValueCurrency: "USDC",
+      advanceRateBps: 10_000,
+      discountRateBps: 0,
+      maturityDate: FUTURE_MATURITY,
     });
     await expect(
       service.deployTokenization(draft.id, investor),
@@ -122,6 +150,115 @@ describe("Phase 5 RWA tokenization", () => {
     expect(details.totalRaised).toBe("250000"); // 250 * 1000
     expect(details.holdings).toHaveLength(1);
     expect(details.holdings[0]?.units).toBe("250");
+  });
+
+  // ── A subscription must move money (plane.md §1.1, defect D1) ─────────────
+  //
+  // Until these existed, `purchaseUnits` wrote a holding row and an audit entry
+  // and charged nobody: the investor paid nothing and the issuer received
+  // nothing. Every assertion below is about the ledger, because the holding row
+  // was never the part that was missing.
+
+  it("posts a balanced ledger transaction for an investor subscription", async () => {
+    const { service, ledger } = setup();
+    const { tokenization } = await createActiveTokenization(service);
+
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "250",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+
+    const posted = await ledger.getByReference(
+      `rwa-subscription:${tokenization.id}:${investor.userId}:250`,
+    );
+    expect(posted).toBeDefined();
+    expect(isBalanced(posted!.entries)).toBe(true);
+
+    // 250 units x 1000 = 250,000 in, and with no discount configured the whole
+    // amount is owed onward to the issuer.
+    const debits = posted!.entries.filter((e) => e.direction === "debit");
+    const credits = posted!.entries.filter((e) => e.direction === "credit");
+    expect(debits).toHaveLength(1);
+    expect(debits[0]?.amount).toBe("250000");
+    expect(
+      credits.reduce((sum, e) => sum + BigInt(e.amount), 0n).toString(),
+    ).toBe("250000");
+  });
+
+  it("splits the subscription between the issuer and the investors' discount", async () => {
+    const { service, ledger } = setup();
+    // An 80% advance with a 4% discount — a deal the face value can actually
+    // pay. (A 100% advance plus a discount is refused at creation, because the
+    // collection could never cover what investors would be owed.)
+    const { tokenization } = await createActiveTokenization(service, {
+      advanceRateBps: 8_000,
+      discountRateBps: 400,
+    });
+
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "100",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+
+    // 1,000,000 face x 80% = 800,000 principal over 1000 units = 800/unit.
+    const unitPrice = BigInt(tokenization.pricePerUnitAmount);
+    expect(unitPrice).toBe(800n);
+
+    const paid = unitPrice * 100n; // 80,000
+    const held = (paid * 400n) / 10_000n; // 4% = 3,200
+    const posted = await ledger.getByReference(
+      `rwa-subscription:${tokenization.id}:${investor.userId}:100`,
+    );
+    expect(isBalanced(posted!.entries)).toBe(true);
+    expect(posted!.entries.map((e) => e.amount).sort()).toEqual(
+      [paid.toString(), held.toString(), (paid - held).toString()].sort(),
+    );
+  });
+
+  it("charges each subscription separately when several investors buy", async () => {
+    const { service, ledger } = setup();
+    const { tokenization } = await createActiveTokenization(service);
+
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "100",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+    await service.purchaseUnits(tokenization.id, investor2, {
+      units: "150",
+      holderAddress: INVESTOR2_ADDRESS,
+    });
+
+    const first = await ledger.getByReference(
+      `rwa-subscription:${tokenization.id}:${investor.userId}:100`,
+    );
+    const second = await ledger.getByReference(
+      `rwa-subscription:${tokenization.id}:${investor2.userId}:150`,
+    );
+    expect(first?.id).toBeDefined();
+    expect(second?.id).toBeDefined();
+    expect(first!.id).not.toBe(second!.id);
+  });
+
+  it("records the ledger transaction id on the purchase audit entry", async () => {
+    // The audit trail has to lead to the money, or "auditable" is a claim
+    // rather than a property.
+    const { service, audit, ledger } = setup();
+    const { tokenization } = await createActiveTokenization(service);
+
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "10",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+
+    const entries = await audit.listForEntity("tokenization", tokenization.id);
+    const purchase = entries.find((e) => e.action === "rwa.purchase_units");
+    const ledgerTransactionId = purchase?.metadata?.ledgerTransactionId;
+    expect(ledgerTransactionId).toBeDefined();
+
+    const posted = await ledger.getByReference(
+      `rwa-subscription:${tokenization.id}:${investor.userId}:10`,
+    );
+    expect(posted!.id).toBe(ledgerTransactionId);
   });
 
   it("auto-transitions to funded when fully subscribed", async () => {
@@ -508,8 +645,11 @@ describe("Phase 5 RWA payout integration with escrow release", () => {
     const tokenization = await rwa.createTokenization(issuer.userId, {
       assetId: asset.id,
       totalUnits: "1000",
-      pricePerUnitAmount: "10",
-      pricePerUnitCurrency: "USDC",
+      faceValueAmount: "10000",
+      faceValueCurrency: "USDC",
+      advanceRateBps: 10_000,
+      discountRateBps: 0,
+      maturityDate: FUTURE_MATURITY,
       linkedOrderId: orderId,
     });
     const deployed = await rwa.deployTokenization(tokenization.id, issuer);

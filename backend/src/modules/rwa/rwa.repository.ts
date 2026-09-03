@@ -19,6 +19,21 @@ import type {
 import { TokenizationStatus } from "./rwa.types.js";
 import { ConflictError, NotFoundError } from "../../lib/errors.js";
 
+/**
+ * What a repository needs to persist a tokenization.
+ *
+ * The wire input carries financing *terms*; the unit price is derived from them
+ * by the service (a price supplied alongside inconsistent terms is how a
+ * waterfall becomes unpayable). By the time a repository sees this, that
+ * derivation has happened and the fee has been defaulted, so both are required
+ * rather than optional.
+ */
+export type PersistTokenizationInput = CreateTokenizationInput & {
+  pricePerUnitAmount: string;
+  pricePerUnitCurrency: CreateTokenizationInput["faceValueCurrency"];
+  platformFeeBps: number;
+};
+
 export interface RwaRepository {
   // Assets
   createAsset(ownerUserId: string, input: CreateAssetInput): Promise<AssetDTO>;
@@ -28,7 +43,7 @@ export interface RwaRepository {
   // Tokenizations
   createTokenization(
     issuerUserId: string,
-    input: CreateTokenizationInput,
+    input: PersistTokenizationInput,
   ): Promise<TokenizationDTO>;
   updateTokenization(tokenization: TokenizationDTO): Promise<TokenizationDTO>;
   findTokenization(tokenizationId: string): Promise<TokenizationDTO | undefined>;
@@ -120,7 +135,7 @@ export class InMemoryRwaRepository implements RwaRepository {
   // Tokenizations
   async createTokenization(
     issuerUserId: string,
-    input: CreateTokenizationInput,
+    input: PersistTokenizationInput,
   ): Promise<TokenizationDTO> {
     const asset = await this.findAsset(input.assetId);
     if (!asset) {
@@ -152,6 +167,13 @@ export class InMemoryRwaRepository implements RwaRepository {
       frozen: false,
       linkedOrderId: input.linkedOrderId ?? null,
       status: TokenizationStatus.Draft,
+      faceValueAmount: input.faceValueAmount,
+      faceValueCurrency: input.faceValueCurrency,
+      advanceRateBps: input.advanceRateBps,
+      discountRateBps: input.discountRateBps,
+      platformFeeBps: input.platformFeeBps,
+      maturityDate: input.maturityDate,
+      collectedAt: null,
       createdAt: now,
       updatedAt: now,
     };

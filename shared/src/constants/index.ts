@@ -423,6 +423,24 @@ export const TokenizationStatus = {
   Frozen: "frozen",
   /** Cancelled before activation. */
   Cancelled: "cancelled",
+
+  // ── Post-funding lifecycle (discount model) ─────────────────────────────
+  // A tokenization that can never fail is not an investment product. These
+  // are the states a real receivable reaches after the money is raised.
+  /** Past its maturity date, collection not yet received. */
+  Matured: "matured",
+  /** Collected in full and the waterfall paid out. */
+  Repaid: "repaid",
+  /** Past the grace window with no collection. Investors are at risk. */
+  Defaulted: "defaulted",
+  /** Closed at a loss; any recovery has been distributed pro-rata. */
+  WrittenOff: "written_off",
+  /**
+   * Payout suspended because the linked escrow order is disputed. Holding the
+   * distribution is the investor protection: a disputed invoice may be
+   * refunded to the buyer, in which case there is nothing to pay out.
+   */
+  PayoutHeld: "payout_held",
 } as const;
 export type TokenizationStatus =
   (typeof TokenizationStatus)[keyof typeof TokenizationStatus];

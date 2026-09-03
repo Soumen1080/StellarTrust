@@ -1,0 +1,374 @@
+# StellarTrust — Industry-Grade Platform Plan
+
+> **Purpose:** Turn StellarTrust from a feature demo into a platform that solves a
+> real problem end to end. This file is the working checklist. Mark a box `[x]`
+> only when the task is implemented **and** covered by a test that runs in CI.
+>
+> **Created:** 2026-09-03
+> **Status legend:** `[ ]` not started · `[~]` in progress · `[x]` done (tested)
+> **Severity:** 🔴 blocker (platform is not real without it) · 🟠 major · 🟡 polish
+>
+> **Decisions already made** live in §8 with their reasoning. Read it before
+> proposing an alternative that was already weighed and set aside.
+
+---
+
+## 0. The diagnosis — why it currently reads as a demo
+
+This plan is written against findings verified in the code on 2026-09-03, not
+against impressions. Each is a specific, located defect.
+
+| # | Finding | Where | Why it makes the platform a demo |
+|---|---|---|---|
+| D1 | **An investor purchase moves no money.** `purchaseUnits` creates a holding row and an audit entry. It never calls `LedgerService`. No debit from the investor, no credit to the issuer. | `rwa.service.ts` `purchaseUnits` | This is the whole point of tokenization — the seller gets cash early. Today units are given away and no one is charged. The issuer receives nothing. |
+| D2 | **The payout pays out the wrong number.** On escrow release the *entire order amount* is distributed pro-rata to holders. | `payment.service.ts` `triggerRwaPayout` | Real invoice financing pays investors principal + agreed yield, and the balance goes to the seller. Paying 100% of the invoice to investors means the seller financed nothing and the platform earns nothing. |
+| D3 | **Settlement is disconnected from escrow.** `SettlementDTO` has no `orderId`. | `shared/src/types` | A cross-border trade cannot actually be paid for through a corridor. The two headline features never touch. |
+| D4 | **Disputes are invisible to RWA.** Zero references to dispute state in the RWA module. | `rwa.service.ts` | A disputed invoice still pays investors in full on release. Investors carry a risk nobody models. |
+| D5 | **No maturity, default, or write-off.** A tokenization can never fail. | `TokenizationStatus` | Every real receivable can go late or bad. Without this there is no risk, so no genuine investment product. |
+| D6 | **No secondary transfer.** Explicitly refused. | `rwa.service.ts:278` | Investors cannot exit before maturity. |
+| D7 | **Asset valuation is self-asserted.** `valuationAmount` is typed by the issuer with no verification, no document, no lien check. | `AssetDTO` | Anyone can tokenize a $10M invoice that does not exist. This is the fraud surface a real platform exists to close. |
+| D8 | **No investor protections at all** — no per-investor cap, no accreditation, no concentration limit, no cooling-off. | RWA module | Regulators require these; their absence is what makes it look like a toy. |
+
+**One-line summary:** the *plumbing* (contracts, ledger, reconciliation, custody
+modes) is genuinely well built. The *economics* are missing — nothing charges an
+investor, nothing prices risk, and the four domains do not compose.
+
+---
+
+## 1. Domain model corrections (do these first — everything depends on them)
+
+### 1.1 🔴 Make an investor purchase a real financial transaction
+- [x] Add `RwaService.purchaseUnits` → `LedgerService.record()` posting:
+      debit investor cash clearing, credit issuer proceeds, credit the
+      investors' discount as a liability. Posted *before* any units move, so a
+      failure hands out no ownership. `recordSubscriptionLedger` in
+      `rwa.service.ts`.
+- [x] Idempotency: the reference id is
+      `rwa-subscription:{tokenizationId}:{investorId}:{units}` — derived from
+      what caused the purchase, not a timestamp — so a retried click converges
+      on one posting. A lost race recovers the existing id rather than failing.
+- [x] Tests: balanced posting asserted via `isBalanced`; the discount split
+      checked against exact minor units; separate investors charged separately;
+      the audit entry carries the ledger transaction id so the trail leads to
+      the money. (4 tests in `rwa.test.ts`.)
+- [ ] Reject a purchase when the investor's ledger balance is insufficient.
+      Needs per-user ledger accounts, which do not exist yet — every posting
+      currently lands on system accounts. Blocked on §4.5.
+- [ ] Make the whole purchase atomic: ledger post + holding row + on-chain
+      transfer either all succeed or none do. Ordering now favours safety (money
+      first, units second), but a chain failure after the posting still leaves a
+      paid-for holding that never got its units — which the RWA reconciliation
+      job reports rather than hiding.
+
+### 1.2 🔴 Introduce the financing economics
+
+**Model decided (2026-09-03): discount / factoring.** Investors buy a claim
+below face value and are repaid at face value on collection; their yield *is*
+the discount. Chosen because invoices are the default asset type and the
+working-capital problem the PRD describes, and because a single collection
+event maps exactly onto the existing escrow-release trigger — no new scheduler.
+
+**Applies to all four asset types.** Commodity, real estate, and other are
+tokenized as a single-maturity claim, which is a real structure (a dated
+purchase obligation). The recurring-income alternative is deferred to §8.1 and
+must not be described as supported until it is built.
+
+Worked example — a 100,000 USDC invoice at net-90, 80% advance, 4% discount,
+1% platform fee:
+
+| Step | Amount | Note |
+|---|---|---|
+| Financed (80% of face) | 80,000 | what investors subscribe |
+| Seller receives at funding | 76,800 | financed less the 4% discount |
+| **On collection of 100,000** | | |
+| 1 — investors | 83,200 | principal 80,000 + 4% yield |
+| 2 — platform | 800 | 1% fee |
+| 3 — seller residual | 16,000 | the retained 20% first-loss |
+| | **100,000** | balanced |
+
+Add to `TokenizationDTO`:
+- [x] `faceValueAmount` / `faceValueCurrency` — what the debtor owes at maturity.
+- [x] `advanceRateBps` — share of face value financed (8000 = 80%); the
+      remainder is the seller's retained first-loss.
+- [x] `discountRateBps` — the investor yield.
+- [x] `platformFeeBps` — the platform's take.
+- [x] `maturityDate` — when collection is due.
+- [x] `collectedAt` — when it actually happened, so late yield accrues against
+      the real date rather than read-time `now()`.
+- [x] Derive `pricePerUnit` from `faceValue × advanceRate ÷ totalUnits`. The
+      route no longer accepts a price at all; the server computes it.
+- [x] Validation: `0 < advanceRate ≤ 100%`, maturity in the future at creation,
+      rates in range, single currency (enforced by a DB check constraint too),
+      and a **payability check** — terms whose advance + yield + fee exceed the
+      face value are refused at creation, because such a deal is insolvent by
+      construction.
+- [x] Tests: 40 tests in `rwa.financing.test.ts` covering exact minor-unit
+      arithmetic, the rounding direction, and every rejection path.
+- [x] Migration `0016` adds the columns, backfills existing rows at a 100%
+      advance with zero yield (economically identical to the old model, so no
+      existing tokenization changes value), and adds the range/payability
+      constraints.
+- [x] Frontend: the tokenize form collects face value, advance %, yield % and
+      maturity, and shows a live preview of what the issuer actually receives,
+      the derived unit price, and the residual — computed with the same
+      round-half-up rule the server uses.
+
+### 1.3 🔴 Fix the payout waterfall
+Replace "distribute the whole order amount" with an ordered waterfall:
+- [x] The arithmetic: `splitCollection` in `rwa.financing.ts` implements the
+      strict priority — investors (principal + accrued yield), then the
+      platform fee, then the seller's residual.
+- [x] Partial collection pays investors as far as it reaches and leaves the
+      platform and seller nothing; the unpaid remainder is reported as
+      `shortfall`, which is the input to the default path in §1.4.
+- [x] Late payment accrues yield per day past maturity, taken from the seller's
+      residual rather than the investors' return — lateness costs the seller.
+- [x] `proRataShares` distributes a total across holders with a largest-
+      remainder method, so the shares sum to *exactly* the total. A ledger
+      transaction whose legs miss the total is rejected outright, so
+      "close enough" is not available.
+- [x] Tests: full, partial, late, zero-residual, and zero-collection cases, each
+      asserting the legs reconstitute the collection exactly.
+- [ ] **Wire it into `PaymentService.triggerRwaPayout`.** The waterfall exists
+      and is tested but the release hook still distributes the whole order
+      amount. This is the remaining half of defect D2 and the next task.
+
+### 1.4 🔴 Complete the tokenization lifecycle
+- [ ] Add statuses: `Matured`, `Defaulted`, `WrittenOff`, `Repaid`.
+- [ ] Scheduled job moves `Funded` → `Matured` at `maturityDate`.
+- [ ] Grace window, then `Matured` → `Defaulted`.
+- [ ] Write-off path distributing recovery pro-rata and closing the position.
+- [ ] Tests for each transition and for illegal transitions being refused.
+
+---
+
+## 2. Cross-domain synchronization (the "make it compose" work)
+
+### 2.1 🔴 Link settlement to escrow orders
+- [ ] Add `orderId: string | null` to `SettlementDTO` + migration.
+- [ ] `POST /api/settlement/orders` accepts an `orderId`; on completion it
+      drives the order's `Deposit` transition instead of the buyer paying twice.
+- [ ] The settlement's credited amount must equal the order amount, or the
+      settlement is rejected before it starts.
+- [ ] One ledger transaction spans both legs so the corridor fee and the escrow
+      deposit reconcile together.
+- [ ] Tests: a full corridor-funded escrow order, and a mismatch refused.
+
+### 2.2 🔴 Make disputes gate RWA payouts
+- [ ] `RwaService.distributePayout` refuses while an open dispute exists on the
+      linked order.
+- [ ] Opening a dispute on a tokenization-linked order flips it to
+      `PayoutHeld` and notifies holders.
+- [ ] Dispute resolved in the buyer's favour (refund) → tokenization moves to
+      `Defaulted`, triggering the recovery path in §1.4 rather than paying out.
+- [ ] Dispute resolved in the seller's favour → payout resumes automatically.
+- [ ] Tests: each of the three outcomes, asserting no payout escapes during a
+      held dispute.
+
+### 2.3 🟠 One event spine across the four domains
+- [ ] Introduce a `DomainEvent` table + append helper (order.released,
+      dispute.opened, settlement.completed, tokenization.matured, …).
+- [ ] Each module publishes; subscribers react. Replaces today's direct service
+      call from payments into RWA, which is why the coupling is one-way.
+- [ ] Handlers are idempotent and retried with backoff; failures are visible in
+      `/metrics`, not swallowed in a log line.
+- [ ] Tests: a replayed event produces no second effect.
+
+### 2.4 🟠 Unified position view
+- [ ] `GET /api/positions` — one authenticated call returning the caller's
+      orders, settlements, disputes, and holdings with their linkage.
+- [ ] Frontend dashboard consumes it so a user sees one story instead of four
+      disconnected consoles.
+
+---
+
+## 3. Making the RWA section a real tokenization product
+
+### 3.1 🔴 Asset verification before tokenization
+- [ ] Require ≥1 supporting document reference per asset (invoice PDF, bill of
+      lading, appraisal) stored as an opaque reference.
+- [ ] Verification workflow: `Unverified → UnderReview → Verified | Rejected`.
+      Only a `Verified` asset may be tokenized.
+- [ ] Duplicate-asset guard: the same `assetRef` cannot be tokenized twice while
+      an active tokenization exists — this is double-pledging, the classic
+      invoice-financing fraud.
+- [ ] Counterparty (the invoice debtor) recorded and reputation-scored.
+- [ ] Tests: unverified asset refused; double-pledge refused.
+
+### 3.2 🟠 Investor protection and compliance
+- [ ] Investor must be KYC-verified before any purchase (today it is not
+      checked in the RWA path).
+- [ ] Per-investor concentration limit (max % of one tokenization).
+- [ ] Per-investor exposure cap across all tokenizations.
+- [ ] Minimum ticket size and unit granularity.
+- [ ] Cooling-off window during which a purchase can be cancelled.
+- [ ] Tests for each limit at its boundary.
+
+### 3.3 🟠 Secondary market (replaces the D6 refusal)
+- [ ] Allow an existing holder to increase their position.
+- [ ] Holder-to-holder transfer at an agreed price, honouring the authorization
+      allowlist and the frozen flag.
+- [ ] Ledger posts both legs; on-chain transfer follows the custody mode.
+- [ ] Tests: transfer to an unauthorized holder refused; frozen token refused.
+
+### 3.4 🟠 Risk surfacing in the UI
+- [ ] Every tokenization card shows: advance rate, yield, maturity, days
+      remaining, issuer reputation, and dispute state.
+- [ ] Explicit risk disclosure before the purchase confirm step.
+- [ ] Portfolio shows accrued yield, overdue positions, and realized losses —
+      not just "total invested".
+
+---
+
+## 4. Platform-wide industrial concerns
+
+### 4.1 🔴 Cross-instance idempotency (the standing Golden Rule #4 hole)
+- [ ] Redis-backed `IdempotencyStore` replacing the in-memory one.
+- [ ] Same for the rate limiter so limits are global, not per-process.
+- [ ] Documented single-instance constraint removed once done.
+
+### 4.2 🔴 Remaining persistence gaps
+- [ ] `PgKycRepository` — KYC state currently dies on restart.
+- [ ] `PgReputationRepository` — same.
+
+### 4.3 🟠 Money-safety invariants at the database layer
+- [ ] Constraint: `units_sold <= total_units` (exists — verify it survived the
+      repair migrations).
+- [ ] Constraint: a holding's units cannot exceed the tokenization's supply.
+- [ ] Constraint: payout distributions per tokenization cannot exceed collected
+      funds.
+- [ ] SQL invariant tests in `infra/supabase/tests/` for each.
+
+### 4.4 🟠 Observability that matches the domain
+- [ ] Business metrics beside the HTTP ones: total value locked, active
+      tokenizations, default rate, average days-to-collect, dispute rate.
+- [ ] Alert when default rate or dispute rate crosses a threshold.
+
+### 4.5 🔴 Per-user ledger accounts
+
+Discovered while wiring §1.1. Every ledger posting in the platform lands on
+*system* accounts (`rwa_investor_cash_clearing`, `escrow_holding`, …). There is
+no per-user account, so there is no such thing as "this investor's balance" to
+check against — which is why the insufficient-funds check in §1.1 could not be
+written.
+
+This is a structural gap, not an RWA one: the same absence means no user has a
+statement, and no balance can be proven without scanning transitions.
+
+- [ ] Per-user ledger accounts keyed on `owner_ref = user:<id>`, created on
+      demand per currency (the schema already supports this — `ledger_accounts`
+      is unique on `(owner_ref, currency, name)` and `owner_ref` already
+      documents `user:<id>` as a valid shape).
+- [ ] A balance read that sums entries for an account.
+- [ ] Postings that today credit or debit a clearing account move to the user's
+      own account where the money is genuinely theirs.
+- [ ] Insufficient-funds checks on subscription (§1.1) and any other user-funded
+      operation.
+- [ ] `GET /api/ledger/balances` so a user can see their own position.
+- [ ] Tests: a balance reflects postings; an overdraw is refused.
+
+### 4.6 🟡 Frontend quality
+- [ ] Component tests (currently zero) for the purchase flow, the escrow
+      transition flow, and the dispute form.
+- [ ] Replace the 12s polling with contract-event streaming over SSE.
+- [ ] Break up the dense single-line JSX in `RwaConsole.tsx`,
+      `EscrowDashboard.tsx`, `KycOnboarding.tsx`.
+
+---
+
+## 5. Sequencing
+
+Do them in this order; later work depends on earlier work.
+
+| Wave | Contents | Why first |
+|---|---|---|
+| **1** | §1.1, §1.2, §1.3 | Without money movement and correct economics, everything above it is decoration. |
+| **2** | §1.4, §2.2, §3.1 | Risk and fraud controls — what makes it a real product rather than a marketplace of assertions. |
+| **3** | §2.1, §2.3, §2.4 | Composition across domains. |
+| **4** | §3.2, §3.3, §4.1, §4.2, §4.5 | Compliance, liquidity, per-user balances, and the durability gaps. |
+| **5** | §3.4, §4.3, §4.4, §4.6 | Surfacing and hardening. |
+
+---
+
+## 6. Definition of done (applies to every box)
+
+- [ ] Input validated at the boundary with a shared schema.
+- [ ] Money paths post balanced double-entry ledger entries.
+- [ ] Money-mutating endpoints are idempotent.
+- [ ] Failures fail closed — never a partial money movement.
+- [ ] Covered by a test that runs in CI.
+- [ ] `docs/Memory.md` updated (status, decision log, changelog).
+
+---
+
+## 7. Explicitly out of scope
+
+- Becoming a licensed money transmitter or securities broker.
+- Real fiat rails beyond the anchor interface already defined.
+- Mainnet deployment with real user funds.
+- Non-Stellar chains.
+
+> These bound the work. Several items above (accreditation, concentration
+> limits) approximate regulatory controls so the architecture is *shaped*
+> correctly; they are not legal compliance and must not be described as such.
+
+---
+
+## 8. Deferred options — decided against for now, revisit later
+
+Recorded so the reasoning is not lost and so a later contributor does not
+re-litigate a settled decision or, worse, assume these are supported.
+
+### 8.1 🟠 Fixed-coupon / income-share financing model
+
+**Status: deferred 2026-09-03.** Wave 1 implements discount financing only
+(§1.2). This is the alternative that was considered and set aside.
+
+**What it is.** Investors hold units earning a stated periodic yield (say 6%
+annual, paid quarterly) from an asset that produces recurring income, with no
+single maturity and no single collection. Exit happens through redemption or a
+secondary sale rather than through collection.
+
+**Why it was not chosen first.** Three reasons, in order of weight:
+1. It does not map onto the existing escrow-release trigger. Discount financing
+   has exactly one collection event, which is the `Release` transition already
+   wired up. A coupon needs a recurring distribution scheduler that does not
+   exist.
+2. Invoices are the default asset type in the UI and the working-capital
+   problem the PRD leads with. Discount financing is the correct model for them.
+3. It roughly doubles Wave 1 — two waterfalls, two lifecycles, two triggers —
+   before any money moves correctly even once.
+
+**Which assets actually want it.** Real estate (rental income) and some
+commodity structures (storage/lease yield). Under the current decision these are
+tokenized as a single-maturity claim instead, which is a real structure but not
+the most natural one for an income-producing property.
+
+**What building it would take, if revisited:**
+- [ ] `financingModel: 'discount' | 'coupon'` discriminator on the tokenization,
+      with the terms columns becoming model-specific.
+- [ ] `couponRateBps` + `couponPeriod` (monthly / quarterly / annual) +
+      `nextCouponDate`.
+- [ ] A recurring distribution job — the first genuinely scheduled money
+      movement in the platform, so it needs its own idempotency story: a coupon
+      period must pay exactly once even if the job runs twice.
+- [ ] A separate redemption path so investors can exit without a maturity.
+- [ ] A second waterfall: income → platform fee → holders pro-rata, with no
+      principal repayment leg.
+- [ ] UI that distinguishes the two products, since "yield" means a different
+      thing in each and conflating them would mislead an investor.
+- [ ] Per-model tests, plus tests that a discount tokenization cannot be paid a
+      coupon and vice versa.
+
+**Do not** describe the platform as supporting recurring-income assets until
+every box above is ticked.
+
+### 8.2 🟡 Restricting asset types to those the model fits
+
+Also considered: refusing `real_estate` and `other` at tokenization until §8.1
+exists. Rejected because it removes two options that work in the UI today for a
+theoretical benefit — a dated claim on a property is a legitimate structure, not
+a misrepresentation, provided the terms are shown honestly (§3.4).
+
+Revisit if user feedback shows people expect rental-income behaviour from a
+real-estate tokenization and are surprised by a maturity date.
