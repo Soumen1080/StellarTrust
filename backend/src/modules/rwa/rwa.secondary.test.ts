@@ -13,8 +13,7 @@ import { describe, expect, it } from "vitest";
 import { InMemoryAuditRepository } from "../audit/audit.repository.js";
 import { StaticWalletAddressResolver } from "../identity/wallet.resolver.js";
 import { isBalanced } from "../ledger/ledger.balance.js";
-import { InMemoryLedgerRepository } from "../ledger/ledger.repository.js";
-import { LedgerService } from "../ledger/ledger.service.js";
+import { PrefundedLedgerService } from "../ledger/ledger.test-fixtures.js";
 import { DeterministicRwaGateway } from "./rwa.gateway.js";
 import { InMemoryRwaRepository } from "./rwa.repository.js";
 import {
@@ -42,7 +41,7 @@ const BUYER_ID = "investor-2";
 function setup(limits?: Partial<InvestorLimits>) {
   const repository = new InMemoryRwaRepository();
   const audit = new InMemoryAuditRepository();
-  const ledger = new LedgerService(new InMemoryLedgerRepository());
+  const ledger = new PrefundedLedgerService();
   const gateway = new DeterministicRwaGateway();
   const service = new RwaService(
     repository,
@@ -513,7 +512,7 @@ describe("transfers the platform must refuse", () => {
       repository,
       new DeterministicRwaGateway(RwaCustodyMode.Issuer, addresses),
       new InMemoryAuditRepository(),
-      new LedgerService(new InMemoryLedgerRepository()),
+      new PrefundedLedgerService(),
       addresses,
       undefined,
       { getStatus: async () => ({ status: KycStatus.Verified }) },

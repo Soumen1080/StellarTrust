@@ -12,8 +12,7 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryAuditRepository } from "../audit/audit.repository.js";
 import { StaticWalletAddressResolver } from "../identity/wallet.resolver.js";
-import { InMemoryLedgerRepository } from "../ledger/ledger.repository.js";
-import { LedgerService } from "../ledger/ledger.service.js";
+import { PrefundedLedgerService } from "../ledger/ledger.test-fixtures.js";
 import { DeterministicRwaGateway } from "./rwa.gateway.js";
 import { RwaReconciliationJob } from "./rwa.reconciliation.job.js";
 import { InMemoryRwaRepository } from "./rwa.repository.js";
@@ -48,7 +47,7 @@ function setup() {
     repository,
     gateway,
     new InMemoryAuditRepository(),
-    new LedgerService(new InMemoryLedgerRepository()),
+    new PrefundedLedgerService(),
     new StaticWalletAddressResolver(new Map([["issuer-1", ISSUER_ADDRESS]])),
   );
   const job = new RwaReconciliationJob(repository, gateway, 60_000);

@@ -34,15 +34,18 @@ import {
 } from "../../lib/errors.js";
 import { logger } from "../../lib/logger.js";
 import { assertStellarAddress } from "../stellar/address.js";
+// `rwa_investor_cash_clearing`, `rwa_payout_payable` and
+// `rwa_secondary_seller_payable` are deliberately no longer imported. Each was
+// the shared account standing in for a user who had no account of their own;
+// every posting that used one now addresses the user directly (plane.md §4.5).
+// The seeded rows stay — they hold the history posted before the change — but
+// nothing new lands on them.
 import {
   RWA_INVESTMENT_LIABILITY,
-  RWA_INVESTOR_CASH_CLEARING,
   RWA_ISSUER_PROCEEDS_PAYABLE,
-  RWA_PAYOUT_PAYABLE,
   RWA_PAYOUT_RESERVE,
   RWA_PLATFORM_FEE_REVENUE,
   RWA_RECOVERY_RECEIVABLE,
-  RWA_SECONDARY_SELLER_PAYABLE,
 } from "../ledger/system-accounts.js";
 import {
   applyBps,
@@ -92,6 +95,28 @@ export interface PayoutLedgerRecorder {
   getByReference(
     referenceId: string,
   ): Promise<{ id: string } | undefined>;
+  /**
+   * The ledger account reference an individual user's cash posts against
+   * (plane.md §4.5).
+   *
+   * Part of the port rather than constructed here because the naming
+   * convention is the ledger module's to own — RWA formatting the string
+   * itself is how the two ends of a per-user balance drift apart.
+   */
+  userAccount(userId: string): string;
+  /**
+   * Refuse an operation the user cannot fund (plane.md §1.1, §3.2, §4.5).
+   *
+   * The check the plan had to leave unwritten while every posting landed on a
+   * system account. It throws rather than returning a boolean: the only
+   * correct response to an underfunded purchase is to stop, and a boolean
+   * invites a caller to continue past it.
+   */
+  assertSufficientFunds(
+    userId: string,
+    currency: CurrencyCode,
+    required: bigint,
+  ): Promise<void>;
 }
 
 /**
@@ -749,12 +774,24 @@ export class RwaService {
     // conflict path would recover the original posting and hand out the second
     // 10 units for free. The running total makes each step in a sequence
     // distinct while a retry of any one step still converges.
+    // Now that the investor has an account of their own (plane.md §4.5), the
+    // check §1.1 and §3.2 both had to leave unwritten is possible: refuse a
+    // purchase the investor cannot fund. It runs after every other limit and
+    // immediately before the posting, so a refusal here — like every other —
+    // has moved no money and left nothing to unwind.
+    await this.ledger.assertSufficientFunds(
+      actor.userId,
+      tokenization.pricePerUnitCurrency as CurrencyCode,
+      purchaseAmount,
+    );
+
     const resultingUnits = BigInt(existingHolding?.units ?? "0") + units;
     const ledgerReferenceId = `rwa-subscription:${tokenizationId}:${actor.userId}:${resultingUnits}`;
     const ledgerTransaction = await this.recordSubscriptionLedger(
       ledgerReferenceId,
       tokenization,
       purchaseAmount,
+      actor.userId,
     );
 
     // Under issuer custody the platform holds no key for the issuer's account,
@@ -869,6 +906,7 @@ export class RwaService {
     referenceId: string,
     tokenization: TokenizationDTO,
     purchaseAmount: bigint,
+    investorUserId: string,
   ): Promise<{ id: string }> {
     const currency = tokenization.pricePerUnitCurrency as CurrencyCode;
 
@@ -883,7 +921,13 @@ export class RwaService {
 
     const entries: LedgerTransactionInput["entries"] = [
       {
-        accountId: RWA_INVESTOR_CASH_CLEARING,
+        // The investor's own account, not a shared clearing account
+        // (plane.md §4.5). A user account is a *liability* — the platform owes
+        // the user their balance — so spending money debits it, reducing what
+        // we owe them. Posting to the clearing account instead is what made
+        // "this investor's balance" a thing that did not exist, and why the
+        // insufficient-funds check could not be written.
+        accountId: this.ledger.userAccount(investorUserId),
         direction: EntryDirection.Debit,
         amount: purchaseAmount.toString(),
         currency,
@@ -1165,6 +1209,15 @@ export class RwaService {
       buyerHolding,
     );
 
+    // The buyer must be able to pay before the seller's units are committed
+    // (plane.md §4.5). Same ordering as the primary purchase: last of the
+    // checks, immediately before the posting, so a refusal moves no money.
+    await this.ledger.assertSufficientFunds(
+      input.toUserId,
+      tokenization.pricePerUnitCurrency as CurrencyCode,
+      priceAmount,
+    );
+
     // ── The money moves first ──────────────────────────────────────────────
     const ledgerTransaction = await this.recordSecondaryTradeLedger(
       tokenizationId,
@@ -1316,13 +1369,22 @@ export class RwaService {
         description: `RWA secondary transfer for tokenization ${tokenizationId}`,
         entries: [
           {
-            accountId: RWA_INVESTOR_CASH_CLEARING,
+            // Buyer pays from their own balance (plane.md §4.5). Debiting a
+            // liability reduces what the platform owes them, which is what
+            // spending is.
+            accountId: this.ledger.userAccount(buyerUserId),
             direction: EntryDirection.Debit,
             amount: priceAmount.toString(),
             currency,
           },
           {
-            accountId: RWA_SECONDARY_SELLER_PAYABLE,
+            // Seller is credited directly rather than into the shared
+            // `rwa_secondary_seller_payable` holding account. The payable
+            // account was the right destination while no user had an account
+            // of their own; now that they do, crediting the seller's own
+            // balance is what makes the proceeds spendable rather than an
+            // obligation someone has to settle by hand.
+            accountId: this.ledger.userAccount(sellerUserId),
             direction: EntryDirection.Credit,
             amount: priceAmount.toString(),
             currency,
@@ -1478,7 +1540,10 @@ export class RwaService {
 
     const entries: LedgerTransactionInput["entries"] = [
       {
-        accountId: RWA_INVESTOR_CASH_CLEARING,
+        // Mirrors the subscription's debit of the same account, so the two
+        // transactions net to zero on the investor's own balance rather than
+        // on a shared clearing account (plane.md §4.5).
+        accountId: this.ledger.userAccount(investorUserId),
         direction: EntryDirection.Credit,
         amount: purchaseAmount.toString(),
         currency,
@@ -2377,12 +2442,24 @@ export class RwaService {
                 amount: distributed.toString(),
                 currency: tokenization.faceValueCurrency,
               },
-              {
-                accountId: RWA_PAYOUT_PAYABLE,
-                direction: EntryDirection.Credit,
-                amount: distributed.toString(),
-                currency: tokenization.faceValueCurrency,
-              },
+              // Credited per holder to their own account, exactly as a payout
+              // is (plane.md §4.5). A recovery is money coming back to the
+              // investors who lost it; crediting a shared payable would leave
+              // it as an obligation nobody could spend. Shares that round to
+              // zero are skipped — the schema rejects a zero-amount entry and
+              // `distributed` already excludes them, so the set balances.
+              ...holdings.flatMap((holding, index) => {
+                const share = shares[index] ?? 0n;
+                if (share <= 0n) return [];
+                return [
+                  {
+                    accountId: this.ledger.userAccount(holding.holderUserId),
+                    direction: EntryDirection.Credit,
+                    amount: share.toString(),
+                    currency: tokenization.faceValueCurrency,
+                  },
+                ];
+              }),
             ],
           }));
         ledgerTransactionId = posted.id;
@@ -2597,7 +2674,7 @@ export class RwaService {
   private async recordPayoutLedger(
     referenceId: string,
     tokenization: TokenizationDTO,
-    payoutRecords: Array<{ shareAmount: string }>,
+    payoutRecords: Array<{ shareAmount: string; holderUserId: string }>,
     currency: string,
     split: WaterfallSplit,
   ): Promise<{ id: string }> {
@@ -2630,13 +2707,42 @@ export class RwaService {
         amount: collected.toString(),
         currency: currency as CurrencyCode,
       },
-      {
-        accountId: RWA_PAYOUT_PAYABLE,
-        direction: EntryDirection.Credit,
-        amount: totalAmount.toString(),
-        currency: currency as CurrencyCode,
-      },
     ];
+
+    // One credit per holder, to that holder's own account (plane.md §4.5).
+    //
+    // This used to be a single credit of `totalAmount` to the shared
+    // `rwa_payout_payable`. That posting balanced, but it recorded only that
+    // the platform owed *someone* the money — the per-holder split lived in
+    // `payout_records` and nowhere the ledger could see. Crediting each holder
+    // individually is what turns a payout into a balance they can spend, and
+    // it makes the ledger agree with the payout records by construction rather
+    // than by cross-referencing two tables.
+    //
+    // Shares that round to zero are skipped, since the schema rejects a
+    // zero-amount entry; they are already excluded from `totalAmount`, so the
+    // set still balances.
+    //
+    // Multiple records for one holder are summed rather than posted twice: two
+    // entries on the same account in one transaction is legal, but one credit
+    // per holder is what a statement should read like.
+    const perHolder = new Map<string, bigint>();
+    for (const record of payoutRecords) {
+      const share = BigInt(record.shareAmount);
+      if (share <= 0n) continue;
+      perHolder.set(
+        record.holderUserId,
+        (perHolder.get(record.holderUserId) ?? 0n) + share,
+      );
+    }
+    for (const [holderUserId, share] of perHolder) {
+      entries.push({
+        accountId: this.ledger.userAccount(holderUserId),
+        direction: EntryDirection.Credit,
+        amount: share.toString(),
+        currency: currency as CurrencyCode,
+      });
+    }
     if (split.platformFee > 0n) {
       entries.push({
         accountId: RWA_PLATFORM_FEE_REVENUE,

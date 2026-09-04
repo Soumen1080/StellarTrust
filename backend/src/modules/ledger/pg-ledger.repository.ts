@@ -20,8 +20,9 @@ import type pg from "pg";
 import type { CurrencyCode, EntryDirection } from "@stellartrust/shared";
 import { ConflictError } from "../../lib/errors.js";
 import { assertBalanced } from "./ledger.balance.js";
-import type { LedgerRepository } from "./ledger.repository.js";
+import type { AccountBalance, LedgerRepository } from "./ledger.repository.js";
 import { systemAccountName } from "./system-accounts.js";
+import { parseUserAccountRef } from "./user-accounts.js";
 import type {
   LedgerTransactionInput,
   PersistedLedgerEntry,
@@ -173,12 +174,75 @@ export class PgLedgerRepository implements LedgerRepository {
     };
   }
 
-  /** Synthetic role id + currency → the seeded system account's real id. */
+  /**
+   * Every balance owned by `ownerRef`, read from the `ledger_account_balances`
+   * view (migration 0020) so the arithmetic is Postgres's rather than a second
+   * implementation of it here.
+   */
+  async listBalances(ownerRef: string): Promise<AccountBalance[]> {
+    const { rows } = await this.pool.query<{
+      owner_ref: string;
+      name: string;
+      currency: string;
+      balance: string;
+      total_debits: string;
+      total_credits: string;
+      entry_count: string;
+      last_entry_at: Date | string | null;
+    }>(
+      `select owner_ref, name, currency, balance, total_debits, total_credits,
+              entry_count, last_entry_at
+       from ledger_account_balances
+       where owner_ref = $1
+       order by currency asc, name asc`,
+      [ownerRef],
+    );
+
+    return rows.map((row) => ({
+      ownerRef: row.owner_ref,
+      name: row.name,
+      currency: row.currency as CurrencyCode,
+      balance: String(row.balance),
+      totalDebits: String(row.total_debits),
+      totalCredits: String(row.total_credits),
+      entryCount: Number(row.entry_count),
+      lastEntryAt: row.last_entry_at ? toIso(row.last_entry_at) : null,
+    }));
+  }
+
+  async getBalance(ownerRef: string, currency: CurrencyCode): Promise<string> {
+    const { rows } = await this.pool.query<{ balance: string }>(
+      `select coalesce(sum(balance), 0)::text as balance
+       from ledger_account_balances
+       where owner_ref = $1 and currency = $2`,
+      [ownerRef, currency],
+    );
+    return rows[0]?.balance ?? "0";
+  }
+
+  /**
+   * Account reference + currency → the real `ledger_accounts` row id.
+   *
+   * Two address spaces meet here. A system account is a fixed synthetic UUID
+   * that must already be seeded — a missing one is a deployment error, so it
+   * throws. A user account is created on demand: a user's first transaction is
+   * the moment their account should exist, and requiring an out-of-band
+   * provisioning step would make that first payment fail for everyone.
+   */
   private async resolveAccountId(
     client: pg.PoolClient,
     syntheticId: string,
     currency: string,
   ): Promise<string> {
+    const userAccount = parseUserAccountRef(syntheticId);
+    if (userAccount) {
+      return this.resolveUserAccountId(
+        client,
+        userAccount.ownerRef,
+        userAccount.name,
+        currency,
+      );
+    }
     const name = systemAccountName(syntheticId);
     const cacheKey = `${name}:${currency}`;
     const cached = this.accountIdCache.get(cacheKey);
@@ -193,6 +257,55 @@ export class PgLedgerRepository implements LedgerRepository {
     if (!id) {
       throw new Error(
         `System ledger account '${name}' (${currency}) is not seeded`,
+      );
+    }
+    this.accountIdCache.set(cacheKey, id);
+    return id;
+  }
+
+  /**
+   * A user's account for one currency, created if this is their first posting.
+   *
+   * `on conflict do nothing` + a re-select rather than a check-then-insert:
+   * two concurrent first-postings for the same user would both see no row and
+   * both insert, and the unique index on (owner_ref, currency, name) is what
+   * settles that. The returning-empty case is the loser of that race, and it
+   * reads the winner's row.
+   *
+   * Typed `liability` because the balance is what the platform owes the user,
+   * which is also what migration 0020's check constraint requires.
+   */
+  private async resolveUserAccountId(
+    client: pg.PoolClient,
+    ownerRef: string,
+    name: string,
+    currency: string,
+  ): Promise<string> {
+    const cacheKey = `${ownerRef}:${name}:${currency}`;
+    const cached = this.accountIdCache.get(cacheKey);
+    if (cached) return cached;
+
+    const inserted = await client.query<{ id: string }>(
+      `insert into ledger_accounts (type, currency, owner_ref, name)
+       values ('liability', $1, $2, $3)
+       on conflict (owner_ref, currency, name) do nothing
+       returning id`,
+      [currency, ownerRef, name],
+    );
+    let id = inserted.rows[0]?.id;
+
+    if (!id) {
+      const { rows } = await client.query<{ id: string }>(
+        `select id from ledger_accounts
+         where owner_ref = $1 and currency = $2 and name = $3`,
+        [ownerRef, currency, name],
+      );
+      id = rows[0]?.id;
+    }
+
+    if (!id) {
+      throw new Error(
+        `Failed to resolve user ledger account '${name}' (${currency}) for ${ownerRef}`,
       );
     }
     this.accountIdCache.set(cacheKey, id);

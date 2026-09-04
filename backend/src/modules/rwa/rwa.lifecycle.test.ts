@@ -8,8 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { InMemoryAuditRepository } from "../audit/audit.repository.js";
 import { StaticWalletAddressResolver } from "../identity/wallet.resolver.js";
-import { InMemoryLedgerRepository } from "../ledger/ledger.repository.js";
-import { LedgerService } from "../ledger/ledger.service.js";
+import { PrefundedLedgerService } from "../ledger/ledger.test-fixtures.js";
 import { EventBus } from "../events/event.bus.js";
 import { InMemoryEventRepository } from "../events/event.repository.js";
 import { DomainEventType, EventEntity } from "../events/event.types.js";
@@ -34,7 +33,7 @@ const MATURITY = new Date(Date.now() + 90 * DAY);
 function setup(graceDays = 30, now: () => Date = () => new Date()) {
   const repository = new InMemoryRwaRepository();
   const audit = new InMemoryAuditRepository();
-  const ledger = new LedgerService(new InMemoryLedgerRepository());
+  const ledger = new PrefundedLedgerService();
   const service = new RwaService(
     repository,
     new DeterministicRwaGateway(),

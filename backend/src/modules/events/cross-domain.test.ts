@@ -22,8 +22,7 @@ import { InMemoryDisputeRepository } from "../disputes/dispute.repository.js";
 import { DisputeService } from "../disputes/dispute.service.js";
 import { DeterministicEscrowGateway } from "../escrow/escrow.gateway.js";
 import { StaticWalletAddressResolver } from "../identity/wallet.resolver.js";
-import { InMemoryLedgerRepository } from "../ledger/ledger.repository.js";
-import { LedgerService } from "../ledger/ledger.service.js";
+import { PrefundedLedgerService } from "../ledger/ledger.test-fixtures.js";
 import { InMemoryPaymentRepository } from "../payments/payment.repository.js";
 import { PaymentService } from "../payments/payment.service.js";
 import { orderDepositOnSettlement } from "../payments/payment.subscribers.js";
@@ -56,7 +55,7 @@ const FUTURE_MATURITY = new Date(
 /** The whole platform, wired as `app.ts` wires it. */
 function setup() {
   const audit = new InMemoryAuditRepository();
-  const ledger = new LedgerService(new InMemoryLedgerRepository());
+  const ledger = new PrefundedLedgerService();
   const eventRepository = new InMemoryEventRepository();
   const bus = new EventBus(eventRepository, undefined, {
     sleep: async () => {},

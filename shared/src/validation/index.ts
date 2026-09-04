@@ -41,8 +41,46 @@ export const moneySchema = z.object({
   currency: currencySchema,
 });
 
+/**
+ * A ledger entry addresses one of two kinds of account.
+ *
+ * A **system** account is a fixed chart entry and is named by a synthetic UUID
+ * (`backend/src/modules/ledger/system-accounts.ts`), resolved to a real row at
+ * write time.
+ *
+ * A **user** account (plane.md §4.5) is unbounded — one per (user, currency),
+ * created the first time that user's money moves — so it is named by a
+ * reference string instead: `user:<uuid>/<account name>`. Before §4.5 no such
+ * account existed and this field was a plain UUID; widening it is what let a
+ * posting land on an investor rather than on a shared clearing account.
+ *
+ * The two forms cannot collide: a UUID contains no `/`.
+ *
+ * The owner id is validated as *non-empty and free of the delimiter*, not as a
+ * UUID. Postgres user ids are uuids and migration 0020's `owner_ref` check
+ * constraint holds them to that — but a user id is an opaque identifier at
+ * this layer, and every deterministic adapter in the suite names its actors
+ * `investor-1`. Restating the database's constraint in the wire schema would
+ * make the shared package refuse ids the in-memory repositories legitimately
+ * use, and Rules.md §2 requires the two adapters to accept the same inputs.
+ * The database remains the authority on its own key format.
+ */
+export const ledgerAccountRefSchema = z
+  .string()
+  .refine(
+    (value) =>
+      /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(
+        value,
+      ) || /^(user|business):[^/\s]+\/[A-Za-z0-9_]+$/.test(value),
+    {
+      message:
+        "accountId must be a system account UUID or a user account reference " +
+        "(user:<id>/<name>)",
+    },
+  );
+
 export const ledgerEntryInputSchema = z.object({
-  accountId: z.string().uuid(),
+  accountId: ledgerAccountRefSchema,
   direction: z.enum([EntryDirection.Debit, EntryDirection.Credit]),
   amount: minorUnitAmountSchema.refine((v) => v !== "0", {
     message: "entry amount must be greater than zero",

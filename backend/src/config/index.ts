@@ -244,6 +244,62 @@ const envSchema = z.object({
   // Cooling-off: how long after a purchase the investor may cancel it and be
   // refunded in full. Zero disables the window entirely.
   RWA_COOLING_OFF_HOURS: z.coerce.number().int().min(0).max(720).default(24),
+  // ── Treasury: how a user's ledger balance comes to exist (plane.md §4.5) ──
+  // `horizon` verifies a claimed deposit against a real Stellar transaction
+  // and submits real withdrawals. `deterministic` is local/test only and is
+  // refused in staging/production, because it cannot prove a payment happened
+  // and would credit balances against nothing.
+  TREASURY_GATEWAY: z.enum(["deterministic", "horizon"]).default("deterministic"),
+  // Issuers for the classic assets withdrawals may be paid in, as JSON:
+  //   {"USDC":"GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"}
+  // Native XLM needs no issuer and is always available. An asset with no
+  // issuer configured cannot be withdrawn — fail closed rather than substitute
+  // some other token.
+  TREASURY_ASSET_ISSUERS: z
+    .string()
+    .default("{}")
+    .transform((value, ctx) => {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(value);
+      } catch {
+        ctx.addIssue({ code: "custom", message: "Must be valid JSON" });
+        return z.NEVER;
+      }
+      const parsed = z
+        .record(
+          z.string().min(1),
+          z
+            .string()
+            .regex(/^G[A-Z2-7]{55}$/, "Must be a Stellar account address"),
+        )
+        .safeParse(raw);
+      if (!parsed.success) {
+        ctx.addIssue({
+          code: "custom",
+          message: parsed.error.issues
+            .map((i) => `${i.path.join(".")}: ${i.message}`)
+            .join("; "),
+        });
+        return z.NEVER;
+      }
+      return parsed.data;
+    }),
+  // Smallest creditable deposit, in minor units. Below this the platform
+  // spends more on the transaction than the deposit is worth.
+  TREASURY_MIN_DEPOSIT_MINOR: z
+    .string()
+    .regex(/^\d+$/, "must be a non-negative integer in minor units")
+    .default("1"),
+  // Largest single withdrawal that may execute without a compliance decision,
+  // in minor units. Above it the withdrawal is queued for review rather than
+  // paid — the same human-gate shape Rules.md §6 requires of every large
+  // automated money decision. Zero disables the automatic path entirely.
+  TREASURY_WITHDRAWAL_AUTO_MAX_MINOR: z
+    .string()
+    .regex(/^\d+$/, "must be a non-negative integer in minor units")
+    .default("100000000"),
+
   ESCROW_GATEWAY: z.enum(["deterministic", "soroban-rpc"]).default("deterministic"),
 
   // ── Phase 3: Cross-Border Settlement ────────────────────────────────────

@@ -4,8 +4,7 @@ import { InMemoryAuditRepository } from "../audit/audit.repository.js";
 import { DeterministicEscrowGateway } from "../escrow/escrow.gateway.js";
 import { StaticWalletAddressResolver } from "../identity/wallet.resolver.js";
 import { isBalanced } from "../ledger/ledger.balance.js";
-import { InMemoryLedgerRepository } from "../ledger/ledger.repository.js";
-import { LedgerService } from "../ledger/ledger.service.js";
+import { PrefundedLedgerService } from "../ledger/ledger.test-fixtures.js";
 import { InMemoryPaymentRepository } from "../payments/payment.repository.js";
 import { PaymentService } from "../payments/payment.service.js";
 import { DeterministicRwaGateway } from "./rwa.gateway.js";
@@ -37,7 +36,7 @@ function setup() {
   const repository = new InMemoryRwaRepository();
   const gateway = new DeterministicRwaGateway();
   const audit = new InMemoryAuditRepository();
-  const ledger = new LedgerService(new InMemoryLedgerRepository());
+  const ledger = new PrefundedLedgerService();
   const addresses = new StaticWalletAddressResolver(
     new Map([["issuer-1", ISSUER_ADDRESS]]),
   );
@@ -596,7 +595,7 @@ describe("Phase 5 RWA payout integration with escrow release", () => {
     const rwaRepository = new InMemoryRwaRepository();
     const rwaGateway = new DeterministicRwaGateway();
     const audit = new InMemoryAuditRepository();
-    const ledger = new LedgerService(new InMemoryLedgerRepository());
+    const ledger = new PrefundedLedgerService();
     const rwa = new RwaService(
       rwaRepository,
       rwaGateway,
@@ -773,7 +772,23 @@ describe("RWA payout waterfall", () => {
       .filter((e) => e.direction === "credit")
       .map((e) => e.amount)
       .sort();
-    expect(credited).toEqual(["10000", "158000", "832000"].sort());
+    // The investor leg is credited *per holder* (624,000 + 208,000) rather
+    // than as one 832,000 lump to a shared payable (plane.md §4.5). That is
+    // what makes a payout a balance the holder can spend, and it makes the
+    // ledger agree with `payout_records` by construction instead of by
+    // cross-referencing two tables.
+    expect(credited).toEqual(["10000", "158000", "624000", "208000"].sort());
+
+    // And the agreement is the point: every payout record has a matching
+    // credit to that holder's own account, for exactly its share.
+    for (const record of records) {
+      const holderCredit = posted!.entries.find(
+        (e) =>
+          e.direction === "credit" &&
+          e.accountId === ledger.userAccount(record.holderUserId),
+      );
+      expect(holderCredit?.amount).toBe(record.shareAmount);
+    }
 
     // The legs reconstitute the collection exactly — no minor unit invented
     // or lost between what the debtor paid and what the books recorded.

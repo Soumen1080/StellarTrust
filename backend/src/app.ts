@@ -110,6 +110,14 @@ import {
   rwaResumeOnDisputeResolved,
 } from "./modules/rwa/rwa.subscribers.js";
 import { orderDepositOnSettlement } from "./modules/payments/payment.subscribers.js";
+import { createTreasuryGateway } from "./modules/treasury/treasury.gateway.js";
+import {
+  InMemoryTreasuryRepository,
+  type TreasuryRepository,
+} from "./modules/treasury/treasury.repository.js";
+import { PgTreasuryRepository } from "./modules/treasury/pg-treasury.repository.js";
+import { TreasuryService } from "./modules/treasury/treasury.service.js";
+import { createTreasuryRouter } from "./modules/treasury/treasury.routes.js";
 import { PositionsService } from "./modules/positions/positions.service.js";
 import { createPositionsRouter } from "./modules/positions/positions.routes.js";
 import { createRwaRouter } from "./modules/rwa/rwa.routes.js";
@@ -379,6 +387,33 @@ export function createApp(): Express {
     : new InMemoryLedgerRepository();
   const ledgerService = new LedgerService(ledgerRepository);
 
+  // ── Treasury: how a ledger balance comes to exist (plane.md §4.5) ────────
+  //
+  // Per-user accounts made "this investor's balance" a real thing; treasury is
+  // how one comes to hold anything. A deposit is the platform verifying a
+  // payment that already happened on Stellar and crediting exactly what
+  // arrived — never a number the user types.
+  //
+  // Constructed before RWA because nothing here depends on it, and after the
+  // ledger because it posts through the same service every other money path
+  // does.
+  const treasuryRepository: TreasuryRepository = usePersistentStore
+    ? new PgTreasuryRepository(getPool())
+    : new InMemoryTreasuryRepository();
+  const treasury = new TreasuryService(
+    treasuryRepository,
+    createTreasuryGateway(createSigner()),
+    ledgerService,
+    walletAddresses,
+    audit,
+    {
+      minDepositMinor: BigInt(config.TREASURY_MIN_DEPOSIT_MINOR),
+      withdrawalAutoMaxMinor: BigInt(
+        config.TREASURY_WITHDRAWAL_AUTO_MAX_MINOR,
+      ),
+    },
+  );
+
   const rwaRepository: RwaRepository = usePersistentStore
     ? new PgRwaRepository(getPool())
     : new InMemoryRwaRepository();
@@ -611,6 +646,7 @@ export function createApp(): Express {
   // Same instance the RWA payouts write through, so `/api/ledger` reads back
   // the transactions those payouts posted rather than a second, empty store.
   app.use("/api/ledger", createLedgerRouter(ledgerService, bearerVerifier));
+  app.use("/api/treasury", createTreasuryRouter(treasury, bearerVerifier));
   app.use("/api/positions", createPositionsRouter(positions, bearerVerifier));
   app.use(
     "/api/payments",
