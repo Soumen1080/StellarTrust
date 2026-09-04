@@ -10,6 +10,9 @@ import { InMemoryAuditRepository } from "../audit/audit.repository.js";
 import { StaticWalletAddressResolver } from "../identity/wallet.resolver.js";
 import { InMemoryLedgerRepository } from "../ledger/ledger.repository.js";
 import { LedgerService } from "../ledger/ledger.service.js";
+import { EventBus } from "../events/event.bus.js";
+import { InMemoryEventRepository } from "../events/event.repository.js";
+import { DomainEventType, EventEntity } from "../events/event.types.js";
 import { DeterministicRwaGateway } from "./rwa.gateway.js";
 import { RwaLifecycleJob } from "./rwa.lifecycle.job.js";
 import { InMemoryRwaRepository } from "./rwa.repository.js";
@@ -38,6 +41,8 @@ function setup(graceDays = 30, now: () => Date = () => new Date()) {
     ledger,
     new StaticWalletAddressResolver(new Map([["issuer-1", ISSUER_ADDRESS]])),
   );
+  const eventRepository = new InMemoryEventRepository();
+  const bus = new EventBus(eventRepository, undefined, { sleep: async () => {} });
   const job = new RwaLifecycleJob(
     repository,
     audit,
@@ -46,8 +51,9 @@ function setup(graceDays = 30, now: () => Date = () => new Date()) {
     undefined,
     undefined,
     now,
+    bus,
   );
-  return { repository, audit, ledger, service, job };
+  return { repository, audit, ledger, service, job, eventRepository };
 }
 
 /** A fully-subscribed position, which is what `Funded` means. */
@@ -256,5 +262,125 @@ describe("RWA write-off", () => {
     expect(
       await ledger.getByReference(`rwa-writeoff:${tokenization.id}`),
     ).toBeUndefined();
+  });
+});
+
+/**
+ * The lifecycle on the event spine (plane.md §1.4 × §2.3).
+ *
+ * Maturity and default were the two state changes in the platform that happened
+ * silently: every other domain announced its transitions, while a position
+ * quietly went from funded to defaulted with only a row and an audit line to
+ * show for it. `tokenization.matured` and `tokenization.defaulted` were declared
+ * in the event vocabulary from the start and published by nothing.
+ */
+describe("RWA lifecycle events", () => {
+  it("announces maturity on the spine", async () => {
+    let clock = new Date();
+    const { service, job, eventRepository } = setup(30, () => clock);
+    const tokenization = await fundedPosition(service);
+
+    clock = new Date(MATURITY.getTime() + DAY);
+    await job.run();
+
+    const events = await eventRepository.listForEntity(
+      EventEntity.Tokenization,
+      tokenization.id,
+    );
+    const matured = events.find(
+      (e) => e.eventType === DomainEventType.TokenizationMatured,
+    );
+    expect(matured).toBeDefined();
+    // A date decided this, not a person.
+    expect(matured?.actor).toBe("system:rwa-lifecycle");
+    expect(matured?.payload.previousStatus).toBe(TokenizationStatus.Funded);
+  });
+
+  it("announces default with the grace window that was applied", async () => {
+    let clock = new Date();
+    const { service, job, eventRepository } = setup(30, () => clock);
+    const tokenization = await fundedPosition(service);
+
+    clock = new Date(MATURITY.getTime() + 31 * DAY);
+    await job.run(); // → matured
+    await job.run(); // → defaulted
+
+    const events = await eventRepository.listForEntity(
+      EventEntity.Tokenization,
+      tokenization.id,
+    );
+    const defaulted = events.find(
+      (e) => e.eventType === DomainEventType.TokenizationDefaulted,
+    );
+    expect(defaulted).toBeDefined();
+    expect(defaulted?.payload.graceDays).toBe(30);
+    expect(defaulted?.payload.previousStatus).toBe(TokenizationStatus.Matured);
+  });
+
+  it("carries no holder identities or amounts in the payload", async () => {
+    let clock = new Date();
+    const { service, job, eventRepository } = setup(30, () => clock);
+    const tokenization = await fundedPosition(service);
+
+    clock = new Date(MATURITY.getTime() + DAY);
+    await job.run();
+
+    const [event] = await eventRepository.listForEntity(
+      EventEntity.Tokenization,
+      tokenization.id,
+    );
+    // Rules.md §3: dates and opaque ids only. A subscriber needing figures
+    // reads its own domain rather than trusting an event to carry them.
+    const serialized = JSON.stringify(event?.payload ?? {});
+    expect(serialized).not.toContain(INVESTOR1_ADDRESS);
+    expect(serialized).not.toContain("1000000");
+  });
+
+  it("publishes one fact per transition however often the sweep runs", async () => {
+    let clock = new Date();
+    const { service, job, eventRepository } = setup(30, () => clock);
+    const tokenization = await fundedPosition(service);
+
+    clock = new Date(MATURITY.getTime() + 31 * DAY);
+    await job.run();
+    await job.run();
+    // Extra sweeps find nothing left to transition, so nothing further is said.
+    await job.run();
+    await job.run();
+
+    const events = await eventRepository.listForEntity(
+      EventEntity.Tokenization,
+      tokenization.id,
+    );
+    expect(events).toHaveLength(2);
+  });
+
+  it("still transitions when the spine is unavailable", async () => {
+    let clock = new Date();
+    const { service, repository } = setup(30, () => clock);
+    const tokenization = await fundedPosition(service);
+
+    // A publisher that always throws. The status change has already committed
+    // by the time it runs, so the sweep must not be derailed by it.
+    const broken = new RwaLifecycleJob(
+      repository,
+      new InMemoryAuditRepository(),
+      60_000,
+      30,
+      undefined,
+      undefined,
+      () => clock,
+      {
+        publish: () => Promise.reject(new Error("spine down")),
+      },
+    );
+
+    clock = new Date(MATURITY.getTime() + DAY);
+    const report = await broken.run();
+
+    expect(report.matured).toBe(1);
+    expect((await repository.findTokenization(tokenization.id))?.status).toBe(
+      TokenizationStatus.Matured,
+    );
   });
 });

@@ -480,6 +480,11 @@ export function createApp(): Express {
     config.RWA_DEFAULT_GRACE_DAYS,
     alerts,
     metrics,
+    // Production reads the real clock; only tests pin it.
+    undefined,
+    // Maturity and default are announced on the spine, not just written to a
+    // row (plane.md §2.3).
+    eventBus,
   );
   app.locals.rwaLifecycleJob = rwaLifecycle;
 

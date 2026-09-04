@@ -30,7 +30,29 @@ import { logger } from "../../lib/logger.js";
 import type { AlertSink } from "../../lib/alerts.js";
 import type { MetricsRegistry } from "../../lib/metrics.js";
 import type { AuditRepository } from "../audit/audit.repository.js";
+import type { DomainEvent } from "../events/event.repository.js";
+import {
+  DomainEventType,
+  EventEntity,
+  dedupeKey,
+} from "../events/event.types.js";
 import type { RwaRepository } from "./rwa.repository.js";
+
+/**
+ * The publish side of the event spine, as a narrow port.
+ *
+ * Structurally satisfied by `EventBus`. The job depends on the capability to
+ * announce a transition, not on the bus's class.
+ */
+export interface LifecycleEventPublisher {
+  publish(event: Omit<DomainEvent, "id" | "occurredAt">): Promise<DomainEvent>;
+}
+
+/** The event each lifecycle transition announces. */
+const EVENT_FOR_STATUS: Partial<Record<TokenizationStatus, DomainEventType>> = {
+  [TokenizationStatus.Matured]: DomainEventType.TokenizationMatured,
+  [TokenizationStatus.Defaulted]: DomainEventType.TokenizationDefaulted,
+};
 
 /** Milliseconds in a day. */
 const MS_PER_DAY = 86_400_000;
@@ -65,6 +87,11 @@ export class RwaLifecycleJob {
     private readonly alerts?: AlertSink,
     private readonly metrics?: MetricsRegistry,
     private readonly now: () => Date = () => new Date(),
+    /**
+     * The event spine (plane.md §2.3). Optional so existing constructions keep
+     * working; when present, each transition is announced as well as recorded.
+     */
+    private readonly events?: LifecycleEventPublisher,
   ) {}
 
   /** Positions that entered default on the last run (for readiness probes). */
@@ -213,10 +240,59 @@ export class RwaLifecycleJob {
       metadata: { ...metadata, from: tokenization.status, to: status },
     });
 
+    await this.announce(tokenization, status, metadata);
+
     logger.info(
       { tokenizationId: tokenization.id, from: tokenization.status, to: status },
       "RWA lifecycle transition",
     );
+  }
+
+  /**
+   * Publish the transition on the event spine (plane.md §2.3).
+   *
+   * Maturity and default are facts other domains have a legitimate interest in
+   * — a notification service, a risk dashboard, a collections workflow — and
+   * the alternative to publishing is each of them polling tokenization rows.
+   * Nothing subscribes yet; the point is that the lifecycle stops being the one
+   * domain that changes state silently.
+   *
+   * Failure is logged, not thrown. The status change has already committed and
+   * is the truth; refusing to finish the sweep because the spine hiccuped would
+   * strand every remaining position in the run.
+   */
+  private async announce(
+    tokenization: TokenizationDTO,
+    status: TokenizationStatus,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const eventType = EVENT_FOR_STATUS[status];
+    if (!this.events || !eventType) return;
+
+    try {
+      await this.events.publish({
+        eventType,
+        entity: EventEntity.Tokenization,
+        entityId: tokenization.id,
+        actor: "system:rwa-lifecycle",
+        // Dates and the linked order only — no holder identities or amounts
+        // (Rules.md §3). A subscriber that needs figures reads its own domain.
+        payload: {
+          ...metadata,
+          linkedOrderId: tokenization.linkedOrderId,
+          previousStatus: tokenization.status,
+        },
+        // A position matures once and defaults once, so the tokenization id is
+        // the natural key: a re-run that somehow reached here twice converges
+        // on one fact rather than recording the same transition again.
+        dedupeKey: dedupeKey(eventType, tokenization.id),
+      });
+    } catch (error) {
+      logger.error(
+        { err: error, tokenizationId: tokenization.id, eventType },
+        "failed to publish RWA lifecycle event",
+      );
+    }
   }
 
   start(): void {

@@ -170,10 +170,25 @@ Replace "distribute the whole order amount" with an ordered waterfall:
       a debt unrecoverable is a credit decision, not a timeout.
 - [x] Both transitions are idempotent (they select on status + clock), and a
       position with `collectedAt` set is never matured — the payout owns it.
+- [x] Both transitions are published on the event spine as
+      `tokenization.matured` / `tokenization.defaulted` (§2.3). These types were
+      declared in the event vocabulary from the start — §2.3 named
+      `tokenization.matured` as a motivating example — and were published by
+      nothing, which left the lifecycle as the one domain that changed state
+      silently while every other announced its transitions. Payload carries
+      dates, the grace window applied, and the linked order id only: no holder
+      identities, no amounts (Rules.md §3). A spine failure is logged, not
+      thrown — the status change has already committed, and derailing the sweep
+      would strand every remaining position in the run.
+- [x] Interaction with §2.2 checked: the sweep selects only `Funded`/`Matured`,
+      so a position held under `PayoutHeld` for an open dispute is skipped
+      rather than maturing underneath the hold.
 - [x] Tests: each transition, the grace boundary held and crossed, idempotency,
-      a collected position ignored, and the refused paths (write-off before
-      default, write-off without the compliance role). (10 tests in
-      `rwa.lifecycle.test.ts`.)
+      a collected position ignored, the refused paths (write-off before default,
+      write-off without the compliance role), both events published with the
+      right actor and payload, no PII in the payload, exactly one fact per
+      transition across repeated sweeps, and the transition still applying when
+      the spine is down. (15 tests in `rwa.lifecycle.test.ts`.)
 
 ---
 
