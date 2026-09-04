@@ -2,7 +2,7 @@
   "name": "@stellartrust/backend",
   "version": "0.0.0",
   "private": true,
-  "description": "StellarTrust API — modular monolith (Express + TypeScript). Bounded contexts per portion.",
+  "description": "StellarTrust API \u2014 modular monolith (Express + TypeScript). Bounded contexts per portion.",
   "type": "module",
   "main": "dist/index.js",
   "engines": {
@@ -19,7 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "clean": "rimraf dist"
+    "clean": "rimraf dist",
+    "chain:verify-xlm": "tsx src/scripts/verify-xlm-transfer.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "16.0.1",
