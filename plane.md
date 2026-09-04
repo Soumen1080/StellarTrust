@@ -51,9 +51,10 @@ investor, nothing prices risk, and the four domains do not compose.
       checked against exact minor units; separate investors charged separately;
       the audit entry carries the ledger transaction id so the trail leads to
       the money. (4 tests in `rwa.test.ts`.)
-- [ ] Reject a purchase when the investor's ledger balance is insufficient.
-      Needs per-user ledger accounts, which do not exist yet — every posting
-      currently lands on system accounts. Blocked on §4.5.
+- [x] Reject a purchase when the investor's ledger balance is insufficient.
+      Unblocked by §4.5: `purchaseUnits` now calls
+      `LedgerService.assertSufficientFunds` after every other limit and
+      immediately before the posting, so a refusal has moved no money.
 - [ ] Make the whole purchase atomic: ledger post + holding row + on-chain
       transfer either all succeed or none do. Ordering now favours safety (money
       first, units second), but a chain failure after the posting still leaves a
@@ -364,9 +365,8 @@ Replace "distribute the whole order amount" with an ordered waterfall:
       than aggregate scoping, the reversal netting to zero, both ends of the
       cooling-off window, and the settled-units refusal.
       (25 tests in `rwa.protection.test.ts`.)
-- [ ] Not built: an insufficient-funds check at purchase. Same blocker as §1.1
-      — there are no per-user ledger accounts, so there is no balance to check.
-      Blocked on §4.5.
+- [x] Insufficient-funds check at purchase, and on the secondary market's
+      buyer. Unblocked by §4.5; runs last of the limits, before the posting.
 
 ### 3.3 🟠 Secondary market (replaces the D6 refusal)
 - [x] An existing holder can add to their position. `purchaseUnits` used to
@@ -466,28 +466,93 @@ Replace "distribute the whole order amount" with an ordered waterfall:
 ## 4. Platform-wide industrial concerns
 
 ### 4.1 🔴 Cross-instance idempotency (the standing Golden Rule #4 hole)
-- [ ] Redis-backed `IdempotencyStore` replacing the in-memory one.
-- [ ] Same for the rate limiter so limits are global, not per-process.
-- [ ] Documented single-instance constraint removed once done.
+- [x] Redis-backed `IdempotencyStore` (`RedisIdempotencyStore`), chosen by
+      `createIdempotencyStore` when `REDIS_URL` is set.
+- [x] `RedisRateLimitStore` for express-rate-limit, so a 300/minute limit is
+      300/minute across instances rather than per-process. It fails **open**
+      when Redis is unreachable — the one place in the platform where that is
+      right, since the limiter guards against abuse and not against incorrect
+      money movement.
+- [x] The constraint is announced at boot rather than removed: without
+      `REDIS_URL` the in-memory stores are used and the log says
+      "SINGLE INSTANCE ONLY". Failing closed would mean an operator who has not
+      provisioned Redis cannot run the platform, trading a known limitation for
+      an outage.
+- [x] **Two bugs found while wiring it.** Every router constructed its *own*
+      idempotency store, so a retry was only recognised by the route group that
+      first served it; they now take an injected store. And the middleware
+      stored every response including failures, which makes a transient 5xx
+      permanent for that key — only 2xx is stored now.
+- [x] Tests: two store objects over one fake Redis, which is the real topology
+      (separate processes, shared backing store). 13 tests in
+      `idempotency.redis.test.ts`.
 
 ### 4.2 🔴 Remaining persistence gaps
-- [ ] `PgKycRepository` — KYC state currently dies on restart.
-- [ ] `PgReputationRepository` — same.
+- [x] `PgKycRepository` (migration 0022). KYC gates an investor purchase
+      (§3.2), so an in-memory store meant a deploy silently reset every user to
+      unverified *and* re-opened every review a compliance officer had closed,
+      inviting a second decision on a settled case. `resolveReview` selects on
+      `status = 'queued'` rather than read-then-write: two officers opening the
+      same case is ordinary, and the predicate is what stops the second
+      decision overwriting the first.
+- [x] `PgReputationRepository`. Counters only — the score stays derived, so the
+      formula can change without a migration and without two historical scores
+      meaning different things. The upsert is last-writer-wins and can lose an
+      increment under concurrency; deliberate and documented, because
+      reputation is advisory and never gates money, and an exact interface
+      would be one the in-memory adapter could not mirror (Rules.md §2).
 
 ### 4.3 🟠 Money-safety invariants at the database layer
-- [ ] Constraint: `units_sold <= total_units` (exists — verify it survived the
-      repair migrations).
-- [ ] Constraint: a holding's units cannot exceed the tokenization's supply.
-- [ ] Constraint: payout distributions per tokenization cannot exceed collected
-      funds.
-- [ ] SQL invariant tests in `infra/supabase/tests/` for each.
+All in migration `0020`. Each is already checked in application code; they are
+restated in the database because an application check protects against the code
+paths someone thought of, and a database check protects against the ones they
+did not — a future migration, a manual fix in a console at 3am, a second
+service written against the same tables.
+- [x] `units_sold <= total_units` — verified present by a `do $$` block that
+      re-establishes it if the repair migrations dropped it, rather than
+      trusting a human to remember to grep for it.
+- [x] A holding cannot exceed the tokenization's supply, as a trigger, since a
+      per-row check cannot see across tables. 0006 already refused
+      over-subscription *on insert*; this is the narrower structural claim,
+      which a bad UPDATE would otherwise walk straight past.
+- [x] Payout records per tokenization cannot exceed the collectible face value.
+      DEFERRED, so it fires at COMMIT with the full sum — a check firing on the
+      first row of a multi-holder payout would judge the total against a
+      partial one. Face value is the right ceiling because `payout_records`
+      holds only the *investor* leg, and §1.2's payability check already
+      refuses terms whose advance + yield + fee exceed face value.
+- [x] `infra/supabase/tests/money_invariants_test.sql`, run in CI against a
+      real Postgres. Every block asserts a **refusal** — a test that only
+      proved the happy path would prove nothing about a constraint whose whole
+      job is to say no — plus one asserting that a payout *within* the ceiling
+      is accepted, since a constraint refusing legitimate distributions is a
+      failure found only when a real payout cannot be recorded.
 
 ### 4.4 🟠 Observability that matches the domain
-- [ ] Business metrics beside the HTTP ones: total value locked, active
-      tokenizations, default rate, average days-to-collect, dispute rate.
-- [ ] Alert when default rate or dispute rate crosses a threshold.
+- [x] `AdminService.businessMetrics` computes total value locked, capital
+      deployed, positions by state, default rate, dispute rate, average
+      days-to-collect and overdue positions. Two decisions worth keeping:
+      amounts are **per currency, never summed** (a cross-currency total needs
+      an FX rate the platform does not have, and a number that silently assumes
+      1 USD = 1 EUR is worse than no number), and the default rate is computed
+      over **resolved positions only** — counting still-running ones as
+      successes flatters a young book, and an operator making a credit decision
+      on that number is misled by their own dashboard.
+- [x] `BusinessMetricsJob` sweeps the same numbers on a schedule and publishes
+      them as gauges *and* through the alert sink. Alerts fire on a **crossing**
+      and clear on recovery rather than repeating every sweep — a rate above
+      threshold for a week is one incident, and re-paging is how an operator
+      learns to mute the channel. The default rate is not believed until enough
+      positions have resolved (one default out of one is 100% and no evidence).
+      Overdue positions get their own warning, as the leading indicator that a
+      person can still act on.
+- [x] Alerts carry **rates and counts only**, never amounts or identities
+      (Rules.md §3) — an alerting pipeline fans out to pagers, chat, and
+      third-party incident tools. A test asserts every context value is a
+      number and that no id or amount appears in a serialized alert.
+- [x] Tests: 12 in `business-metrics.job.test.ts`.
 
-### 4.5 🔴 Per-user ledger accounts
+### 4.5 🔴 Per-user ledger accounts — **done**
 
 Discovered while wiring §1.1. Every ledger posting in the platform lands on
 *system* accounts (`rwa_investor_cash_clearing`, `escrow_holding`, …). There is
@@ -498,24 +563,132 @@ written.
 This is a structural gap, not an RWA one: the same absence means no user has a
 statement, and no balance can be proven without scanning transitions.
 
-- [ ] Per-user ledger accounts keyed on `owner_ref = user:<id>`, created on
-      demand per currency (the schema already supports this — `ledger_accounts`
-      is unique on `(owner_ref, currency, name)` and `owner_ref` already
-      documents `user:<id>` as a valid shape).
-- [ ] A balance read that sums entries for an account.
-- [ ] Postings that today credit or debit a clearing account move to the user's
-      own account where the money is genuinely theirs.
-- [ ] Insufficient-funds checks on subscription (§1.1) and any other user-funded
-      operation.
-- [ ] `GET /api/ledger/balances` so a user can see their own position.
-- [ ] Tests: a balance reflects postings; an overdraw is refused.
+- [x] Per-user accounts keyed on `owner_ref = user:<id>`, named `user_cash`,
+      created on demand per currency (migration `0020`). Typed `liability` and
+      constrained to be one: the balance is what the platform *owes* the user,
+      so spending debits it, and an account typed `asset` would read with the
+      sign inverted — an overdrawn user would look funded.
+- [x] `ledger_account_balances`, a **view**. Deliberately not a stored column:
+      a stored balance is a second copy of what the entries already say, and
+      the two drift the moment a write path forgets to update it — which is the
+      class of bug double-entry exists to make impossible.
+- [x] Five postings moved off shared clearing accounts onto the user's own:
+      subscription, its cooling-off reversal, both sides of a secondary trade,
+      and the payout — which now credits **each holder individually** rather
+      than a lump to `rwa_payout_payable`. That makes the ledger agree with
+      `payout_records` by construction instead of by cross-referencing two
+      tables. The write-off recovery does the same.
+- [x] Insufficient-funds checks on subscription (§1.1), the secondary market's
+      buyer (§3.3), and withdrawal.
+- [x] `GET /api/treasury/balances`. Served from treasury rather than the ledger
+      router because treasury is what puts money in them.
+- [x] Tests: 15 in `user-accounts.test.ts` — a balance reflects postings, an
+      overdraw is refused at exactly one minor unit over, a balance in one
+      currency cannot fund a purchase in another, and the two address spaces
+      (system UUID, user reference) cannot collide.
+
+**Discovered while building it: §4.5 gives users a balance but no way to hold
+anything**, which would leave the new check refusing every purchase. So a
+**treasury module** was built alongside it (migration `0021`).
+
+- [x] A deposit is a **verification, not an instruction**. The user does not say
+      how much to credit them; they say *which transaction* to look at. The
+      platform reads it from Horizon and credits exactly what arrived, from
+      exactly the wallet they proved at SEP-10. The UI has no amount field,
+      deliberately — one would imply the number is theirs to choose, and the
+      first thing someone would try is a larger one.
+- [x] A transaction can be credited **once**, guarded twice and independently: a
+      unique index on `stellar_tx_hash`, and the ledger's own uniqueness on the
+      `treasury-deposit:<hash>` reference.
+- [x] Withdrawals debit *before* submitting and reverse on failure. That can
+      leave a user briefly debited for a payment that never went out; the
+      alternative pays a user who never had the balance, and only one of those
+      is recoverable. Above a configured ceiling a withdrawal is held for a
+      compliance decision (Rules.md §6), and releasing one re-checks the
+      balance — the hold may have lasted a while.
+- [x] Horizon's 7-decimal strings convert to ledger minor units exactly, and
+      precision the ledger cannot represent is **refused rather than rounded**:
+      rounding a deposit down is quietly keeping the difference.
+- [x] Tests: 28 in `treasury.test.ts`, covering the conversion in both
+      directions. Plus `npm run chain:verify-xlm`, which funds two testnet
+      accounts, moves real XLM, and asserts the balance deltas to the stroop
+      *and* that `decimalStringToBigInt` agrees with what the chain reported —
+      the check the unit tests structurally cannot make.
+- [x] **Bug found while testing:** the withdrawal ledger reference keyed on
+      `Date.now()`, so two identical withdrawals in one millisecond collided
+      and the second was refused. It keys on the movement id now; HTTP-level
+      retry idempotency is the route middleware's job, not this layer's.
 
 ### 4.6 🟡 Frontend quality
-- [ ] Component tests (currently zero) for the purchase flow, the escrow
-      transition flow, and the dispute form.
+- [x] Component tests for the purchase flow, the escrow transition flow, and
+      the dispute form. 44 tests where there were none, on vitest + jsdom +
+      Testing Library, running in CI before the build so a failing test stops
+      the job at the cheap step.
+
+      Each was chosen for a failure mode invisible from the outside:
+      - The **purchase flow's disclosure gate** (§3.4) is a two-state
+        interaction with no server involvement — collapse the states and the
+        flow still "works", every other test still passes, and the disclosure
+        is simply gone. The assertions are about *when the purchase call is
+        made*, never about markup.
+      - **`nextAction`** is the escrow state machine as the UI sees it, and it
+        decides whether someone is shown a button that moves money. Offering a
+        step to the wrong party renders as a button that always errors — the
+        server refuses correctly — which is a confusing way to find a UI bug.
+        Table-driven over every (status, viewer) pair, plus the property that
+        at most one party is ever offered a step, since two would be a race the
+        UI invited. Exported for this: its correctness is independent of how
+        the dashboard renders.
+      - The **dispute form** trims a pasted order id (an untrimmed one is a 404
+        with no visible cause), clears on success so the next dispute is not
+        filed against the previous order, and *keeps* the input on failure so a
+        retry does not mean retyping.
 - [ ] Replace the 12s polling with contract-event streaming over SSE.
 - [ ] Break up the dense single-line JSX in `RwaConsole.tsx`,
       `EscrowDashboard.tsx`, `KycOnboarding.tsx`.
+
+---
+
+### 4.7 🟠 Operations console (added 2026-09-04, not in the original plan)
+
+Requested alongside Wave 4/5. It is listed here rather than in §7 because it
+turned out to be the natural consumer of §4.4's metrics and the natural home
+for a decision §4.2's policy table made editable.
+
+- [x] `/api/admin/*`, guarded at the **router** rather than per-route, so a
+      route added later is protected by default rather than by someone
+      remembering. Compliance role throughout: these endpoints return the whole
+      book and every user's queue.
+- [x] The console can change *policy* and decide queued cases; it can never
+      post a ledger entry, move units, or submit a transaction. There is no
+      route here that does, and that absence is the boundary rather than a
+      check. Decisions delegate to the service that owns them, so a case
+      decided from the console gets the same validation, audit trail and
+      downstream effects as one decided anywhere else.
+- [x] **Verification routing became a policy row** (migration `0022`), replacing
+      three environment variables. Changing them meant a redeploy, and the
+      moment you need a control tightened is the moment you cannot wait for a
+      build. Read per submission, so a threshold changed during an incident
+      applies to the next application rather than the next deploy.
+- [x] `routeVerification` is a pure function and fails closed in one direction
+      only: a silent engine, an untrusted answer, an amount above the ceiling,
+      or a hard provider failure all route *towards* a human. **`auto` does not
+      mean the model decides** — AI stays advisory in every mode (Rules.md §6);
+      it means the deterministic policy may conclude without queueing. The UI
+      says so above the controls, because a label reading "let the AI approve"
+      would describe a system this is not.
+- [x] Two conflicting-evidence paths added while rewriting `decideKyc` on top
+      of it: an automatic approval is refused when the advisory did not
+      recommend one (the failure that lets someone through), and an automatic
+      rejection is refused when it did. Both go to a person.
+- [x] Every policy edit is audited **with the value it was changed from** — the
+      question an auditor asks, and one an entry carrying only the new value
+      cannot answer.
+- [x] Tests: 40 in `admin.test.ts` (the router's fail-closed behaviour and the
+      metrics' arithmetic) plus 10 in `kyc-decision.policy.test.ts` proving a
+      policy change actually changes the next KYC outcome — without which the
+      table is a settings page that alters nothing, a failure invisible from
+      the console itself.
 
 ---
 

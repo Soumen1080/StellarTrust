@@ -8,7 +8,7 @@
 > **Update policy:** Every change to the codebase or docs should update the
 > relevant section here (Current Focus, Decision Log, Changelog, Complications).
 
-**Last updated:** 2026-09-03
+**Last updated:** 2026-09-04
 
 ---
 
@@ -24,7 +24,7 @@
   the on-chain escrow path and durable settlement persistence. A public product
   feedback wall shipped as the last Phase 6 feature.
   What remains is operational/external: live contract instances exercised by
-  real users, a real KMS signer, Redis-backed idempotency, live anchors, an
+  real users, a real KMS signer, a provisioned Redis, live anchors, an
   independent security audit, and MSB licensing.
 
 ### Verified state (2026-09-04 — re-measured, not assumed)
@@ -32,13 +32,21 @@
 | Check | Result |
 |---|---|
 | `contracts` — `cargo test` | ✅ **27 pass** (escrow 9, rwa_token 18) — last measured 2026-09-03 |
-| `backend` — `vitest run` | ✅ **439 pass**, 36 files, 0 failures |
-| `backend` — `tsc --noEmit`, `eslint src` | ✅ clean |
+| `backend` — `vitest run` | ✅ **557 pass**, 42 files, 0 failures |
+| `backend` — `tsc --noEmit`, `eslint .` | ✅ clean |
+| `frontend` — `vitest run` | ✅ **44 pass**, 3 files (was zero) |
 | `frontend` — `tsc --noEmit`, `eslint .`, `next build` | ✅ clean (1 pre-existing warning in `EscrowDashboard.tsx`) |
 | `ai` — pytest | ⚠️ CI-only (native wheels blocked on this machine), 6 tests |
-| Database invariant tests (psql) | ⚠️ CI-only, 2 smoke tests |
+| Database invariant tests (psql) | ⚠️ CI-only, 3 smoke tests |
+| Live testnet XLM transfer (`chain:verify-xlm`) | ✅ **6/6 checks**, run 2026-09-04 |
 
-**Total across suites: 474 tests.**
+**Total across suites: 636 tests.**
+
+Live testnet proof (2026-09-04) — real XLM moved between two funded accounts,
+balances asserted to the stroop, and the platform's own decimal conversion
+checked against what the chain reported:
+`b3eac6ee1e7efd490f63d1c1aaa9a1685f38e4037f3346239b45f30f843fb7d7` (sent),
+`3186d4ac864cf6a8a60409e33330e0c856d63be30a0334440383567312bdf199` (returned).
 
 > The 292 figure in `README.md` is a captured run from 2026-08-27 and is now
 > stale; it is a transcript of that run, so refreshing it means re-capturing
@@ -46,13 +54,16 @@
 
 - **Repo state:** All portions present. Postgres repositories exist and are used
   when `DATABASE_URL` is set for: identity, auth, audit, ledger, payments,
-  disputes, rwa, **settlement**, and **feedback**. Still in-memory in every
-  environment: **kyc**, **reputation**, and all **idempotency** stores. Chain
-  adapters have real Soroban implementations for escrow and RWA; anchor and
-  liquidity are still sandbox/deterministic only.
-- **Migrations:** `0001`–`0015`. `0014` and `0015` are *repair* migrations that
-  re-apply settlement/dispute-party and on-chain-escrow/dispute-link/holding
-  status schema to a deployed database where the originals never ran.
+  disputes, rwa, settlement, feedback, **kyc**, **reputation**, **treasury**,
+  and the **verification policy**. Idempotency and rate limiting are
+  Redis-backed when `REDIS_URL` is set and fall back to in-memory with a
+  single-instance warning at boot otherwise. Chain adapters have real Soroban
+  implementations for escrow and RWA and a real Horizon implementation for
+  treasury; anchor and liquidity are still sandbox/deterministic only.
+- **Migrations:** `0001`–`0022`. `0014`/`0015` are *repair* migrations.
+  `0020` adds per-user ledger accounts, the `ledger_account_balances` view, and
+  three money-safety invariants; `0021` adds `treasury_movements`; `0022` adds
+  KYC/reputation persistence and the `verification_policies` control surface.
 
 ### Canonical docs
 - `PRD.md` — product requirements, users, features.
@@ -70,25 +81,102 @@
 
 ## 2. Current Focus
 
-- **Currently working on:** `plane.md` §3 is **complete** — §3.1 verification,
-  §3.2 investor protection, §3.3 secondary market, and §3.4 risk surfacing all
-  landed 2026-09-04. The RWA section is now a real tokenization product:
-  evidence is reviewed, investors are protected and can exit, and the risk they
-  carry is on the screen.
-- **Immediately next (code):** §4.1 Redis-backed idempotency — the last place a
-  golden rule (#4) is aspirational rather than enforced in a multi-instance
-  deployment. Then §4.5 per-user ledger accounts, which is the standing blocker
-  on the insufficient-funds check in §1.1 and §3.2, and Postgres repositories
-  for kyc and reputation, the last two domains that lose state on restart.
-- **Blocked on you (operational):** run a real testnet order end-to-end with
-  `ESCROW_GATEWAY=soroban-rpc` so a live contract instance ID and transaction
-  hash exist to record; onboard 10+ real wallet users. See `SUBMISSION_TODO.md`.
+- **Currently working on:** `plane.md` §3 and §4 are **complete** except the two
+  §4.6 polish items. Landed 2026-09-04: §4.5 per-user ledger accounts and the
+  treasury module that funds them, §4.1 Redis-backed idempotency and rate
+  limiting, §4.2 KYC/reputation persistence, §4.3 database money invariants,
+  §4.4 business metrics and alerting, §4.6's component tests, and §4.7 — an
+  operations console that was not in the original plan.
+
+  The through-line: every user now has a real balance, funded by a verified
+  on-chain payment, and a purchase they cannot afford is refused. That closes
+  the standing blocker §1.1 and §3.2 both named.
+- **Immediately next (code):** the two remaining §4.6 items — SSE streaming to
+  replace the 12s polling, and breaking up the dense single-line JSX in
+  `RwaConsole.tsx` / `EscrowDashboard.tsx` / `KycOnboarding.tsx`. Both are
+  polish; neither blocks anything. §1.1's last box (a fully atomic purchase
+  across ledger + holding + chain) needs a cross-module transaction boundary
+  that does not exist yet, and is deferred with §2.1's for the same reason.
+- **Blocked on you (operational):** apply migrations `0020`–`0022` to the
+  deployed database; set `REDIS_URL` before running more than one API instance
+  (the app warns at boot if it is unset); set `TREASURY_GATEWAY=horizon` so
+  deposits verify against real payments rather than the deterministic double.
+  Then run a real testnet order end-to-end with `ESCROW_GATEWAY=soroban-rpc`,
+  and onboard 10+ real wallet users. See `SUBMISSION_TODO.md`.
 
 ---
 
 ## 3. Recent Work
 
-### RWA secondary market and risk surfacing (plane.md §3.3, §3.4 — most recent)
+### Per-user ledger accounts + treasury (plane.md §4.5 — most recent)
+
+Every posting in the platform landed on a *system* account, so "this investor's
+balance" was not a thing that existed. That is why the insufficient-funds
+checks in §1.1 and §3.2 could not be written, and why no user had a statement.
+
+One `user_cash` account per (user, currency), created on demand, addressed as
+`user:<id>/user_cash`. Typed `liability` and constrained to be one — the
+balance is what the platform *owes* the user, so spending debits it; typed as
+an asset it would read with the sign inverted and an overdrawn user would look
+funded. Balances come from a **view** over `ledger_entries`, never a stored
+column: a stored balance is a second copy of what the entries already say, and
+the two drift the moment a write path forgets to update it.
+
+Five postings moved onto the user's own account. The payout is the interesting
+one — it now credits **each holder individually** rather than a lump to
+`rwa_payout_payable`, which makes the ledger agree with `payout_records` by
+construction instead of by cross-referencing two tables.
+
+That left a gap: users had a balance and no way to hold anything, so the new
+check would have refused every purchase. Hence **treasury**. A deposit is a
+*verification, not an instruction* — the user gives a transaction hash, not an
+amount, and the platform reads that transaction from Horizon and credits
+exactly what arrived from exactly the wallet they proved at SEP-10. A
+transaction can be credited once, guarded twice and independently: a unique
+index on the hash, and the ledger's own uniqueness on the reference id.
+
+Verified on live testnet: `npm run chain:verify-xlm` funds two accounts, moves
+real XLM, and asserts the balance deltas to the stroop *and* that the
+platform's own decimal conversion agrees with what the chain reported — the
+check unit tests structurally cannot make.
+
+### Cross-instance and persistence gaps (plane.md §4.1, §4.2)
+
+Idempotency and rate limiting were per-process. Behind two API instances a
+retry landing on the other one found nothing stored and re-executed, which on
+a money-mutating endpoint is a double spend — the exact failure idempotency
+keys exist to prevent. Redis backs both when `REDIS_URL` is set; without it
+the in-memory stores are used and the constraint is *announced at boot* rather
+than silently accepted.
+
+Two bugs surfaced while wiring it. Every router constructed its own store, so
+a retry was only recognised by the route group that first served it. And the
+middleware stored every response including failures, which makes a transient
+5xx permanent for that key — retrying is the right response to a chain blip,
+and replaying the error forecloses it.
+
+KYC and reputation moved to Postgres. Both are consulted when money moves, and
+an in-memory store meant a deploy reset every user to unverified, re-opened
+every closed review, and discarded every track record.
+
+### Operations console (plane.md §4.7)
+
+Business metrics the platform never computed — total value locked, capital
+deployed, default rate, dispute rate, days-to-collect — plus the queues and an
+audit trail, behind the compliance role.
+
+The substantive change is that **verification routing became a policy row**
+rather than three environment variables. The moment you need a control
+tightened is the moment you cannot wait for a redeploy. It is read per
+submission, so a change applies to the next application; every edit is audited
+with the value it was changed *from*, which is the question an auditor asks.
+
+`auto` mode does not mean the model decides — AI stays advisory in every mode
+(Rules.md §6). It means the deterministic policy may conclude without queueing
+a human. Hard failures, conflicting evidence, and amounts above the ceiling
+still reach a person whatever the mode.
+
+### RWA secondary market and risk surfacing (plane.md §3.3, §3.4)
 
 Closes finding D6. An investor could enter a position and never leave it, and
 could not add to one they liked.
@@ -255,11 +343,11 @@ issuer's to arm. The RWA reconciliation job reports each divergence.
 
 | Area | Gap | Consequence |
 |---|---|---|
-| Idempotency | Stores are in-memory in every environment | Golden rule #4 is not enforced across instances or restarts. Blocks safe multi-instance deploys. |
-| KYC / reputation | No Postgres repository | State is lost on restart. |
+| Idempotency | Redis-backed when `REDIS_URL` is set; in-memory otherwise | Golden rule #4 holds across instances **once Redis is configured**. Without it the app boots with a `SINGLE INSTANCE ONLY` warning — the constraint is announced, not removed. |
 | Anchors / liquidity | Sandbox and deterministic adapters only | No real fiat on/off ramp; settlement rates are simulated. |
-| Signer | `local-stub` / `DEMO_MODE` env seed | Real KMS/HSM signing is required before staging or production. |
-| Frontend tests | Zero | No automated guard on UI regressions. |
+| Signer | `local-stub` / `DEMO_MODE` env seed | Real KMS/HSM signing is required before staging or production. The treasury signs withdrawals with the same key, so this now gates payouts too. |
+| Treasury gateway | Defaults to `deterministic` | Deposits are not verified against a real chain until `TREASURY_GATEWAY=horizon`. Refused outright in staging/production, so it cannot ship unnoticed. |
+| Purchase atomicity | Ledger post, holding row, and chain transfer are not one transaction | A chain failure after the posting leaves a paid-for holding with no units. Reported by the RWA reconciliation job rather than hidden. Needs a cross-module transaction boundary (with §2.1's last box). |
 | Contract events | Emitted, nothing consumes them | No real-time push; the UI polls every 12s instead. |
 | `LICENSE` | README claims MIT; file does not exist | Unbacked license claim. |
 | Env examples | README tells users to copy `backend/.env.render.example` and `frontend/.env.vercel.example` | Neither file exists; setup instructions fail on a fresh clone. `.gitignore` ends with a blanket `.env*` that overrides the earlier `!.env.example` negation. |
@@ -278,6 +366,16 @@ issuer's to arm. The RWA reconciliation job reports each divergence.
 | `ESCROW_GATEWAY` is a real switch, not a feature flag | `deterministic` moves no value and synthesizes hashes; `soroban-rpc` moves real testnet funds. `npm run chain:preflight` reports which mode is live. |
 | Blank env vars mean "unset" | `FOO=` in a `.env` and an empty hosting-dashboard field both mean "not configured" to a human, but arrive as `""` and fail a format check instead of falling through to `.optional()`. |
 | Feedback contact fields stored, never returned | The wall is public; email and wallet are for follow-up only. Enforced in the service *and* by row-level security. |
+| A user ledger account is a **liability**, and the balance is a **view** | The platform owes the user their balance, so spending debits it; typed as an asset the sign inverts and an overdrawn user reads as funded. The balance is derived from `ledger_entries` rather than stored, because a stored total is a second copy that drifts the moment a write path forgets it — the class of bug double-entry exists to make impossible. |
+| A deposit is a verification, not an instruction | The user supplies a transaction hash, never an amount. The platform reads that transaction from Horizon and credits exactly what arrived, from exactly the wallet proved at SEP-10. An amount field would imply the number is theirs to choose. |
+| Withdrawals debit before submitting, and reverse on failure | This can leave a user briefly debited for a payment that never went out. The alternative pays a user who never had the balance, and only one of those two failures is recoverable. |
+| Rate limiting fails **open** when Redis is unreachable | The one place in the platform where failing open is right: the limiter guards against abuse, not against incorrect money movement, and every money path has its own authorization and idempotency behind it. A limiter that cannot reach its store must not become an API outage. |
+| Missing Redis warns at boot rather than refusing to start | Failing closed would mean an operator who has not yet provisioned Redis cannot run the platform at all — trading a known, announced limitation for an outage. |
+| Verification routing is a database row, not an env var | The moment a control needs tightening is the moment you cannot wait for a redeploy. Read per submission so a change applies to the next application, and audited with the value it was changed *from*, which is the question an auditor actually asks. |
+| `auto` mode does not mean the model decides | AI stays advisory in every mode (Rules.md §6). `auto` means the deterministic policy may conclude without queueing a human; hard failures, conflicting evidence, and amounts above the ceiling still reach a person. |
+| Business metrics are per currency, never summed | A cross-currency total needs an FX rate the platform does not have. A number that silently assumes 1 USD = 1 EUR is worse than no number. |
+| The default rate counts resolved positions only | Counting still-running positions as successes flatters a young book, and an operator making a credit decision on that number is misled by their own dashboard. |
+| Alerts carry rates and counts, never amounts or identities | An alerting pipeline fans out to pagers, chat channels, and third-party incident tools — the wrong place for a user id or a position's value (Rules.md §3). |
 | Forward-only migrations, never edited after landing | Repairs ship as new numbered migrations (`0014`, `0015`), not edits to history. |
 | Existing assets backfill as `unverified`, not verified | Nothing has ever been reviewed, so marking those rows verified would be a lie told by a migration. An already-tokenized asset reads unverified while its tokenization runs on untouched — the gate is at creation, so no live position is stranded. |
 | The double-pledge check matches `assetRef` across owners | The classic invoice-financing fraud is the same receivable financed twice under two accounts. A per-owner unique constraint cannot see it. |
@@ -300,6 +398,11 @@ issuer's to arm. The RWA reconciliation job reports each divergence.
 
 | Date | Change |
 |---|---|
+| 2026-09-04 | Frontend component tests (44, was zero) for the purchase, escrow-transition, and dispute flows; SQL invariant tests. Both run in CI (plane.md §4.6, §4.3). |
+| 2026-09-04 | Business metrics and threshold alerting (plane.md §4.4). |
+| 2026-09-04 | Operations console: metrics, queues, audit trail, and the verification routing policy (plane.md §4.7; migration `0022`). |
+| 2026-09-04 | Redis-backed idempotency and rate limiting; Postgres KYC and reputation repositories (plane.md §4.1, §4.2). |
+| 2026-09-04 | Per-user ledger accounts, money-safety invariants, and the treasury module that funds a balance (plane.md §4.5, §4.3; migrations `0020`, `0021`). Live testnet XLM transfer verified. |
 | 2026-09-04 | RWA secondary market and risk surfacing (plane.md §3.3, §3.4; migration `0019`). |
 | 2026-09-04 | RWA asset verification and investor protection (plane.md §3.1, §3.2; migration `0018`). |
 | 2026-09-03 | Full documentation accuracy pass — every `.md` rewritten against the codebase. |
