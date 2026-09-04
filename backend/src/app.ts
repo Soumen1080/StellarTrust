@@ -97,6 +97,7 @@ import {
 import { PgRwaRepository } from "./modules/rwa/pg-rwa.repository.js";
 import { RwaService } from "./modules/rwa/rwa.service.js";
 import { RwaReconciliationJob } from "./modules/rwa/rwa.reconciliation.job.js";
+import { RwaLifecycleJob } from "./modules/rwa/rwa.lifecycle.job.js";
 import { createRwaRouter } from "./modules/rwa/rwa.routes.js";
 import { InMemoryReputationRepository } from "./modules/reputation/reputation.repository.js";
 import { ReputationService } from "./modules/reputation/reputation.service.js";
@@ -427,6 +428,19 @@ export function createApp(): Express {
     metrics,
   );
   app.locals.rwaReconciliationJob = rwaReconciliation;
+
+  // Time is what moves a receivable from funded to matured to defaulted. Without
+  // this sweep a position whose debtor never paid stayed `funded` forever,
+  // indistinguishable from one paying on schedule (plane.md §1.4).
+  const rwaLifecycle = new RwaLifecycleJob(
+    rwaRepository,
+    audit,
+    config.RWA_LIFECYCLE_INTERVAL_MS,
+    config.RWA_DEFAULT_GRACE_DAYS,
+    alerts,
+    metrics,
+  );
+  app.locals.rwaLifecycleJob = rwaLifecycle;
 
   // ── Phase 3: Cross-Border Settlement ─────────────────────────────────────
   // Settlement moves fiat across borders; its records must outlive the process

@@ -129,16 +129,51 @@ Replace "distribute the whole order amount" with an ordered waterfall:
       "close enough" is not available.
 - [x] Tests: full, partial, late, zero-residual, and zero-collection cases, each
       asserting the legs reconstitute the collection exactly.
-- [ ] **Wire it into `PaymentService.triggerRwaPayout`.** The waterfall exists
-      and is tested but the release hook still distributes the whole order
-      amount. This is the remaining half of defect D2 and the next task.
+- [x] **Wired into `PaymentService.triggerRwaPayout`.** `distributePayout` now
+      runs the collection through `splitCollection` before anyone is paid: only
+      `investorTotal` is distributed pro-rata, and the ledger posts three legs
+      (investors, platform fee, seller residual) against one debit of what was
+      collected. Legs that round to zero are omitted, since the ledger schema
+      rejects a zero-amount entry and a partial collection legitimately leaves
+      the platform and seller nothing. Defect D2 is closed.
+- [x] The on-chain drift check is handed `investorTotal`, not the gross
+      collection: the contract knows unit balances, not the waterfall, so
+      asking it to split the full amount would have compared our shares against
+      a number they were never computed from and failed every payout as drift.
+- [x] Note on the denominator: shares are pro-rata of `totalUnits`, so unsold
+      units' share of the investor leg is simply not paid. The ledger credits
+      the sum of the per-holder records rather than `investorTotal`, so the
+      posting still balances exactly against what was collected.
+- [x] Tests: the §1.2 worked example end to end (832,000 / 10,000 / 158,000 on
+      a 1,000,000 collection), partial collection paying investors only, the
+      repaid transition, and a collection too small to pay anyone. (4 tests in
+      `rwa.test.ts`.)
 
 ### 1.4 🔴 Complete the tokenization lifecycle
-- [ ] Add statuses: `Matured`, `Defaulted`, `WrittenOff`, `Repaid`.
-- [ ] Scheduled job moves `Funded` → `Matured` at `maturityDate`.
-- [ ] Grace window, then `Matured` → `Defaulted`.
-- [ ] Write-off path distributing recovery pro-rata and closing the position.
-- [ ] Tests for each transition and for illegal transitions being refused.
+- [x] Statuses `Matured`, `Defaulted`, `WrittenOff`, `Repaid` (plus
+      `PayoutHeld` for §2.2) were already declared in the shared enum and the
+      Postgres type by migration 0016, but nothing in the backend referenced
+      them. They are now reachable states rather than documentation.
+- [x] `RwaLifecycleJob` (`rwa.lifecycle.job.ts`) moves `Funded` → `Matured` at
+      `maturityDate`, following the `ReconciliationJob` start/stop/run shape and
+      registered in `app.ts`/`index.ts`. The clock is injected, so tests pin a
+      date instead of waiting on timers.
+- [x] Grace window, then `Matured` → `Defaulted`. Configurable via
+      `RWA_DEFAULT_GRACE_DAYS` (default 30 — a credit-policy decision, not a
+      code one). Entering default emits a `warning` alert with counts only, no
+      ids or amounts (Rules.md §3).
+- [x] `RwaService.writeOffTokenization` distributes recovery pro-rata and closes
+      the position. Recovery is split pro-rata *only* — the waterfall's priority
+      exists to pay the platform and seller out of a surplus, and a write-off is
+      the case where none exists; charging a fee against recovered principal
+      would invert the first-loss structure. Operator-initiated, because judging
+      a debt unrecoverable is a credit decision, not a timeout.
+- [x] Both transitions are idempotent (they select on status + clock), and a
+      position with `collectedAt` set is never matured — the payout owns it.
+- [x] Tests: each transition, the grace boundary held and crossed, idempotency,
+      a collected position ignored, and the refused paths (write-off before
+      default, write-off without the compliance role). (10 tests in
+      `rwa.lifecycle.test.ts`.)
 
 ---
 

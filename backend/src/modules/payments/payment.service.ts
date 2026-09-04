@@ -774,12 +774,18 @@ export class PaymentService {
         return;
       }
 
+      // What the debtor actually paid. This is the *collection*, not the
+      // investors' share: `distributePayout` runs it through the financing
+      // waterfall (plane.md §1.3), which pays investors first, then the
+      // platform fee, then the seller's residual. Passing the gross amount is
+      // correct precisely because the split happens there — this hook must not
+      // pre-divide it.
       const payoutAmount = BigInt(order.amount.amount);
       const payoutCurrency = order.amount.currency;
 
       logger.info(
         `Triggering RWA payout distribution for tokenization ${tokenization.id} ` +
-        `(order ${order.id}, amount ${payoutAmount} ${payoutCurrency})`,
+        `(order ${order.id}, collected ${payoutAmount} ${payoutCurrency})`,
       );
 
       // Distribute payout to all token holders

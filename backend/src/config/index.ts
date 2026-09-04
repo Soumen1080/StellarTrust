@@ -196,6 +196,18 @@ const envSchema = z.object({
     .int()
     .min(1_000)
     .default(60_000),
+
+  // ── RWA lifecycle (plane.md §1.4) ───────────────────────────────────────
+  // How often the maturity sweep runs, and how long a matured position may go
+  // uncollected before it is treated as defaulted. Thirty days past due is the
+  // common trigger for commercial receivables; it is configurable because the
+  // right window is a credit-policy decision, not a code one.
+  RWA_LIFECYCLE_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .default(300_000),
+  RWA_DEFAULT_GRACE_DAYS: z.coerce.number().int().min(0).max(365).default(30),
   ESCROW_GATEWAY: z.enum(["deterministic", "soroban-rpc"]).default("deterministic"),
 
   // ── Phase 3: Cross-Border Settlement ────────────────────────────────────

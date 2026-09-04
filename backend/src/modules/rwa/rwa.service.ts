@@ -34,12 +34,18 @@ import {
   RWA_ISSUER_PROCEEDS_PAYABLE,
   RWA_PAYOUT_PAYABLE,
   RWA_PAYOUT_RESERVE,
+  RWA_PLATFORM_FEE_REVENUE,
+  RWA_RECOVERY_RECEIVABLE,
 } from "../ledger/system-accounts.js";
 import {
   applyBps,
+  daysBetween,
   pricePerUnitFor,
+  proRataShares,
+  splitCollection,
   validateTerms,
   type FinancingTerms,
+  type WaterfallSplit,
 } from "./rwa.financing.js";
 import type { WalletAddressResolver } from "../identity/wallet.resolver.js";
 import type { AuditRepository } from "../audit/audit.repository.js";
@@ -855,6 +861,21 @@ export class RwaService {
     // computed against the wrong denominator.
     await this.assertContractAgrees(tokenization, priorPosting !== undefined);
 
+    // Split the collection across the waterfall before anyone is paid
+    // (plane.md §1.3). `payoutAmount` is what the debtor actually paid; only
+    // the investor leg is distributed pro-rata. Distributing the whole amount
+    // — which is what this did before — silently handed the platform's fee and
+    // the seller's retained first-loss to the investors, so the seller
+    // financed nothing and the residual that makes the structure work
+    // disappeared.
+    const split = this.waterfallFor(tokenization, payoutAmount, new Date());
+
+    if (split.investorTotal <= 0n) {
+      throw new ConflictError(
+        "Collection is too small to pay the investor leg of the waterfall",
+      );
+    }
+
     const calculations = this.calculatePayoutShares(
       holdings.map((h) => ({
         holderUserId: h.holderUserId,
@@ -862,7 +883,7 @@ export class RwaService {
         unitsHeld: h.units,
       })),
       BigInt(tokenization.totalUnits),
-      payoutAmount,
+      split.investorTotal,
     );
 
     // Recompute the same shares on-chain and require agreement. The contract
@@ -870,7 +891,12 @@ export class RwaService {
     // two can drift (a holder transferring units directly, a transfer that
     // failed after the row was written). Paying out against a stale mirror
     // sends money to the wrong people, so a disagreement stops the payout.
-    await this.assertSharesAgree(tokenization, calculations, payoutAmount);
+    //
+    // The contract is asked to split the *investor leg*, not the gross
+    // collection: it knows unit balances, not the waterfall, so handing it the
+    // full amount would have it divide a number our own shares were never
+    // computed from and every payout would fail as drift.
+    await this.assertSharesAgree(tokenization, calculations, split.investorTotal);
 
     const now = new Date().toISOString();
     const distribution = await this.repository.createDistribution({
@@ -912,6 +938,7 @@ export class RwaService {
         tokenization,
         payoutRecords,
         payoutCurrency,
+        split,
       ));
 
     // Now claim the on-chain guard. A retry finds it already set, which is the
@@ -951,6 +978,21 @@ export class RwaService {
       ledgerTransactionId: ledgerTransaction.id,
     });
 
+    // Record the collection outcome on the tokenization itself. A collection
+    // that cleared the investor leg in full closes the position as `Repaid`;
+    // one that fell short leaves it open, because the shortfall is the input
+    // to the default and write-off path (§1.4) rather than a finished payout.
+    const collectedAt = tokenization.collectedAt ?? now;
+    await this.repository.updateTokenization({
+      ...tokenization,
+      collectedAt,
+      status:
+        split.shortfall === 0n
+          ? TokenizationStatus.Repaid
+          : tokenization.status,
+      updatedAt: new Date().toISOString(),
+    });
+
     await this.audit.append({
       actor: `user:${actor.userId}`,
       action: "rwa.distribute_payout",
@@ -959,12 +1001,125 @@ export class RwaService {
       metadata: {
         tokenizationId,
         orderId,
-        totalAmount: payoutAmount.toString(),
+        // What arrived, and how the waterfall split it. Recorded leg by leg so
+        // the audit trail explains why investors received less than the
+        // collection rather than only showing the final number.
+        collectedAmount: payoutAmount.toString(),
+        investorTotal: split.investorTotal.toString(),
+        investorPrincipal: split.investorPrincipal.toString(),
+        investorYield: split.investorYield.toString(),
+        platformFee: split.platformFee.toString(),
+        sellerResidual: split.sellerResidual.toString(),
+        shortfall: split.shortfall.toString(),
         holdersCount: holdings.length,
       },
     });
 
     return completed;
+  }
+
+  /**
+   * Close a defaulted position, distributing any recovery pro-rata (§1.4).
+   *
+   * The last state in the lifecycle. A default says the debtor missed the
+   * grace window; a write-off says the platform has stopped expecting the rest
+   * — a credit judgement, which is why this is operator-initiated rather than
+   * another date-driven sweep. Whatever was recovered (a partial payment, a
+   * collections settlement, nothing at all) is split across holders by units
+   * held, and the position closes.
+   *
+   * Recovery is distributed *pro-rata only*: the waterfall does not apply. Its
+   * priority ordering exists to pay the platform and seller out of a surplus,
+   * and a write-off is by definition the case where no surplus exists —
+   * charging a fee against investors' recovered principal would invert the
+   * first-loss structure the model is built on.
+   */
+  async writeOffTokenization(
+    tokenizationId: string,
+    recoveredAmount: bigint,
+    actor: RwaActor,
+  ): Promise<TokenizationDTO> {
+    const tokenization = await this.requireTokenization(tokenizationId);
+
+    if (!actor.roles.includes("compliance") && !actor.roles.includes("system")) {
+      throw new ForbiddenError("Only compliance can write off a position");
+    }
+    if (recoveredAmount < 0n) {
+      throw new ValidationError("Recovered amount cannot be negative");
+    }
+    // Only a defaulted position can be written off. Writing off anything
+    // earlier would close a position whose debtor may still be inside the
+    // grace window, destroying the investors' claim while it is still live.
+    if (tokenization.status !== TokenizationStatus.Defaulted) {
+      throw new ConflictError(
+        `Only a defaulted tokenization can be written off; ` +
+          `${tokenizationId} is ${tokenization.status}`,
+      );
+    }
+
+    const holdings = (await this.repository.listHoldings(tokenizationId)).filter(
+      (holding) => holding.status === TokenHoldingStatus.Settled,
+    );
+
+    // A recovery large enough to divide is distributed; anything smaller
+    // closes the position without a posting. Both are legitimate outcomes of a
+    // write-off, and a zero-amount ledger entry is rejected by the schema.
+    let ledgerTransactionId: string | undefined;
+    if (recoveredAmount > 0n && holdings.length > 0) {
+      const shares = proRataShares(
+        holdings.map((h) => BigInt(h.units)),
+        recoveredAmount,
+      );
+      const distributed = shares.reduce((sum, share) => sum + share, 0n);
+
+      if (distributed > 0n) {
+        const referenceId = `rwa-writeoff:${tokenizationId}`;
+        const existing = await this.ledger.getByReference(referenceId);
+        const posted =
+          existing ??
+          (await this.ledger.record({
+            referenceId,
+            description: `RWA write-off recovery for tokenization ${tokenizationId}`,
+            entries: [
+              {
+                accountId: RWA_RECOVERY_RECEIVABLE,
+                direction: EntryDirection.Debit,
+                amount: distributed.toString(),
+                currency: tokenization.faceValueCurrency,
+              },
+              {
+                accountId: RWA_PAYOUT_PAYABLE,
+                direction: EntryDirection.Credit,
+                amount: distributed.toString(),
+                currency: tokenization.faceValueCurrency,
+              },
+            ],
+          }));
+        ledgerTransactionId = posted.id;
+      }
+    }
+
+    const updated = await this.repository.updateTokenization({
+      ...tokenization,
+      status: TokenizationStatus.WrittenOff,
+      updatedAt: new Date().toISOString(),
+    });
+
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: "rwa.write_off_tokenization",
+      entity: "tokenization",
+      entityId: tokenizationId,
+      metadata: {
+        recoveredAmount: recoveredAmount.toString(),
+        holdersCount: holdings.length,
+        from: tokenization.status,
+        to: TokenizationStatus.WrittenOff,
+        ...(ledgerTransactionId ? { ledgerTransactionId } : {}),
+      },
+    });
+
+    return updated;
   }
 
   /** Freeze tokenization transfers (compliance control). */
@@ -1116,6 +1271,7 @@ export class RwaService {
     tokenization: TokenizationDTO,
     payoutRecords: Array<{ shareAmount: string }>,
     currency: string,
+    split: WaterfallSplit,
   ): Promise<{ id: string }> {
     const totalAmount = payoutRecords.reduce(
       (sum, r) => sum + BigInt(r.shareAmount),
@@ -1129,23 +1285,51 @@ export class RwaService {
       );
     }
 
+    // The waterfall's three legs, posted against one debit of what was
+    // collected (plane.md §1.3). The investor credit is `totalAmount` — the
+    // sum of the per-holder shares actually written — rather than
+    // `split.investorTotal`, so the posting reconciles with the payout records
+    // exactly even where largest-remainder distribution moved a minor unit.
+    //
+    // Legs that round to zero are omitted: the ledger schema rejects a
+    // zero-amount entry, and a partial collection legitimately leaves the
+    // platform and seller with nothing.
+    const collected = totalAmount + split.platformFee + split.sellerResidual;
+    const entries: LedgerTransactionInput["entries"] = [
+      {
+        accountId: RWA_PAYOUT_RESERVE,
+        direction: EntryDirection.Debit,
+        amount: collected.toString(),
+        currency: currency as CurrencyCode,
+      },
+      {
+        accountId: RWA_PAYOUT_PAYABLE,
+        direction: EntryDirection.Credit,
+        amount: totalAmount.toString(),
+        currency: currency as CurrencyCode,
+      },
+    ];
+    if (split.platformFee > 0n) {
+      entries.push({
+        accountId: RWA_PLATFORM_FEE_REVENUE,
+        direction: EntryDirection.Credit,
+        amount: split.platformFee.toString(),
+        currency: currency as CurrencyCode,
+      });
+    }
+    if (split.sellerResidual > 0n) {
+      entries.push({
+        accountId: RWA_ISSUER_PROCEEDS_PAYABLE,
+        direction: EntryDirection.Credit,
+        amount: split.sellerResidual.toString(),
+        currency: currency as CurrencyCode,
+      });
+    }
+
     const input: LedgerTransactionInput = {
       referenceId,
       description: `RWA payout distribution for tokenization ${tokenization.id}`,
-      entries: [
-        {
-          accountId: RWA_PAYOUT_RESERVE,
-          direction: EntryDirection.Debit,
-          amount: totalAmount.toString(),
-          currency: currency as CurrencyCode,
-        },
-        {
-          accountId: RWA_PAYOUT_PAYABLE,
-          direction: EntryDirection.Credit,
-          amount: totalAmount.toString(),
-          currency: currency as CurrencyCode,
-        },
-      ],
+      entries,
     };
 
     try {
@@ -1368,5 +1552,50 @@ export class RwaService {
     validateTerms(terms, totalUnits);
 
     return { terms, totalUnits };
+  }
+
+  /**
+   * The stored financing terms of a tokenization, as exact integers.
+   *
+   * The DTO carries them as JSON-safe strings and numbers; the arithmetic in
+   * `rwa.financing.ts` is `bigint`-only. This is the single conversion point,
+   * so a widened column or a renamed field breaks in one place.
+   */
+  private termsOf(tokenization: TokenizationDTO): FinancingTerms {
+    return {
+      faceValue: BigInt(tokenization.faceValueAmount),
+      advanceRateBps: BigInt(tokenization.advanceRateBps),
+      discountRateBps: BigInt(tokenization.discountRateBps),
+      platformFeeBps: BigInt(tokenization.platformFeeBps),
+    };
+  }
+
+  /**
+   * Split a collected amount across the payout waterfall (plane.md §1.3).
+   *
+   * Late yield accrues against `collectedAt` when the collection has been
+   * recorded, and otherwise against `now`. Reading the clock here rather than
+   * inside `splitCollection` keeps that function pure and lets tests pin the
+   * date; the accrual date is the one input that genuinely varies with when
+   * the debtor paid rather than when this code runs.
+   *
+   * `termDays` is measured from creation to maturity — the contractual window
+   * the discount was priced for — so the daily late rate is derived from the
+   * deal's own terms rather than an assumed year fraction.
+   */
+  private waterfallFor(
+    tokenization: TokenizationDTO,
+    collected: bigint,
+    now: Date,
+  ): WaterfallSplit {
+    const maturity = new Date(tokenization.maturityDate);
+    const collectedAt = tokenization.collectedAt
+      ? new Date(tokenization.collectedAt)
+      : now;
+
+    return splitCollection(this.termsOf(tokenization), collected, {
+      termDays: daysBetween(new Date(tokenization.createdAt), maturity),
+      daysLate: daysBetween(maturity, collectedAt),
+    });
   }
 }
