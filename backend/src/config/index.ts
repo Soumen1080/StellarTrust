@@ -208,6 +208,42 @@ const envSchema = z.object({
     .min(1_000)
     .default(300_000),
   RWA_DEFAULT_GRACE_DAYS: z.coerce.number().int().min(0).max(365).default(30),
+
+  // ── RWA investor protection (plane.md §3.2) ─────────────────────────────
+  // Approximations of the controls a regulator would require, so the
+  // architecture is shaped correctly. They are NOT legal compliance and must
+  // not be described as such (plane.md §7). Every one is configurable because
+  // the right number is a policy decision, not a code one.
+  //
+  // Concentration: the most of a single tokenization one investor may hold.
+  // 2500 bps = 25%, so a position needs at least four investors before it can
+  // fully fund — the point of fractionalisation.
+  RWA_MAX_CONCENTRATION_BPS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(10_000)
+    .default(2_500),
+  // Exposure: the most one investor may have outstanding across *all*
+  // tokenizations, in minor units. Kept as a string and parsed to bigint at
+  // the point of comparison — amounts elsewhere are never floats, and a cap
+  // that loses precision is a cap that can be stepped over.
+  RWA_MAX_INVESTOR_EXPOSURE: z
+    .string()
+    .regex(/^\d+$/, "must be a non-negative integer in minor units")
+    .default("10000000"),
+  // Minimum ticket, in minor units. Below this the payout dust exceeds the
+  // investment's worth being tracked.
+  RWA_MIN_TICKET_AMOUNT: z
+    .string()
+    .regex(/^\d+$/, "must be a non-negative integer in minor units")
+    .default("10000"),
+  // Unit granularity: purchases must be a whole multiple of this many units,
+  // which keeps pro-rata shares representable.
+  RWA_UNIT_GRANULARITY: z.coerce.number().int().min(1).default(1),
+  // Cooling-off: how long after a purchase the investor may cancel it and be
+  // refunded in full. Zero disables the window entirely.
+  RWA_COOLING_OFF_HOURS: z.coerce.number().int().min(0).max(720).default(24),
   ESCROW_GATEWAY: z.enum(["deterministic", "soroban-rpc"]).default("deterministic"),
 
   // ── Phase 3: Cross-Border Settlement ────────────────────────────────────

@@ -22,14 +22,18 @@
 import type pg from "pg";
 import type { CurrencyCode } from "@stellartrust/shared";
 import { ConflictError, NotFoundError } from "../../lib/errors.js";
-import type {
-  PersistTokenizationInput,
-  RwaRepository,
+import {
+  LIVE_PLEDGE_STATUSES,
+  type PersistTokenizationInput,
+  type RwaRepository,
 } from "./rwa.repository.js";
 import {
+  AssetVerificationStatus,
   PayoutStatus,
   TokenizationStatus,
   type AssetDTO,
+  type AssetCounterpartyDTO,
+  type AssetDocumentDTO,
   type CreateAssetInput,
   type PayoutDistributionDTO,
   type PayoutRecordDTO,
@@ -67,9 +71,29 @@ interface AssetRow {
   valuation_amount: string;
   valuation_currency: string;
   metadata: Record<string, unknown> | null;
+  verification_status: AssetVerificationStatus;
+  documents: AssetDocumentDTO[] | null;
+  counterparty: AssetCounterpartyDTO | null;
+  verified_by_user_id: string | null;
+  verified_at: Date | string | null;
+  verification_note: string | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
+
+/**
+ * The asset columns every read selects.
+ *
+ * One constant rather than six copies of the list: a column added to `assets`
+ * and forgotten in one query is a field that is silently `undefined` in
+ * exactly one code path, which is the kind of bug that surfaces months later
+ * in the one endpoint nobody exercised.
+ */
+const ASSET_COLUMNS = `id, owner_user_id, asset_type, asset_ref, description,
+              valuation_amount, valuation_currency, metadata,
+              verification_status, documents, counterparty,
+              verified_by_user_id, verified_at, verification_note,
+              created_at, updated_at`;
 
 interface TokenizationRow {
   id: string;
@@ -149,6 +173,14 @@ export class PgRwaRepository implements RwaRepository {
       valuationAmount: toAmount(row.valuation_amount),
       valuationCurrency: row.valuation_currency as CurrencyCode,
       ...(row.metadata ? { metadata: row.metadata } : {}),
+      verificationStatus: row.verification_status,
+      // `documents` is a jsonb array with a `[]` default, but a row written
+      // before migration 0018 backfilled can still read null.
+      documents: row.documents ?? [],
+      counterparty: row.counterparty,
+      verifiedByUserId: row.verified_by_user_id,
+      verifiedAt: toIsoOrNull(row.verified_at),
+      verificationNote: row.verification_note,
       createdAt: toIso(row.created_at),
       updatedAt: toIso(row.updated_at),
     };
@@ -232,14 +264,33 @@ export class PgRwaRepository implements RwaRepository {
     input: CreateAssetInput,
   ): Promise<AssetDTO> {
     try {
+      const now = new Date().toISOString();
+      const documents: AssetDocumentDTO[] = (input.documents ?? []).map(
+        (doc) => ({
+          docRef: doc.docRef,
+          docType: doc.docType,
+          sha256: doc.sha256 ?? null,
+          uploadedAt: now,
+        }),
+      );
+      const counterparty: AssetCounterpartyDTO | null = input.counterparty
+        ? {
+            ref: input.counterparty.ref,
+            name: input.counterparty.name,
+            reputationScore: null,
+          }
+        : null;
+
+      // `verification_status` is not in the column list: it defaults to
+      // `unverified` in the schema, and accepting one here would let an issuer
+      // declare their own evidence acceptable.
       const { rows } = await this.pool.query<AssetRow>(
         `insert into assets
            (owner_user_id, asset_type, asset_ref, description,
-            valuation_amount, valuation_currency, metadata)
-         values ($1, $2, $3, $4, $5, $6, $7::jsonb)
-         returning id, owner_user_id, asset_type, asset_ref, description,
-                   valuation_amount, valuation_currency, metadata,
-                   created_at, updated_at`,
+            valuation_amount, valuation_currency, metadata,
+            documents, counterparty)
+         values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb)
+         returning ${ASSET_COLUMNS}`,
         [
           ownerUserId,
           input.assetType,
@@ -248,6 +299,8 @@ export class PgRwaRepository implements RwaRepository {
           input.valuationAmount,
           input.valuationCurrency,
           input.metadata ? JSON.stringify(input.metadata) : null,
+          JSON.stringify(documents),
+          counterparty ? JSON.stringify(counterparty) : null,
         ],
       );
       const row = rows[0];
@@ -265,10 +318,7 @@ export class PgRwaRepository implements RwaRepository {
 
   async findAsset(assetId: string): Promise<AssetDTO | undefined> {
     const { rows } = await this.pool.query<AssetRow>(
-      `select id, owner_user_id, asset_type, asset_ref, description,
-              valuation_amount, valuation_currency, metadata,
-              created_at, updated_at
-       from assets where id = $1`,
+      `select ${ASSET_COLUMNS} from assets where id = $1`,
       [assetId],
     );
     return rows[0] ? this.mapAsset(rows[0]) : undefined;
@@ -276,14 +326,82 @@ export class PgRwaRepository implements RwaRepository {
 
   async listAssets(ownerUserId: string): Promise<AssetDTO[]> {
     const { rows } = await this.pool.query<AssetRow>(
-      `select id, owner_user_id, asset_type, asset_ref, description,
-              valuation_amount, valuation_currency, metadata,
-              created_at, updated_at
+      `select ${ASSET_COLUMNS}
        from assets where owner_user_id = $1
        order by created_at desc`,
       [ownerUserId],
     );
     return rows.map((row) => this.mapAsset(row));
+  }
+
+  /**
+   * Persist a verification decision (plane.md §3.1).
+   *
+   * Only the verification columns are writable here. The valuation, the asset
+   * reference and the owner are deliberately absent: this is the method
+   * compliance calls, and letting a review edit the thing being reviewed would
+   * make the approval meaningless. `updated_at` is maintained by the 0006
+   * trigger, so it is re-read via RETURNING rather than written.
+   */
+  async updateAsset(asset: AssetDTO): Promise<AssetDTO> {
+    const { rows } = await this.pool.query<AssetRow>(
+      `update assets
+          set verification_status = $2,
+              documents           = $3::jsonb,
+              counterparty        = $4::jsonb,
+              verified_by_user_id = $5,
+              verified_at         = $6,
+              verification_note   = $7
+        where id = $1
+        returning ${ASSET_COLUMNS}`,
+      [
+        asset.id,
+        asset.verificationStatus,
+        JSON.stringify(asset.documents),
+        asset.counterparty ? JSON.stringify(asset.counterparty) : null,
+        asset.verifiedByUserId,
+        asset.verifiedAt,
+        asset.verificationNote,
+      ],
+    );
+    const row = rows[0];
+    if (!row) throw new NotFoundError("Asset not found");
+    return this.mapAsset(row);
+  }
+
+  async listAssetsForReview(): Promise<AssetDTO[]> {
+    const { rows } = await this.pool.query<AssetRow>(
+      `select ${ASSET_COLUMNS}
+       from assets where verification_status = $1
+       order by updated_at asc`,
+      [AssetVerificationStatus.UnderReview],
+    );
+    return rows.map((row) => this.mapAsset(row));
+  }
+
+  /**
+   * Find a live tokenization backed by another asset with the same reference.
+   *
+   * The join is across owners on purpose — the double-pledge this catches is
+   * the same receivable filed under a second account, which the unique
+   * constraint on `(owner_user_id, asset_ref)` cannot see.
+   */
+  async findActivePledge(
+    assetRef: string,
+    excludeAssetId: string,
+  ): Promise<TokenizationDTO | undefined> {
+    const { rows } = await this.pool.query<TokenizationRow>(
+      `select t.*
+         from tokenizations t
+         join assets a on a.id = t.asset_id
+        where a.asset_ref = $1
+          and a.id <> $2
+          and t.status = any($3::tokenization_status[])
+        order by t.created_at asc
+        limit 1`,
+      [assetRef, excludeAssetId, LIVE_PLEDGE_STATUSES],
+    );
+    return rows[0] ? this.mapTokenization(rows[0]) : undefined;
   }
 
   // ── Tokenizations ──────────────────────────────────────────────────────────
@@ -518,6 +636,25 @@ export class PgRwaRepository implements RwaRepository {
       [holderUserId],
     );
     return rows.map((row) => this.mapHolding(row));
+  }
+
+  /**
+   * Remove a holding — the cooling-off cancellation (plane.md §3.2).
+   *
+   * `units_sold` is not adjusted here: the 0006 `sync_units_sold` trigger
+   * already fires on delete and recomputes it from the surviving rows. Writing
+   * it as well would double-count the release. Migration 0018 adds the
+   * un-funding half of `auto_fund_tokenization`, which the original only
+   * handled in the funding direction.
+   */
+  async deleteHolding(holdingId: string): Promise<void> {
+    const { rowCount } = await this.pool.query(
+      `delete from token_holdings where id = $1`,
+      [holdingId],
+    );
+    if (!rowCount) {
+      throw new NotFoundError("Holding not found");
+    }
   }
 
   // ── Distributions ────────────────────────────────────────────────────────

@@ -7,8 +7,11 @@
  */
 
 import {
+  AssetType,
+  AssetVerificationStatus,
   ChainSigningMode,
   EntryDirection,
+  KycStatus,
   RwaTransition,
   TokenHoldingStatus,
   type CurrencyCode,
@@ -53,7 +56,9 @@ import type { RwaGateway } from "./rwa.gateway.js";
 import type { RwaRepository } from "./rwa.repository.js";
 import type {
   AssetDTO,
+  AssetDocumentInput,
   CreateAssetInput,
+  ReviewAssetInput,
   CreateTokenizationInput,
   InvestorPortfolioResponse,
   PayoutCalculation,
@@ -93,6 +98,60 @@ export interface DisputeReader {
   hasOpenDispute(orderId: string): Promise<boolean>;
 }
 
+/**
+ * Whether an investor has cleared KYC (plane.md §3.2).
+ *
+ * A narrow port for the same reason as `DisputeReader`: RWA needs one status,
+ * and importing `KycService` would put the whole identity module on the RWA
+ * module's dependency edge. Satisfied structurally by `KycService`.
+ */
+export interface InvestorKycReader {
+  getStatus(userId: string): Promise<{ status: KycStatus }>;
+}
+
+/**
+ * Advisory credit score for a counterparty, in [0, 100] (plane.md §3.1).
+ *
+ * Scores are *surfaced*, never gating: a counterparty with no history scores
+ * null, and refusing those would make the platform unusable for exactly the
+ * new sellers it exists to finance.
+ */
+export interface CounterpartyReputationReader {
+  getScore(userId: string): Promise<number>;
+}
+
+/** Investor-protection limits (plane.md §3.2), read from config at wiring. */
+export interface InvestorLimits {
+  /** Max share of one tokenization a single investor may hold, in bps. */
+  maxConcentrationBps: number;
+  /** Max outstanding exposure across all tokenizations, in minor units. */
+  maxExposure: bigint;
+  /** Smallest purchase the platform will accept, in minor units. */
+  minTicketAmount: bigint;
+  /** Purchases must be a whole multiple of this many units. */
+  unitGranularity: bigint;
+  /** Hours after purchase during which it may be cancelled. 0 disables it. */
+  coolingOffHours: number;
+}
+
+/**
+ * The limits applied when none are wired.
+ *
+ * Deliberately permissive rather than absent: a construction that forgot to
+ * pass limits gets the old unrestricted behaviour and its tests keep meaning
+ * what they meant, while `app.ts` — the only wiring that faces real users —
+ * passes the configured ones. The alternative, defaulting to the strict
+ * production numbers, would silently change what a dozen existing tests
+ * assert about arithmetic that has nothing to do with §3.2.
+ */
+export const UNRESTRICTED_INVESTOR_LIMITS: InvestorLimits = {
+  maxConcentrationBps: 10_000,
+  maxExposure: 0n,
+  minTicketAmount: 0n,
+  unitGranularity: 1n,
+  coolingOffHours: 0,
+};
+
 export class RwaService {
   /**
    * @param ledger - required, not optional. A payout that cannot post balanced
@@ -116,6 +175,14 @@ export class RwaService {
      * the dispute module is skipped.
      */
     private readonly disputes?: DisputeReader,
+    /**
+     * Investor protection (plane.md §3.2). Optional for the same reason the
+     * dispute reader is: existing constructions keep working, and only the
+     * wiring that faces real users passes the configured limits.
+     */
+    private readonly kyc?: InvestorKycReader,
+    private readonly limits: InvestorLimits = UNRESTRICTED_INVESTOR_LIMITS,
+    private readonly reputation?: CounterpartyReputationReader,
   ) {}
 
   /** Create a new asset for tokenization. */
@@ -148,6 +215,276 @@ export class RwaService {
     return this.repository.listAssets(ownerUserId);
   }
 
+  /**
+   * Attach supporting evidence to an asset (plane.md §3.1).
+   *
+   * Only before a decision: adding a document to an asset that compliance has
+   * already verified would change what was approved without anyone re-reading
+   * it. A rejected asset is terminal for the same reason — the issuer files a
+   * fresh one rather than editing their way past a refusal.
+   */
+  async addAssetDocuments(
+    assetId: string,
+    actor: RwaActor,
+    documents: AssetDocumentInput[],
+  ): Promise<AssetDTO> {
+    const asset = await this.requireAsset(assetId);
+    if (asset.ownerUserId !== actor.userId) {
+      throw new ForbiddenError("Only the asset owner can attach documents");
+    }
+    if (
+      asset.verificationStatus === AssetVerificationStatus.Verified ||
+      asset.verificationStatus === AssetVerificationStatus.Rejected
+    ) {
+      throw new ConflictError(
+        `Asset verification is already ${asset.verificationStatus}; ` +
+          "documents cannot be changed after a decision",
+      );
+    }
+    if (documents.length === 0) {
+      throw new ValidationError("At least one document is required");
+    }
+    for (const doc of documents) {
+      if (!doc.docRef?.trim()) {
+        throw new ValidationError("Document reference is required");
+      }
+      if (!doc.docType?.trim()) {
+        throw new ValidationError("Document type is required");
+      }
+      // A digest that is not a digest is worse than none: it looks like
+      // integrity evidence and proves nothing.
+      if (doc.sha256 !== undefined && !/^[0-9a-f]{64}$/i.test(doc.sha256)) {
+        throw new ValidationError("Document sha256 must be a hex SHA-256");
+      }
+    }
+
+    const now = new Date().toISOString();
+    const added = documents.map((doc) => ({
+      docRef: doc.docRef,
+      docType: doc.docType,
+      sha256: doc.sha256 ?? null,
+      uploadedAt: now,
+    }));
+
+    const updated = await this.repository.updateAsset({
+      ...asset,
+      documents: [...asset.documents, ...added],
+    });
+
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: "rwa.add_asset_documents",
+      entity: "asset",
+      entityId: asset.id,
+      // Document *references* and types only. The files themselves are opaque
+      // to this platform and their contents never reach an audit row
+      // (Rules.md §3).
+      metadata: {
+        docRefs: added.map((doc) => doc.docRef),
+        docTypes: added.map((doc) => doc.docType),
+        documentCount: updated.documents.length,
+      },
+    });
+
+    return updated;
+  }
+
+  /**
+   * Submit an asset for compliance review (plane.md §3.1).
+   *
+   * The evidence requirements are enforced here rather than at creation so an
+   * issuer can draft an asset and gather documents over several requests. What
+   * cannot happen is reaching `UnderReview` without them: a reviewer with
+   * nothing to review would rubber-stamp a valuation, which is precisely the
+   * failure this workflow exists to prevent.
+   */
+  async submitAssetForReview(
+    assetId: string,
+    actor: RwaActor,
+  ): Promise<AssetDTO> {
+    const asset = await this.requireAsset(assetId);
+    if (asset.ownerUserId !== actor.userId) {
+      throw new ForbiddenError("Only the asset owner can submit it for review");
+    }
+    if (asset.verificationStatus !== AssetVerificationStatus.Unverified) {
+      throw new ConflictError(
+        `Asset is ${asset.verificationStatus}; only an unverified asset can be submitted`,
+      );
+    }
+    if (asset.documents.length === 0) {
+      throw new ValidationError(
+        "At least one supporting document is required before review",
+      );
+    }
+    // An invoice with no named debtor cannot be credit-assessed at all: the
+    // risk an investor takes is the counterparty's, so for a receivable it is
+    // required rather than merely recorded.
+    if (asset.assetType === AssetType.Invoice && !asset.counterparty) {
+      throw new ValidationError(
+        "A counterparty is required before an invoice can be reviewed",
+      );
+    }
+
+    const updated = await this.repository.updateAsset({
+      ...asset,
+      verificationStatus: AssetVerificationStatus.UnderReview,
+    });
+
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: "rwa.submit_asset_for_review",
+      entity: "asset",
+      entityId: asset.id,
+      metadata: {
+        documentCount: asset.documents.length,
+        counterpartyRef: asset.counterparty?.ref ?? null,
+        status: updated.verificationStatus,
+      },
+    });
+
+    return updated;
+  }
+
+  /** Assets awaiting a compliance decision, oldest first. */
+  async listAssetsForReview(actor: RwaActor): Promise<AssetDTO[]> {
+    if (!actor.roles.includes("compliance")) {
+      throw new ForbiddenError("Only compliance can read the review queue");
+    }
+    return this.repository.listAssetsForReview();
+  }
+
+  /**
+   * Record a compliance decision on an asset under review (plane.md §3.1).
+   *
+   * Verifying is where the double-pledge check runs, not only at tokenization.
+   * Both would work, but a seller is entitled to find out that their
+   * receivable is already financed elsewhere at review time — when a human is
+   * looking at it — rather than after building a deal on top of it. The check
+   * runs again at tokenization anyway, because a competing pledge can appear
+   * in between.
+   */
+  async reviewAsset(
+    assetId: string,
+    actor: RwaActor,
+    input: ReviewAssetInput,
+  ): Promise<AssetDTO> {
+    if (!actor.roles.includes("compliance")) {
+      throw new ForbiddenError("Only compliance can review an asset");
+    }
+    const asset = await this.requireAsset(assetId);
+    if (asset.verificationStatus !== AssetVerificationStatus.UnderReview) {
+      throw new ConflictError(
+        `Asset is ${asset.verificationStatus}; only an asset under review can be decided`,
+      );
+    }
+    if (input.decision !== "verify" && input.decision !== "reject") {
+      throw new ValidationError(`Decision must be "verify" or "reject"`);
+    }
+    // A rejection the issuer cannot act on is a dead end. The reason is the
+    // difference between "fix the appraisal date" and silence.
+    if (input.decision === "reject" && !input.note?.trim()) {
+      throw new ValidationError("A rejection must state a reason");
+    }
+
+    if (input.decision === "verify") {
+      await this.assertNotDoublePledged(asset);
+    }
+
+    const now = new Date().toISOString();
+    const updated = await this.repository.updateAsset({
+      ...asset,
+      verificationStatus:
+        input.decision === "verify"
+          ? AssetVerificationStatus.Verified
+          : AssetVerificationStatus.Rejected,
+      verifiedByUserId: actor.userId,
+      verifiedAt: now,
+      verificationNote: input.note?.trim() || null,
+      counterparty: await this.scoreCounterparty(asset),
+    });
+
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: "rwa.review_asset",
+      entity: "asset",
+      entityId: asset.id,
+      metadata: {
+        decision: input.decision,
+        status: updated.verificationStatus,
+        // The reviewer's own words, which are about the evidence rather than
+        // about a person, and are the record of why this valuation was
+        // accepted.
+        note: updated.verificationNote,
+        valuationAmount: asset.valuationAmount,
+        valuationCurrency: asset.valuationCurrency,
+      },
+    });
+
+    return updated;
+  }
+
+  /**
+   * Refuse a second live financing of the same underlying asset.
+   *
+   * Double-pledging — the same receivable sold to two sets of investors — is
+   * the classic invoice-financing fraud, and it is invisible to the unique
+   * constraint on `(owner_user_id, asset_ref)` because the second filing is
+   * usually made under another account. Matching on `assetRef` across owners
+   * is what closes that.
+   */
+  private async assertNotDoublePledged(asset: AssetDTO): Promise<void> {
+    const pledge = await this.repository.findActivePledge(
+      asset.assetRef,
+      asset.id,
+    );
+    if (!pledge) return;
+
+    // The competing tokenization's id is withheld from the error: it belongs
+    // to another party's deal, and naming it would leak one issuer's financing
+    // to another. The audit entry carries it for compliance.
+    await this.audit.append({
+      actor: "system:rwa",
+      action: "rwa.double_pledge_refused",
+      entity: "asset",
+      entityId: asset.id,
+      metadata: {
+        assetRef: asset.assetRef,
+        conflictingTokenizationId: pledge.id,
+        conflictingStatus: pledge.status,
+      },
+    });
+    throw new ConflictError(
+      `Asset reference ${asset.assetRef} is already financed by an active ` +
+        "tokenization and cannot be pledged twice",
+    );
+  }
+
+  /**
+   * Attach the counterparty's advisory credit score, if one is known.
+   *
+   * Advisory only — a null score never blocks anything. The reputation store
+   * is keyed by user id, so this resolves only for a counterparty that is
+   * itself a platform user; an external debtor keeps a null score until it
+   * has history here.
+   */
+  private async scoreCounterparty(
+    asset: AssetDTO,
+  ): Promise<AssetDTO["counterparty"]> {
+    if (!asset.counterparty || !this.reputation) return asset.counterparty;
+    try {
+      const score = await this.reputation.getScore(asset.counterparty.ref);
+      return { ...asset.counterparty, reputationScore: score };
+    } catch (err) {
+      // A scoring outage must not block a compliance decision that is
+      // otherwise ready; the score is advisory and can be filled in later.
+      logger.warn(
+        { assetId: asset.id, err },
+        "Counterparty reputation lookup failed; leaving the score unset",
+      );
+      return asset.counterparty;
+    }
+  }
+
   /** Create a tokenization for an asset. */
   async createTokenization(
     issuerUserId: string,
@@ -162,6 +499,27 @@ export class RwaService {
     if (asset.ownerUserId !== issuerUserId) {
       throw new ForbiddenError("Only the asset owner can tokenize it");
     }
+
+    // ── The verification gate (plane.md §3.1) ───────────────────────────────
+    //
+    // Until this existed, `valuationAmount` was whatever the issuer typed:
+    // anyone could tokenize a $10M invoice that did not exist and investors
+    // would fund it. Refusing here rather than at purchase is deliberate — the
+    // unverified deal never reaches an investor at all, so there is no window
+    // in which one can subscribe to something that later turns out to have no
+    // evidence behind it.
+    if (asset.verificationStatus !== AssetVerificationStatus.Verified) {
+      throw new ConflictError(
+        `Asset is ${asset.verificationStatus}; only a verified asset can be ` +
+          "tokenized. Attach supporting documents and submit it for review.",
+      );
+    }
+
+    // Checked again here even though verification already checked it: a
+    // competing pledge can be filed in the window between approval and
+    // tokenization, and this is the last moment before investors are invited
+    // in.
+    await this.assertNotDoublePledged(asset);
 
     // The unit price is derived, never supplied. A price inconsistent with the
     // financing terms is the easiest way to end up with a waterfall that cannot
@@ -323,6 +681,14 @@ export class RwaService {
         "Investor already has holdings. Secondary purchases not yet supported.",
       );
     }
+
+    // ── Investor protection (plane.md §3.2) ─────────────────────────────────
+    //
+    // Every check runs before the ledger posting, so a refused purchase has
+    // moved no money and created no obligation to unwind. They are ordered
+    // cheapest-first, and the two that need a round trip (KYC, exposure) come
+    // last.
+    await this.assertInvestorLimits(tokenization, actor, units, purchaseAmount);
 
     // The recipient is a Soroban `Address`, so it must be a real strkey — an
     // empty string or a UUID reaching the contract produces an opaque host
@@ -498,6 +864,272 @@ export class RwaService {
       logger.info(
         { tokenizationId: tokenization.id, ledgerTransactionId: existing.id },
         "RWA subscription ledger transaction already posted; reusing it",
+      );
+      return existing;
+    }
+  }
+
+  /**
+   * Apply the investor-protection limits to a proposed purchase
+   * (plane.md §3.2).
+   *
+   * These approximate the controls a regulator would require, so the
+   * architecture is shaped correctly. They are **not** legal compliance and
+   * must not be described as such (plane.md §7).
+   *
+   * All the arithmetic is `bigint`. A concentration limit computed in floating
+   * point is a limit that can be stepped over by rounding, and the amounts
+   * being compared are money.
+   */
+  private async assertInvestorLimits(
+    tokenization: TokenizationDTO,
+    actor: RwaActor,
+    units: bigint,
+    purchaseAmount: bigint,
+  ): Promise<void> {
+    const {
+      unitGranularity,
+      minTicketAmount,
+      maxConcentrationBps,
+      maxExposure,
+    } = this.limits;
+
+    // Granularity first: it is pure arithmetic on values already in hand.
+    if (unitGranularity > 1n && units % unitGranularity !== 0n) {
+      throw new ValidationError(
+        `Units must be a multiple of ${unitGranularity}`,
+      );
+    }
+
+    if (purchaseAmount < minTicketAmount) {
+      throw new ValidationError(
+        `Minimum investment is ${minTicketAmount} ` +
+          `${tokenization.pricePerUnitCurrency} (this purchase is ${purchaseAmount})`,
+      );
+    }
+
+    // Concentration, measured in units rather than money: units are what the
+    // tokenization is denominated in, and the price is uniform, so the two are
+    // equivalent — but units avoid a second multiplication that could round.
+    //
+    // The comparison is cross-multiplied instead of dividing, so a limit like
+    // 33.33% is applied exactly rather than through an integer division that
+    // would quietly round in the investor's favour.
+    if (maxConcentrationBps < 10_000) {
+      const totalUnits = BigInt(tokenization.totalUnits);
+      if (units * 10_000n > totalUnits * BigInt(maxConcentrationBps)) {
+        const maxUnits = (totalUnits * BigInt(maxConcentrationBps)) / 10_000n;
+        throw new ValidationError(
+          `A single investor may hold at most ${maxConcentrationBps / 100}% of ` +
+            `this tokenization (${maxUnits} units); ${units} requested`,
+        );
+      }
+    }
+
+    // KYC. Checked in the RWA path rather than trusted from onboarding,
+    // because a purchase is the money-moving step and it is the only place
+    // that can refuse.
+    if (this.kyc) {
+      const { status } = await this.kyc.getStatus(actor.userId);
+      if (status !== KycStatus.Verified) {
+        throw new ForbiddenError(
+          "Investor identity verification must be complete before investing",
+        );
+      }
+    }
+
+    // Exposure across every position the investor holds. Zero means no cap.
+    if (maxExposure > 0n) {
+      const held = await this.repository.listHoldingsByUser(actor.userId);
+      const outstanding = held.reduce(
+        (sum, holding) => sum + BigInt(holding.purchaseAmount),
+        0n,
+      );
+      if (outstanding + purchaseAmount > maxExposure) {
+        // The investor's own outstanding total is theirs to know, so it is
+        // named — this is the one number that makes the refusal actionable.
+        throw new ValidationError(
+          `This purchase would take total exposure to ` +
+            `${outstanding + purchaseAmount}, above the ${maxExposure} limit`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Cancel a purchase within the cooling-off window (plane.md §3.2).
+   *
+   * The window is the investor protection: a subscription is a considered
+   * decision, and a platform that cannot be exited in the first hours is one
+   * that profits from haste. After it closes, the position is a real
+   * investment and the exit is the secondary market (§3.3), not a refund.
+   *
+   * The reversal is posted as its own ledger transaction rather than by
+   * deleting the original. The ledger is append-only and is the system of
+   * record (Golden Rule #1): an unwound subscription is two facts — it
+   * happened, and it was reversed — not the absence of one.
+   *
+   * Limited to holdings whose units have not been delivered on-chain; see the
+   * `TokenHoldingStatus.Settled` refusal below for why that boundary is the
+   * contract's, not a choice made here.
+   */
+  async cancelPurchase(
+    tokenizationId: string,
+    actor: RwaActor,
+    now: Date = new Date(),
+  ): Promise<TokenizationDetailsResponse> {
+    const tokenization = await this.requireTokenization(tokenizationId);
+
+    const holding = await this.repository.findHolding(
+      tokenizationId,
+      actor.userId,
+    );
+    if (!holding) {
+      throw new NotFoundError("No holding to cancel for this investor");
+    }
+
+    if (this.limits.coolingOffHours <= 0) {
+      throw new ConflictError("Cooling-off cancellation is not enabled");
+    }
+
+    const deadline =
+      new Date(holding.purchasedAt).getTime() +
+      this.limits.coolingOffHours * 60 * 60 * 1000;
+    if (now.getTime() > deadline) {
+      throw new ConflictError(
+        `The ${this.limits.coolingOffHours}h cooling-off window for this ` +
+          "purchase has closed",
+      );
+    }
+
+    // A position whose payout is already running or settled cannot be unwound:
+    // the money has left, and handing back the subscription as well would pay
+    // the investor twice. The window is short enough that this is rare, but it
+    // is exactly the race that would be expensive.
+    if (
+      tokenization.status === TokenizationStatus.Distributing ||
+      tokenization.status === TokenizationStatus.Distributed ||
+      tokenization.status === TokenizationStatus.Repaid ||
+      tokenization.collectedAt !== null
+    ) {
+      throw new ConflictError(
+        "This tokenization has already paid out; the purchase cannot be cancelled",
+      );
+    }
+
+    // ── Why settled units cannot be cancelled here ─────────────────────────
+    //
+    // The token contract's `transfer` calls `from.require_auth()`, so moving
+    // units *back* off the investor's account needs the investor's own
+    // signature — which the platform never holds, under either custody mode.
+    // A refund posted against units still on-chain in the investor's name
+    // would hand back the cash and leave them the units.
+    //
+    // So the window is only exitable while the units have not been delivered.
+    // Under platform custody a purchase settles inline, which makes this the
+    // narrow case; the honest answer for a delivered position is the secondary
+    // market (§3.3), not a refund this side cannot enforce.
+    if (
+      tokenization.contractId !== null &&
+      holding.status === TokenHoldingStatus.Settled
+    ) {
+      throw new ConflictError(
+        "These units have already been delivered on-chain and only their " +
+          "holder can transfer them back, so the purchase cannot be " +
+          "cancelled from here.",
+      );
+    }
+
+    const purchaseAmount = BigInt(holding.purchaseAmount);
+    const ledgerTransaction = await this.reverseSubscriptionLedger(
+      tokenizationId,
+      actor.userId,
+      holding,
+      purchaseAmount,
+    );
+
+    await this.repository.deleteHolding(holding.id);
+
+    await this.audit.append({
+      actor: `user:${actor.userId}`,
+      action: "rwa.cancel_purchase",
+      entity: "tokenization",
+      entityId: tokenizationId,
+      metadata: {
+        units: holding.units,
+        refundAmount: purchaseAmount.toString(),
+        currency: holding.purchaseCurrency,
+        purchasedAt: holding.purchasedAt,
+        ledgerTransactionId: ledgerTransaction.id,
+      },
+    });
+
+    return this.getTokenizationDetails(tokenizationId);
+  }
+
+  /**
+   * Post the reversal of a subscription.
+   *
+   * Exactly the legs of `recordSubscriptionLedger` with the directions
+   * inverted, and the discount recomputed the same way, so the two
+   * transactions sum to nothing on every account they touch. Deriving the
+   * split here rather than reading it back keeps one definition of what a
+   * subscription's legs are.
+   */
+  private async reverseSubscriptionLedger(
+    tokenizationId: string,
+    investorUserId: string,
+    holding: TokenHoldingDTO,
+    purchaseAmount: bigint,
+  ): Promise<{ id: string }> {
+    const tokenization = await this.requireTokenization(tokenizationId);
+    const currency = holding.purchaseCurrency as CurrencyCode;
+
+    const discountHeld = applyBps(
+      purchaseAmount,
+      BigInt(tokenization.discountRateBps),
+    );
+    const issuerShare = purchaseAmount - discountHeld;
+
+    const entries: LedgerTransactionInput["entries"] = [
+      {
+        accountId: RWA_INVESTOR_CASH_CLEARING,
+        direction: EntryDirection.Credit,
+        amount: purchaseAmount.toString(),
+        currency,
+      },
+      {
+        accountId: RWA_ISSUER_PROCEEDS_PAYABLE,
+        direction: EntryDirection.Debit,
+        amount: issuerShare.toString(),
+        currency,
+      },
+    ];
+    if (discountHeld > 0n) {
+      entries.push({
+        accountId: RWA_INVESTMENT_LIABILITY,
+        direction: EntryDirection.Debit,
+        amount: discountHeld.toString(),
+        currency,
+      });
+    }
+
+    // Derived from the holding, so a double-submitted cancel converges on one
+    // reversal exactly as the subscription converges on one posting.
+    const referenceId = `rwa-cancellation:${tokenizationId}:${investorUserId}:${holding.units}`;
+    try {
+      return await this.ledger.record({
+        referenceId,
+        description: `RWA subscription cancelled for tokenization ${tokenizationId}`,
+        entries,
+      });
+    } catch (err) {
+      if (!(err instanceof ConflictError)) throw err;
+      const existing = await this.ledger.getByReference(referenceId);
+      if (!existing) throw err;
+      logger.info(
+        { tokenizationId, ledgerTransactionId: existing.id },
+        "RWA cancellation already posted; reusing it",
       );
       return existing;
     }
@@ -1509,6 +2141,14 @@ export class RwaService {
         `Token contract ${tokenization.contractId} has already distributed a payout`,
       );
     }
+  }
+
+  private async requireAsset(assetId: string): Promise<AssetDTO> {
+    const asset = await this.repository.findAsset(assetId);
+    if (!asset) {
+      throw new NotFoundError("Asset not found");
+    }
+    return asset;
   }
 
   private async requireTokenization(

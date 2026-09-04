@@ -29,7 +29,7 @@ import { DeterministicRwaGateway } from "./rwa.gateway.js";
 import { RwaReconciliationJob } from "./rwa.reconciliation.job.js";
 import { InMemoryRwaRepository } from "./rwa.repository.js";
 import { RwaService, type RwaActor } from "./rwa.service.js";
-import { AssetType } from "./rwa.types.js";
+import { createVerifiedAsset } from "./rwa.test-fixtures.js";
 
 
 /**
@@ -80,12 +80,10 @@ function sign(unsignedXdr: string): string {
 
 /** Take a draft tokenization all the way to Active via the issuer's wallet. */
 async function deployedTokenization(service: RwaService) {
-  const asset = await service.createAsset(issuer.userId, {
-    assetType: AssetType.Invoice,
+  const asset = await createVerifiedAsset(service, issuer.userId, {
     assetRef: "invoice:INV-SELF",
     description: "90-day receivable",
     valuationAmount: "1000000",
-    valuationCurrency: "USDC",
   });
   const draft = await service.createTokenization(issuer.userId, {
     assetId: asset.id,
@@ -133,12 +131,10 @@ describe("capabilities advertise who signs", () => {
 
   it("refuses the single-call deploy and names the route that works", async () => {
     const { service } = setup();
-    const asset = await service.createAsset(issuer.userId, {
-      assetType: AssetType.Invoice,
+    const asset = await createVerifiedAsset(service, issuer.userId, {
       assetRef: "invoice:INV-X",
       description: "draft",
       valuationAmount: "1000",
-      valuationCurrency: "USDC",
     });
     const draft = await service.createTokenization(issuer.userId, {
       assetId: asset.id,
@@ -169,12 +165,10 @@ describe("the issuer holds their own supply", () => {
 
   it("prepares the deploy for the issuer's account, not the platform's", async () => {
     const { service } = setup();
-    const asset = await service.createAsset(issuer.userId, {
-      assetType: AssetType.Invoice,
+    const asset = await createVerifiedAsset(service, issuer.userId, {
       assetRef: "invoice:INV-P",
       description: "draft",
       valuationAmount: "1000",
-      valuationCurrency: "USDC",
     });
     const draft = await service.createTokenization(issuer.userId, {
       assetId: asset.id,
@@ -197,12 +191,10 @@ describe("the issuer holds their own supply", () => {
   it("reuses the deployed instance when a signature is abandoned", async () => {
     // An abandoned signature should cost one idle contract, not one per retry.
     const { service } = setup();
-    const asset = await service.createAsset(issuer.userId, {
-      assetType: AssetType.Invoice,
+    const asset = await createVerifiedAsset(service, issuer.userId, {
       assetRef: "invoice:INV-R",
       description: "draft",
       valuationAmount: "1000",
-      valuationCurrency: "USDC",
     });
     const draft = await service.createTokenization(issuer.userId, {
       assetId: asset.id,

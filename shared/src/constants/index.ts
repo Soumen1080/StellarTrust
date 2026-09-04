@@ -407,6 +407,27 @@ export const AssetType = {
 } as const;
 export type AssetType = (typeof AssetType)[keyof typeof AssetType];
 
+/**
+ * Whether an asset's supporting evidence has been reviewed (plane.md §3.1).
+ *
+ * Until this existed, `valuationAmount` was whatever the issuer typed. Anyone
+ * could tokenize a $10M invoice that did not exist, which is the fraud surface
+ * a financing platform exists to close. Only a `Verified` asset may be
+ * tokenized; the other three states are the workflow that gets it there.
+ */
+export const AssetVerificationStatus = {
+  /** Created, evidence not yet submitted for review. */
+  Unverified: "unverified",
+  /** Submitted with documents attached; awaiting a compliance decision. */
+  UnderReview: "under_review",
+  /** Evidence accepted. This is the only state that may be tokenized. */
+  Verified: "verified",
+  /** Evidence rejected. Terminal for this asset; the issuer files a new one. */
+  Rejected: "rejected",
+} as const;
+export type AssetVerificationStatus =
+  (typeof AssetVerificationStatus)[keyof typeof AssetVerificationStatus];
+
 /** Tokenization lifecycle status. */
 export const TokenizationStatus = {
   /** Created but not yet deployed on-chain. */

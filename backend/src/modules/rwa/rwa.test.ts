@@ -12,6 +12,7 @@ import { DeterministicRwaGateway } from "./rwa.gateway.js";
 import { InMemoryRwaRepository } from "./rwa.repository.js";
 import { RwaService, type RwaActor } from "./rwa.service.js";
 import { AssetType, TokenizationStatus, PayoutStatus } from "./rwa.types.js";
+import { createVerifiedAsset } from "./rwa.test-fixtures.js";
 
 
 /**
@@ -60,13 +61,7 @@ async function createActiveTokenization(
     platformFeeBps?: number;
   },
 ) {
-  const asset = await service.createAsset(issuer.userId, {
-    assetType: AssetType.Invoice,
-    assetRef: `invoice:INV-${Math.random().toString(36).slice(2, 8)}`,
-    description: "90-day receivable",
-    valuationAmount: "1000000",
-    valuationCurrency: "USDC",
-  });
+  const asset = await createVerifiedAsset(service, issuer.userId);
   const tokenization = await service.createTokenization(issuer.userId, {
     assetId: asset.id,
     totalUnits: overrides?.totalUnits ?? "1000",
@@ -94,12 +89,11 @@ describe("Phase 5 RWA tokenization", () => {
 
   it("prevents tokenizing an asset the actor does not own", async () => {
     const { service } = setup();
-    const asset = await service.createAsset(issuer.userId, {
+    const asset = await createVerifiedAsset(service, issuer.userId, {
       assetType: AssetType.Commodity,
       assetRef: "commodity:GOLD-1",
       description: "gold bar",
       valuationAmount: "500000",
-      valuationCurrency: "USDC",
     });
     await expect(
       service.createTokenization("someone-else", {
@@ -118,12 +112,10 @@ describe("Phase 5 RWA tokenization", () => {
     const { service } = setup();
     const { tokenization } = await createActiveTokenization(service);
     // Already deployed; create a fresh draft to test deploy authorization.
-    const asset = await service.createAsset(issuer.userId, {
-      assetType: AssetType.Invoice,
+    const asset = await createVerifiedAsset(service, issuer.userId, {
       assetRef: "invoice:INV-DEPLOY",
       description: "draft",
       valuationAmount: "1000",
-      valuationCurrency: "USDC",
     });
     const draft = await service.createTokenization(issuer.userId, {
       assetId: asset.id,
@@ -637,12 +629,10 @@ describe("Phase 5 RWA payout integration with escrow release", () => {
     const orderId = created.order.id;
 
     // Issuer tokenizes an asset linked to this order and an investor buys in.
-    const asset = await rwa.createAsset(issuer.userId, {
-      assetType: AssetType.Invoice,
+    const asset = await createVerifiedAsset(rwa, issuer.userId, {
       assetRef: "invoice:INV-LINKED",
       description: "linked receivable",
       valuationAmount: "10000",
-      valuationCurrency: "USDC",
     });
     const tokenization = await rwa.createTokenization(issuer.userId, {
       assetId: asset.id,

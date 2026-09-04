@@ -17,7 +17,8 @@ import { DeterministicRwaGateway } from "./rwa.gateway.js";
 import { RwaLifecycleJob } from "./rwa.lifecycle.job.js";
 import { InMemoryRwaRepository } from "./rwa.repository.js";
 import { RwaService, type RwaActor } from "./rwa.service.js";
-import { AssetType, TokenizationStatus } from "./rwa.types.js";
+import { TokenizationStatus } from "./rwa.types.js";
+import { createVerifiedAsset } from "./rwa.test-fixtures.js";
 
 const ISSUER_ADDRESS = "GBUV3T3YDFD232LUXGADFZV2XCMNEHXBMVTQPBD7DKHTP4Q6ZLNOSMEX";
 const INVESTOR1_ADDRESS = "GDYWVMFH5JDIISEZMLDFTN6A5NHPLZGKTTYAAKGB5Z6U7MHKUV6JPVS5";
@@ -58,13 +59,7 @@ function setup(graceDays = 30, now: () => Date = () => new Date()) {
 
 /** A fully-subscribed position, which is what `Funded` means. */
 async function fundedPosition(service: RwaService) {
-  const asset = await service.createAsset(issuer.userId, {
-    assetType: AssetType.Invoice,
-    assetRef: `invoice:INV-${Math.random().toString(36).slice(2, 8)}`,
-    description: "90-day receivable",
-    valuationAmount: "1000000",
-    valuationCurrency: "USDC",
-  });
+  const asset = await createVerifiedAsset(service, issuer.userId);
   const tokenization = await service.createTokenization(issuer.userId, {
     assetId: asset.id,
     totalUnits: "1000",

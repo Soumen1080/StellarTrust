@@ -287,24 +287,86 @@ Replace "distribute the whole order amount" with an ordered waterfall:
 ## 3. Making the RWA section a real tokenization product
 
 ### 3.1 🔴 Asset verification before tokenization
-- [ ] Require ≥1 supporting document reference per asset (invoice PDF, bill of
-      lading, appraisal) stored as an opaque reference.
-- [ ] Verification workflow: `Unverified → UnderReview → Verified | Rejected`.
-      Only a `Verified` asset may be tokenized.
-- [ ] Duplicate-asset guard: the same `assetRef` cannot be tokenized twice while
-      an active tokenization exists — this is double-pledging, the classic
-      invoice-financing fraud.
-- [ ] Counterparty (the invoice debtor) recorded and reputation-scored.
-- [ ] Tests: unverified asset refused; double-pledge refused.
+- [x] `documents` on `AssetDTO` — opaque references only (`docRef`, `docType`,
+      a hex SHA-256, `uploadedAt`). The digest is what makes a document swapped
+      after approval detectable. Attachable over several calls before review
+      and frozen once a decision lands: adding evidence to an approved asset
+      would change what was approved without anyone re-reading it.
+- [x] Workflow `Unverified → UnderReview → Verified | Rejected`
+      (`AssetVerificationStatus`, migration `0018`). Only `Verified` may be
+      tokenized, and the gate is in `createTokenization` rather than at
+      purchase — an unverified deal never reaches an investor at all, so there
+      is no window in which one can subscribe to something that later proves to
+      have no evidence behind it. Submitting requires ≥1 document, and a
+      counterparty when the asset is an invoice; deciding requires the
+      `compliance` role (the issuer included — self-verification is the gate's
+      whole failure mode) and a stated reason on a rejection.
+- [x] Double-pledge guard matching `assetRef` **across owners**. That is the
+      point: the unique constraint on `(owner_user_id, asset_ref)` cannot see
+      the same receivable filed under a second account, which is how the fraud
+      is actually done. Checked at verification *and* again at tokenization,
+      because a competing pledge can be filed in between. `LIVE_PLEDGE_STATUSES`
+      names which statuses constitute an outstanding claim — `Repaid`,
+      `Distributed`, `Cancelled` and `WrittenOff` are finished, so the
+      receivable is legitimately financeable again.
+- [x] Counterparty recorded (`ref`, `name`, advisory `reputationScore`) and
+      scored at verification through a narrow `CounterpartyReputationReader`
+      port. Advisory only, never a gate: a counterparty with no history scores
+      null, and refusing those would exclude exactly the new sellers the
+      platform exists to finance. A scoring outage logs and leaves the score
+      unset rather than blocking a decision that is otherwise ready.
+- [x] Tests: both acceptance conditions (unverified refused, double-pledge
+      refused) plus the whole workflow, the review queue, the audit trail
+      carrying document *references* and never contents, and the conflicting
+      tokenization id withheld from the competing issuer while compliance sees
+      it in the audit row. (24 tests in `rwa.verification.test.ts`.)
+- [x] Existing assets backfill as `unverified`, not grandfathered as verified —
+      nothing has ever been reviewed, and a migration should not assert
+      otherwise. An already-tokenized asset therefore reads unverified while
+      its tokenization keeps running untouched; the gate is at creation, so no
+      live position is stranded.
 
 ### 3.2 🟠 Investor protection and compliance
-- [ ] Investor must be KYC-verified before any purchase (today it is not
-      checked in the RWA path).
-- [ ] Per-investor concentration limit (max % of one tokenization).
-- [ ] Per-investor exposure cap across all tokenizations.
-- [ ] Minimum ticket size and unit granularity.
-- [ ] Cooling-off window during which a purchase can be cancelled.
-- [ ] Tests for each limit at its boundary.
+- [x] KYC checked in the RWA path via a narrow `InvestorKycReader` port, at
+      `purchaseUnits` rather than trusted from onboarding — the purchase is the
+      money-moving step and the only place that can refuse.
+- [x] Per-investor concentration limit (`RWA_MAX_CONCENTRATION_BPS`, default
+      2500). Compared by cross-multiplication rather than division, so a limit
+      like 33.33% applies exactly instead of rounding in the investor's favour.
+- [x] Per-investor exposure cap across all tokenizations
+      (`RWA_MAX_INVESTOR_EXPOSURE`); zero disables it.
+- [x] Minimum ticket (`RWA_MIN_TICKET_AMOUNT`) and unit granularity
+      (`RWA_UNIT_GRANULARITY`). All the arithmetic is `bigint`: a cap computed
+      in floating point is a cap that rounding can step over.
+- [x] Cooling-off window (`RWA_COOLING_OFF_HOURS`, default 24).
+      `cancelPurchase` posts a **reversing** ledger transaction rather than
+      deleting the original — the ledger is append-only and is the system of
+      record (Golden Rule #1), so an unwound subscription is two facts, not the
+      absence of one. The two net to zero on every account they touch.
+- [x] **Constraint discovered while building it:** the token contract's
+      `transfer` calls `from.require_auth()`, so units already delivered to an
+      investor can only be moved back by that investor — no custody mode gives
+      the platform their key. A cancellation is therefore refused once a
+      holding is `Settled`, which under platform custody is immediate. The
+      window is genuinely exitable under issuer custody, where delivery waits
+      for the issuer's signature. The honest exit for a delivered position is
+      §3.3, not a refund this side cannot enforce.
+- [x] Every limit runs *before* the ledger posting, so a refused purchase has
+      moved no money and left nothing to unwind.
+- [x] Limits default to `UNRESTRICTED_INVESTOR_LIMITS` when not wired.
+      Deliberate: a construction that forgot to pass them keeps its old
+      behaviour and its tests keep meaning what they meant, while `app.ts` — the
+      only wiring facing real users — passes the configured ones. Defaulting to
+      the strict production numbers would silently change what a dozen existing
+      tests assert about arithmetic unrelated to §3.2.
+- [x] Tests: each limit at its boundary — exactly at the cap allowed, one over
+      refused — plus the non-dividing concentration case, per-investor rather
+      than aggregate scoping, the reversal netting to zero, both ends of the
+      cooling-off window, and the settled-units refusal.
+      (25 tests in `rwa.protection.test.ts`.)
+- [ ] Not built: an insufficient-funds check at purchase. Same blocker as §1.1
+      — there are no per-user ledger accounts, so there is no balance to check.
+      Blocked on §4.5.
 
 ### 3.3 🟠 Secondary market (replaces the D6 refusal)
 - [ ] Allow an existing holder to increase their position.
@@ -387,7 +449,7 @@ Do them in this order; later work depends on earlier work.
 | **1** | §1.1, §1.2, §1.3 | Without money movement and correct economics, everything above it is decoration. |
 | **2** | §1.4, §2.2, §3.1 | Risk and fraud controls — what makes it a real product rather than a marketplace of assertions. |
 | **3** | §2.1, §2.3, §2.4 | Composition across domains. |
-| **4** | §3.2, §3.3, §4.1, §4.2, §4.5 | Compliance, liquidity, per-user balances, and the durability gaps. |
+| **4** | ~~§3.2~~ (done early, with §3.1 — the limits and the verification gate touch the same two entry points, and splitting them would have meant two passes over `purchaseUnits`), §3.3, §4.1, §4.2, §4.5 | Compliance, liquidity, per-user balances, and the durability gaps. |
 | **5** | §3.4, §4.3, §4.4, §4.6 | Surfacing and hardening. |
 
 ---

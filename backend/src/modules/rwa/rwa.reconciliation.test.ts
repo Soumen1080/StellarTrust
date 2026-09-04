@@ -18,7 +18,7 @@ import { DeterministicRwaGateway } from "./rwa.gateway.js";
 import { RwaReconciliationJob } from "./rwa.reconciliation.job.js";
 import { InMemoryRwaRepository } from "./rwa.repository.js";
 import { RwaService, type RwaActor } from "./rwa.service.js";
-import { AssetType } from "./rwa.types.js";
+import { createVerifiedAsset } from "./rwa.test-fixtures.js";
 
 
 /**
@@ -57,12 +57,8 @@ function setup() {
 
 /** A deployed tokenization with one investor holding 250 of 1000 units. */
 async function tokenizationWithHolder(service: RwaService) {
-  const asset = await service.createAsset(issuer.userId, {
-    assetType: AssetType.Invoice,
+  const asset = await createVerifiedAsset(service, issuer.userId, {
     assetRef: "invoice:INV-RECON",
-    description: "90-day receivable",
-    valuationAmount: "1000000",
-    valuationCurrency: "USDC",
   });
   const draft = await service.createTokenization(issuer.userId, {
     assetId: asset.id,
@@ -132,12 +128,10 @@ describe("RWA reconciliation", () => {
 
   it("ignores draft tokenizations that have no contract yet", async () => {
     const { service, job } = setup();
-    const asset = await service.createAsset(issuer.userId, {
-      assetType: AssetType.Invoice,
+    const asset = await createVerifiedAsset(service, issuer.userId, {
       assetRef: "invoice:INV-DRAFT",
       description: "not deployed",
       valuationAmount: "1000",
-      valuationCurrency: "USDC",
     });
     await service.createTokenization(issuer.userId, {
       assetId: asset.id,

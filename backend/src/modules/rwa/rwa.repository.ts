@@ -16,7 +16,7 @@ import type {
   TokenHoldingDTO,
   TokenizationDTO,
 } from "./rwa.types.js";
-import { TokenizationStatus } from "./rwa.types.js";
+import { AssetVerificationStatus, TokenizationStatus } from "./rwa.types.js";
 import { ConflictError, NotFoundError } from "../../lib/errors.js";
 
 /**
@@ -34,11 +34,55 @@ export type PersistTokenizationInput = CreateTokenizationInput & {
   platformFeeBps: number;
 };
 
+/**
+ * Tokenization statuses that constitute a live claim on the underlying asset.
+ *
+ * The complement is the point: `Cancelled`, `Repaid`, `Distributed` and
+ * `WrittenOff` are all *finished* — the claim is settled, so the same
+ * receivable may legitimately be financed again. Everything else, including a
+ * `Draft` that has not yet deployed and a `Defaulted` position still being
+ * recovered, is an outstanding pledge that a second financing would double up.
+ */
+export const LIVE_PLEDGE_STATUSES: readonly TokenizationStatus[] = [
+  TokenizationStatus.Draft,
+  TokenizationStatus.Active,
+  TokenizationStatus.Funded,
+  TokenizationStatus.Distributing,
+  TokenizationStatus.Frozen,
+  TokenizationStatus.Matured,
+  TokenizationStatus.Defaulted,
+  TokenizationStatus.PayoutHeld,
+];
+
+export function isLivePledge(status: TokenizationStatus): boolean {
+  return LIVE_PLEDGE_STATUSES.includes(status);
+}
+
 export interface RwaRepository {
   // Assets
   createAsset(ownerUserId: string, input: CreateAssetInput): Promise<AssetDTO>;
   findAsset(assetId: string): Promise<AssetDTO | undefined>;
   listAssets(ownerUserId: string): Promise<AssetDTO[]>;
+  updateAsset(asset: AssetDTO): Promise<AssetDTO>;
+  /**
+   * Assets awaiting a compliance decision, oldest first — a review queue is
+   * only useful in the order things arrived.
+   */
+  listAssetsForReview(): Promise<AssetDTO[]>;
+  /**
+   * Whether any *other* asset carrying the same `assetRef` already backs a
+   * live tokenization (plane.md §3.1).
+   *
+   * This is the double-pledge check, and it deliberately spans owners: the
+   * classic invoice-financing fraud is the same receivable financed twice, and
+   * doing it under two accounts is the obvious way to try. The unique
+   * constraint on `(owner_user_id, asset_ref)` only stops one owner repeating
+   * themselves.
+   */
+  findActivePledge(
+    assetRef: string,
+    excludeAssetId: string,
+  ): Promise<TokenizationDTO | undefined>;
 
   // Tokenizations
   createTokenization(
@@ -62,6 +106,8 @@ export interface RwaRepository {
   ): Promise<TokenHoldingDTO | undefined>;
   listHoldings(tokenizationId: string): Promise<TokenHoldingDTO[]>;
   listHoldingsByUser(holderUserId: string): Promise<TokenHoldingDTO[]>;
+  /** Remove a holding outright — the cooling-off cancellation (plane.md §3.2). */
+  deleteHolding(holdingId: string): Promise<void>;
 
   // Distributions
   createDistribution(
@@ -115,6 +161,26 @@ export class InMemoryRwaRepository implements RwaRepository {
       valuationAmount: input.valuationAmount,
       valuationCurrency: input.valuationCurrency,
       metadata: input.metadata,
+      // Every asset starts unverified. There is no input that can set this:
+      // the whole point of the workflow is that the issuer cannot declare
+      // their own evidence acceptable.
+      verificationStatus: AssetVerificationStatus.Unverified,
+      documents: (input.documents ?? []).map((doc) => ({
+        docRef: doc.docRef,
+        docType: doc.docType,
+        sha256: doc.sha256 ?? null,
+        uploadedAt: now,
+      })),
+      counterparty: input.counterparty
+        ? {
+            ref: input.counterparty.ref,
+            name: input.counterparty.name,
+            reputationScore: null,
+          }
+        : null,
+      verifiedByUserId: null,
+      verifiedAt: null,
+      verificationNote: null,
       createdAt: now,
       updatedAt: now,
     };
@@ -130,6 +196,42 @@ export class InMemoryRwaRepository implements RwaRepository {
     return [...this.assets.values()]
       .filter((asset) => asset.ownerUserId === ownerUserId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+
+  async updateAsset(asset: AssetDTO): Promise<AssetDTO> {
+    if (!this.assets.has(asset.id)) {
+      throw new NotFoundError("Asset not found");
+    }
+    const updated = { ...asset, updatedAt: new Date().toISOString() };
+    this.assets.set(updated.id, updated);
+    return updated;
+  }
+
+  async listAssetsForReview(): Promise<AssetDTO[]> {
+    return [...this.assets.values()]
+      .filter(
+        (asset) =>
+          asset.verificationStatus === AssetVerificationStatus.UnderReview,
+      )
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  }
+
+  async findActivePledge(
+    assetRef: string,
+    excludeAssetId: string,
+  ): Promise<TokenizationDTO | undefined> {
+    const pledgedAssetIds = new Set(
+      [...this.assets.values()]
+        .filter(
+          (asset) => asset.assetRef === assetRef && asset.id !== excludeAssetId,
+        )
+        .map((asset) => asset.id),
+    );
+    if (pledgedAssetIds.size === 0) return undefined;
+
+    return [...this.tokenizations.values()].find(
+      (t) => pledgedAssetIds.has(t.assetId) && isLivePledge(t.status),
+    );
   }
 
   // Tokenizations
@@ -287,6 +389,31 @@ export class InMemoryRwaRepository implements RwaRepository {
     return [...this.holdings.values()]
       .filter((h) => h.holderUserId === holderUserId)
       .sort((a, b) => b.purchasedAt.localeCompare(a.purchasedAt));
+  }
+
+  async deleteHolding(holdingId: string): Promise<void> {
+    const holding = this.holdings.get(holdingId);
+    if (!holding) {
+      throw new NotFoundError("Holding not found");
+    }
+    this.holdings.delete(holdingId);
+
+    // Return the units to the pool. A cancelled purchase that left units_sold
+    // untouched would silently shrink the tokenization's sellable supply.
+    const tokenization = this.tokenizations.get(holding.tokenizationId);
+    if (tokenization) {
+      const unitsSold = BigInt(tokenization.unitsSold) - BigInt(holding.units);
+      tokenization.unitsSold = (unitsSold < 0n ? 0n : unitsSold).toString();
+      // Releasing units un-funds a position that funding had closed.
+      if (
+        tokenization.status === TokenizationStatus.Funded &&
+        BigInt(tokenization.unitsSold) < BigInt(tokenization.totalUnits)
+      ) {
+        tokenization.status = TokenizationStatus.Active;
+      }
+      tokenization.updatedAt = new Date().toISOString();
+      this.tokenizations.set(tokenization.id, tokenization);
+    }
   }
 
   // Distributions

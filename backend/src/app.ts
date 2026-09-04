@@ -406,6 +406,15 @@ export function createApp(): Express {
     current?: { hasOpenDispute(orderId: string): Promise<boolean> };
   } = {};
 
+  // ── Phase 6: Reputation store (advisory prior for dispute risk) ───────────
+  // Constructed here rather than after RWA because RWA now reads it to score
+  // an asset's counterparty (plane.md §3.1). It depends only on a repository
+  // and the audit log, so it can sit this early without a cycle.
+  const reputationService = new ReputationService(
+    new InMemoryReputationRepository(),
+    audit,
+  );
+
   const rwa = new RwaService(
     rwaRepository,
     rwaGateway,
@@ -417,12 +426,20 @@ export function createApp(): Express {
       hasOpenDispute: (orderId) =>
         disputeRef.current?.hasOpenDispute(orderId) ?? Promise.resolve(false),
     },
-  );
-
-  // ── Phase 6: Reputation store (advisory prior for dispute risk) ───────────
-  const reputationService = new ReputationService(
-    new InMemoryReputationRepository(),
-    audit,
+    // Investor protection (plane.md §3.2). KYC is read through the service so
+    // the RWA path refuses at the money-moving step rather than trusting that
+    // onboarding checked; the limits are configuration because the right
+    // numbers are a policy decision, not a code one. They approximate
+    // regulatory controls and are not legal compliance (plane.md §7).
+    kyc,
+    {
+      maxConcentrationBps: config.RWA_MAX_CONCENTRATION_BPS,
+      maxExposure: BigInt(config.RWA_MAX_INVESTOR_EXPOSURE),
+      minTicketAmount: BigInt(config.RWA_MIN_TICKET_AMOUNT),
+      unitGranularity: BigInt(config.RWA_UNIT_GRANULARITY),
+      coolingOffHours: config.RWA_COOLING_OFF_HOURS,
+    },
+    reputationService,
   );
 
   // ── Phase 6: Product feedback (public wall) ───────────────────────────────

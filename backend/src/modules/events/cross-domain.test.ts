@@ -37,10 +37,10 @@ import {
   rwaPayoutOnRelease,
   rwaResumeOnDisputeResolved,
 } from "../rwa/rwa.subscribers.js";
-import { AssetType } from "../rwa/rwa.types.js";
 import { EventBus } from "./event.bus.js";
 import { InMemoryEventRepository } from "./event.repository.js";
 import { DomainEventType, EventEntity, dedupeKey } from "./event.types.js";
+import { createVerifiedAsset } from "../rwa/rwa.test-fixtures.js";
 
 const buyer = { userId: "buyer-1", roles: ["user"] };
 const seller = { userId: "seller-1", roles: ["user"] };
@@ -135,13 +135,7 @@ async function tokenizedOrder(s: ReturnType<typeof setup>) {
   await s.payments.transition(orderId, PaymentTransition.Lock, buyer);
 
   // The seller finances the receivable this order will pay.
-  const asset = await s.rwa.createAsset(seller.userId, {
-    assetType: AssetType.Invoice,
-    assetRef: `invoice:INV-${Math.random().toString(36).slice(2, 8)}`,
-    description: "90-day receivable",
-    valuationAmount: "1000000",
-    valuationCurrency: "USDC",
-  });
+  const asset = await createVerifiedAsset(s.rwa, seller.userId);
   const tokenization = await s.rwa.createTokenization(seller.userId, {
     assetId: asset.id,
     totalUnits: "1000",

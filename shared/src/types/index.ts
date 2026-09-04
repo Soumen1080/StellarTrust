@@ -764,8 +764,69 @@ export interface AssetDTO {
   valuationCurrency: CurrencyCode;
   /** Opaque metadata references (documents, appraisals). Never raw content. */
   metadata?: Record<string, unknown>;
+
+  // ── Verification (plane.md §3.1) ────────────────────────────────────────
+  // A valuation is an assertion until someone has looked at the evidence
+  // behind it. These carry that review; only a `Verified` asset may be
+  // tokenized.
+  verificationStatus: import("../constants/index.js").AssetVerificationStatus;
+  /**
+   * Supporting evidence: opaque references only (a storage key, a document
+   * hash), never the document itself and never its contents. At least one is
+   * required to submit an asset for review.
+   */
+  documents: AssetDocumentDTO[];
+  /**
+   * The party who owes on this asset — an invoice debtor, a warehouse
+   * operator. Recorded because the credit risk an investor takes is the
+   * counterparty's, not the issuer's.
+   */
+  counterparty: AssetCounterpartyDTO | null;
+  /** Who decided, and why. Null until the asset leaves `UnderReview`. */
+  verifiedByUserId: string | null;
+  verifiedAt: string | null;
+  /** Reviewer's stated reason. Present on a rejection, optional otherwise. */
+  verificationNote: string | null;
+
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * A reference to supporting evidence for an asset.
+ *
+ * Deliberately a *reference*: the platform records that a document exists,
+ * its kind, and a digest that proves the reviewed file is the stored one. The
+ * file itself lives in object storage, and its contents never enter the
+ * database or a log (Rules.md §3).
+ */
+export interface AssetDocumentDTO {
+  /** Opaque storage reference, e.g. "s3://assets/inv-001.pdf". */
+  docRef: string;
+  /** What kind of evidence this is, e.g. "invoice", "bill_of_lading". */
+  docType: string;
+  /** Hex SHA-256 of the file, so a swapped document is detectable. */
+  sha256: string | null;
+  uploadedAt: string;
+}
+
+/**
+ * The debtor on a tokenized receivable.
+ *
+ * `ref` is an opaque business identifier, never PII: the platform needs to
+ * recognise that two invoices name the same debtor without storing who they
+ * are.
+ */
+export interface AssetCounterpartyDTO {
+  /** Opaque counterparty reference, e.g. "counterparty:ACME-LTD". */
+  ref: string;
+  /** Trading name, for display. */
+  name: string;
+  /**
+   * Advisory credit score in [0, 100], or null when the counterparty has no
+   * history. Surfaced to investors; never a gate on its own.
+   */
+  reputationScore: number | null;
 }
 
 /** An on-chain RWA token contract representing fractional ownership. */
@@ -877,6 +938,28 @@ export interface CreateAssetInput {
   valuationAmount: MinorUnitAmount;
   valuationCurrency: CurrencyCode;
   metadata?: Record<string, unknown>;
+  /** Optional at creation; at least one is required to submit for review. */
+  documents?: AssetDocumentInput[];
+  counterparty?: AssetCounterpartyInput;
+}
+
+export interface AssetDocumentInput {
+  docRef: string;
+  docType: string;
+  /** Hex SHA-256 of the file, if the uploader computed one. */
+  sha256?: string;
+}
+
+export interface AssetCounterpartyInput {
+  ref: string;
+  name: string;
+}
+
+/** Compliance decision on an asset under review (plane.md §3.1). */
+export interface ReviewAssetInput {
+  decision: "verify" | "reject";
+  /** Required on a rejection: the issuer is entitled to know why. */
+  note?: string;
 }
 
 export interface CreateTokenizationInput {

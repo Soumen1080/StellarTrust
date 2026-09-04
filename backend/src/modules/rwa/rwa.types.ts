@@ -12,12 +12,18 @@
 
 export {
   AssetType,
+  AssetVerificationStatus,
   TokenizationStatus,
   PayoutStatus,
 } from "@stellartrust/shared";
 
 export type {
   AssetDTO,
+  AssetCounterpartyDTO,
+  AssetDocumentDTO,
+  AssetCounterpartyInput,
+  AssetDocumentInput,
+  ReviewAssetInput,
   TokenizationDTO,
   TokenHoldingDTO,
   PayoutDistributionDTO,
