@@ -292,7 +292,10 @@ export function createRwaRouter(
       if (req.query.status) {
         filters.status = parseTokenizationStatus(String(req.query.status));
       }
-      res.json({ tokenizations: await service.listTokenizations(filters) });
+      // The enriched listing: the marketplace needs each deal's risk to render
+      // a card at all (plane.md §3.4), and a detail fetch per card would make
+      // the disclosure the slowest part of the page.
+      res.json(await service.listTokenizationsWithRisk(filters));
     } catch (err) {
       next(err);
     }
@@ -354,6 +357,43 @@ export function createRwaRouter(
         };
         res.json(
           await service.purchaseUnits(
+            String(req.params.tokenizationId),
+            actor,
+            input,
+          ),
+        );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /**
+   * POST /rwa/tokenizations/:id/transfer — sell units to another holder
+   * (plane.md §3.3).
+   *
+   * The caller is always the seller: units leave the authenticated user's own
+   * position. A route that let one user move another's units would be a
+   * transfer authorization the platform has no business holding.
+   */
+  router.post(
+    "/tokenizations/:tokenizationId/transfer",
+    requireAuth(verifier),
+    idempotency(mutations),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        const input = {
+          toUserId: String(req.body.toUserId ?? ""),
+          toHolderAddress: String(req.body.toHolderAddress ?? ""),
+          units: parseIntegerString(req.body.units, "units"),
+          priceAmount: parseIntegerString(req.body.priceAmount, "priceAmount"),
+        };
+        if (!input.toUserId) {
+          throw new ValidationError("toUserId is required");
+        }
+        res.json(
+          await service.transferHolding(
             String(req.params.tokenizationId),
             actor,
             input,

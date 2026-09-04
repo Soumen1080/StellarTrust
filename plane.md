@@ -25,7 +25,7 @@ against impressions. Each is a specific, located defect.
 | D3 | **Settlement is disconnected from escrow.** `SettlementDTO` has no `orderId`. | `shared/src/types` | A cross-border trade cannot actually be paid for through a corridor. The two headline features never touch. |
 | D4 | **Disputes are invisible to RWA.** Zero references to dispute state in the RWA module. | `rwa.service.ts` | A disputed invoice still pays investors in full on release. Investors carry a risk nobody models. |
 | D5 | **No maturity, default, or write-off.** A tokenization can never fail. | `TokenizationStatus` | Every real receivable can go late or bad. Without this there is no risk, so no genuine investment product. |
-| D6 | **No secondary transfer.** Explicitly refused. | `rwa.service.ts:278` | Investors cannot exit before maturity. |
+| D6 | ~~**No secondary transfer.** Explicitly refused.~~ **Closed by §3.3** — holders can top up and sell to each other. | `rwa.service.ts` `transferHolding` | Investors cannot exit before maturity. |
 | D7 | **Asset valuation is self-asserted.** `valuationAmount` is typed by the issuer with no verification, no document, no lien check. | `AssetDTO` | Anyone can tokenize a $10M invoice that does not exist. This is the fraud surface a real platform exists to close. |
 | D8 | **No investor protections at all** — no per-investor cap, no accreditation, no concentration limit, no cooling-off. | RWA module | Regulators require these; their absence is what makes it look like a toy. |
 
@@ -369,18 +369,97 @@ Replace "distribute the whole order amount" with an ordered waterfall:
       Blocked on §4.5.
 
 ### 3.3 🟠 Secondary market (replaces the D6 refusal)
-- [ ] Allow an existing holder to increase their position.
-- [ ] Holder-to-holder transfer at an agreed price, honouring the authorization
-      allowlist and the frozen flag.
-- [ ] Ledger posts both legs; on-chain transfer follows the custody mode.
-- [ ] Tests: transfer to an unauthorized holder refused; frozen token refused.
+- [x] An existing holder can add to their position. `purchaseUnits` used to
+      refuse outright ("Secondary purchases not yet supported"); it now
+      increases the existing row, since the holding is unique on
+      `(tokenization, holder)`. A top-up into a *different* address is still
+      refused — the row is also unique on `(tokenization, address)` and the
+      on-chain balance lives at one account, so allowing it would split a
+      position the record claims is one.
+- [x] **The ledger reference had to change with it.** It keyed on the units
+      being bought, so "buy 10, then buy 10 more" produced the same
+      `rwa-subscription:{tok}:{investor}:10` reference — and the conflict path
+      would have recovered the first posting and handed over the second 10
+      units free. It now keys on the *resulting* total, which keeps each step
+      distinct while a retry of any step still converges.
+- [x] Concentration is measured on the **resulting** position, not the
+      increment. Otherwise an investor walks past the cap in small steps, which
+      is the one thing a concentration cap exists to stop.
+- [x] `RwaService.transferHolding` — holder-to-holder sale at a price the
+      parties agree. Not derived from the financing terms: an invoice near
+      maturity is worth more than one just issued, and a disputed one less. The
+      platform records the trade; it does not price it.
+- [x] Honours the authorization allowlist (checked via `gateway.isAuthorized`
+      *before* any money moves, since the contract would reject the transfer
+      anyway) and the frozen flag. Also refuses a sale of undelivered units, a
+      sale to oneself, and a sale once the position is paying out, held under
+      dispute, or collected — units changing hands around a distribution makes
+      it ambiguous who the payout belongs to.
+- [x] The buyer is subject to the full §3.2 protection set. A secondary market
+      that skipped it would be the way around every limit the platform has.
+- [x] Ledger posts both legs through a new `rwa_secondary_seller_payable`
+      account (migration `0019`), deliberately *not*
+      `rwa_issuer_proceeds_payable`: the issuer is not party to the trade, and
+      crediting them would overstate what the platform owes them. Cost basis
+      moves with the units pro-rata, so the seller's remainder is not
+      overstated and the buyer's basis is what they actually paid.
+- [x] **On-chain leg is the seller's to sign, and that is the contract's rule
+      not a choice.** `transfer` calls `from.require_auth()`, so the platform
+      can only move units it is itself the `from` for — which it never is on a
+      holder-to-holder trade. Same constraint §3.2 hit on cooling-off. The
+      records are the platform's account of the trade and the reconciliation
+      job surfaces a chain that has not caught up.
+- [x] **Bug found and fixed while building this.** `InMemoryRwaRepository`
+      *accumulated* `units_sold` on insert while the 0006 `sync_units_sold`
+      trigger *recomputes* it from the surviving rows. Invisible until units
+      could move between holders — a secondary trade issues nothing, so the
+      sold total must not change, but the in-memory adapter counted the same
+      units twice. It also meant the §3.2 cooling-off cancellation would have
+      drifted `units_sold` differently under Postgres than in every test. Both
+      now recompute (Rules.md §2: a deterministic adapter must behave exactly
+      as the real one).
+- [x] Tests: both acceptance conditions (unauthorized holder refused, frozen
+      token refused) plus top-up arithmetic, the reference-id collision, basis
+      apportionment, `units_sold` staying put across a trade, and every
+      refusal. (24 tests in `rwa.secondary.test.ts`.)
 
 ### 3.4 🟠 Risk surfacing in the UI
-- [ ] Every tokenization card shows: advance rate, yield, maturity, days
-      remaining, issuer reputation, and dispute state.
-- [ ] Explicit risk disclosure before the purchase confirm step.
-- [ ] Portfolio shows accrued yield, overdue positions, and realized losses —
-      not just "total invested".
+- [x] `TokenizationRiskDTO` computed server-side and carried on **both** the
+      details response and the *list* response, keyed by id. On the list
+      because the marketplace renders every open deal at once, and a detail
+      fetch per card is how a risk disclosure ends up quietly dropped for being
+      slow. Keyed rather than positional so a client that filters or reorders
+      cannot pair a card with another deal's risk.
+- [x] Every card shows advance rate, yield, maturity, days remaining, issuer
+      reputation, projected yield, and the debtor — plus loud banners for the
+      two states that change the decision: disputed and overdue.
+      `daysRemaining` is deliberately **signed**; `daysBetween` floors at zero,
+      which would erase exactly the overdue case the field exists to surface.
+- [x] The dispute read is live rather than inferred from `PayoutHeld`, which is
+      only set once the dispute event has been handled — an investor about to
+      buy needs to know about a dispute filed a moment ago. A reader outage
+      falls back to the durable status rather than failing the marketplace; the
+      payout path keeps its own two independent checks (§2.2).
+- [x] Risk disclosure before the confirm step: entering an amount opens the
+      disclosure and only a second click buys. Blunt about how the money does
+      not come back — a disclosure listing only upside is marketing.
+- [x] Portfolio carries accrued yield, overdue count, and realized loss per
+      position and in total. Accrual stops once a position has paid out (the
+      payout record is then the truth, and continuing to accrue double-counts),
+      and a loss is realized only on write-off — while open, a shortfall is a
+      risk, not a loss.
+- [x] **Bug found and fixed while building this.** `writeOffTokenization`
+      posted the recovery to the ledger but created **no distribution and no
+      payout records**. The ledger knew the platform owed 30,000 and nothing
+      recorded which holders it was owed to — so "invested less received"
+      reported the *whole* investment as lost even when most of it had come
+      back. The pro-rata shares were already computed to split the posting;
+      they simply were not written down.
+- [x] Tests: 15 in `rwa.risk.test.ts` covering the terms, the signed
+      days-remaining, overdue vs. collected-late, the live dispute read and its
+      outage fallback, accrual stopping at payout, loss realized only on
+      write-off, recovery netted against it, and payouts attributed to the
+      position that earned them.
 
 ---
 
@@ -449,8 +528,8 @@ Do them in this order; later work depends on earlier work.
 | **1** | §1.1, §1.2, §1.3 | Without money movement and correct economics, everything above it is decoration. |
 | **2** | §1.4, §2.2, §3.1 | Risk and fraud controls — what makes it a real product rather than a marketplace of assertions. |
 | **3** | §2.1, §2.3, §2.4 | Composition across domains. |
-| **4** | ~~§3.2~~ (done early, with §3.1 — the limits and the verification gate touch the same two entry points, and splitting them would have meant two passes over `purchaseUnits`), §3.3, §4.1, §4.2, §4.5 | Compliance, liquidity, per-user balances, and the durability gaps. |
-| **5** | §3.4, §4.3, §4.4, §4.6 | Surfacing and hardening. |
+| **4** | ~~§3.2~~, ~~§3.3~~ (both done early with §3.1 — all three touch `purchaseUnits`, and splitting them would have meant three passes over the same method), §4.1, §4.2, §4.5 | Compliance, liquidity, per-user balances, and the durability gaps. |
+| **5** | ~~§3.4~~ (done with §3.3 — the secondary market gave the portfolio a second cost basis to show, so surfacing it separately would have meant revisiting the same panel), §4.3, §4.4, §4.6 | Surfacing and hardening. |
 
 ---
 

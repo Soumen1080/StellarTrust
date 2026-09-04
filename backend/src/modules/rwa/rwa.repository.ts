@@ -342,19 +342,50 @@ export class InMemoryRwaRepository implements RwaRepository {
     };
     this.holdings.set(created.id, created);
 
-    // Update units_sold on tokenization (exact bigint arithmetic).
-    const tokenization = this.tokenizations.get(holding.tokenizationId);
-    if (tokenization) {
-      const unitsSold = BigInt(tokenization.unitsSold) + BigInt(holding.units);
-      tokenization.unitsSold = unitsSold.toString();
-      if (unitsSold >= BigInt(tokenization.totalUnits)) {
-        tokenization.status = TokenizationStatus.Funded;
-      }
-      tokenization.updatedAt = new Date().toISOString();
-      this.tokenizations.set(tokenization.id, tokenization);
-    }
+    this.syncUnitsSold(holding.tokenizationId);
 
     return created;
+  }
+
+  /**
+   * Recompute `units_sold` from the surviving holdings.
+   *
+   * Mirrors the 0006 `sync_units_sold` trigger, which fires on insert, update
+   * and delete and recomputes rather than accumulating. Adding the delta
+   * instead — which this did until the secondary market existed — gives the
+   * wrong answer the moment units move *between* holders: a holder-to-holder
+   * trade issues nothing, so the sold total must not change, but an
+   * accumulating counter would count the same units twice.
+   *
+   * A deterministic adapter must reject and record exactly what the real one
+   * does (Rules.md §2); a counter that drifts from the trigger is a green test
+   * suite that says nothing about production.
+   */
+  private syncUnitsSold(tokenizationId: string): void {
+    const tokenization = this.tokenizations.get(tokenizationId);
+    if (!tokenization) return;
+
+    const unitsSold = [...this.holdings.values()]
+      .filter((h) => h.tokenizationId === tokenizationId)
+      .reduce((sum, h) => sum + BigInt(h.units), 0n);
+
+    tokenization.unitsSold = unitsSold.toString();
+
+    // The 0006 `auto_fund_tokenization` trigger, both directions (0018).
+    if (
+      unitsSold >= BigInt(tokenization.totalUnits) &&
+      tokenization.status === TokenizationStatus.Active
+    ) {
+      tokenization.status = TokenizationStatus.Funded;
+    } else if (
+      unitsSold < BigInt(tokenization.totalUnits) &&
+      tokenization.status === TokenizationStatus.Funded
+    ) {
+      tokenization.status = TokenizationStatus.Active;
+    }
+
+    tokenization.updatedAt = new Date().toISOString();
+    this.tokenizations.set(tokenization.id, tokenization);
   }
 
   async updateHolding(holding: TokenHoldingDTO): Promise<TokenHoldingDTO> {
@@ -366,6 +397,9 @@ export class InMemoryRwaRepository implements RwaRepository {
       updatedAt: new Date().toISOString(),
     };
     this.holdings.set(updated.id, updated);
+    // The 0006 trigger fires on `update of units` too — a top-up (§3.3) and
+    // the seller's side of a secondary trade both change the total.
+    this.syncUnitsSold(updated.tokenizationId);
     return updated;
   }
 
@@ -400,20 +434,7 @@ export class InMemoryRwaRepository implements RwaRepository {
 
     // Return the units to the pool. A cancelled purchase that left units_sold
     // untouched would silently shrink the tokenization's sellable supply.
-    const tokenization = this.tokenizations.get(holding.tokenizationId);
-    if (tokenization) {
-      const unitsSold = BigInt(tokenization.unitsSold) - BigInt(holding.units);
-      tokenization.unitsSold = (unitsSold < 0n ? 0n : unitsSold).toString();
-      // Releasing units un-funds a position that funding had closed.
-      if (
-        tokenization.status === TokenizationStatus.Funded &&
-        BigInt(tokenization.unitsSold) < BigInt(tokenization.totalUnits)
-      ) {
-        tokenization.status = TokenizationStatus.Active;
-      }
-      tokenization.updatedAt = new Date().toISOString();
-      this.tokenizations.set(tokenization.id, tokenization);
-    }
+    this.syncUnitsSold(holding.tokenizationId);
   }
 
   // Distributions

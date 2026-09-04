@@ -987,6 +987,49 @@ export interface PurchaseUnitsInput {
   holderAddress: string;
 }
 
+/**
+ * A holder-to-holder sale of units at an agreed price (plane.md §3.3).
+ *
+ * The price is *agreed between the two parties*, not derived from the
+ * financing terms the way a primary subscription's is. That is the whole
+ * difference between the two markets: a primary unit price is fixed by the
+ * deal, while a secondary price is whatever a buyer will pay for a claim whose
+ * risk has since changed — an invoice nearing maturity is worth more than one
+ * just issued, and a disputed one less.
+ *
+ * `toUserId` rather than an address: the buyer must be a platform user with
+ * their own KYC and limits, and a raw address would let units reach someone
+ * the platform has never checked.
+ */
+export interface SecondaryTransferInput {
+  /** Who receives the units. Must be an existing platform user. */
+  toUserId: string;
+  /** The buyer's Stellar address, where the units land. */
+  toHolderAddress: string;
+  /** Units to sell (integer string). */
+  units: string;
+  /**
+   * Total agreed consideration in minor units — the whole trade, not a
+   * per-unit price. A per-unit price times a unit count is a rounding bug
+   * waiting for a non-dividing quantity.
+   */
+  priceAmount: MinorUnitAmount;
+}
+
+/** The result of a secondary transfer: both sides of the trade. */
+export interface SecondaryTransferResponse {
+  tokenizationId: string;
+  /** The seller's holding after the sale, or null when fully sold out. */
+  sellerHolding: TokenHoldingDTO | null;
+  /** The buyer's holding, created or increased. */
+  buyerHolding: TokenHoldingDTO;
+  units: string;
+  priceAmount: MinorUnitAmount;
+  priceCurrency: CurrencyCode;
+  /** The ledger transaction recording both legs. */
+  ledgerTransactionId: string;
+}
+
 export interface TokenizationDetailsResponse {
   tokenization: TokenizationDTO;
   asset: AssetDTO;
@@ -996,6 +1039,51 @@ export interface TokenizationDetailsResponse {
   availableUnits: string;
   /** Total raised from investors (minor-unit integer string). */
   totalRaised: MinorUnitAmount;
+  /** What an investor is actually taking on (plane.md §3.4). */
+  risk: TokenizationRiskDTO;
+}
+
+/**
+ * The risk an investor carries, computed server-side (plane.md §3.4).
+ *
+ * Every field here was previously derivable only by a client that knew the
+ * financing model — which meant in practice that none of them were shown, and
+ * the card advertised a price with no yield, no maturity, and no hint that the
+ * underlying invoice was in dispute. Computing it here means one definition of
+ * "days remaining" rather than one per screen.
+ */
+export interface TokenizationRiskDTO {
+  /** Share of face value financed, in bps. The rest is the seller's stake. */
+  advanceRateBps: number;
+  /** Investor yield on principal, in bps. */
+  discountRateBps: number;
+  /** ISO-8601 maturity. */
+  maturityDate: string;
+  /**
+   * Whole days until maturity. Negative once past due — the sign is the
+   * signal, so it is not clamped at zero.
+   */
+  daysRemaining: number;
+  /** True once past maturity with no collection recorded. */
+  overdue: boolean;
+  /**
+   * The issuer's advisory reputation score in [0, 100], or null when unscored.
+   * Advisory: it is shown, never used to gate.
+   */
+  issuerReputationScore: number | null;
+  /** The debtor on the underlying asset, if recorded. */
+  counterparty: AssetCounterpartyDTO | null;
+  /**
+   * Whether the linked escrow order has an open dispute. A disputed invoice
+   * may be refunded to the buyer, in which case there is nothing to pay out —
+   * which is exactly what an investor deciding whether to buy needs to know.
+   */
+  disputed: boolean;
+  /**
+   * Total yield an investor would earn across the whole issue if collection
+   * arrived today, in minor units. Scales pro-rata with units held.
+   */
+  projectedYieldAmount: MinorUnitAmount;
 }
 
 /**
@@ -1033,9 +1121,47 @@ export interface InvestorPortfolioResponse {
     holding: TokenHoldingDTO;
     tokenization: TokenizationDTO;
     asset: AssetDTO;
+    /** Per-position economics and risk (plane.md §3.4). */
+    position: PortfolioPositionDTO;
   }>;
   totalInvested: MinorUnitAmount;
   totalPayoutsReceived: MinorUnitAmount;
+  /**
+   * Yield accrued but not yet paid, across open positions. An estimate of what
+   * the position is currently worth over cost — not a settled amount.
+   */
+  totalAccruedYield: MinorUnitAmount;
+  /**
+   * Capital lost on written-off positions: what was invested less what
+   * recovery actually returned. "Total invested" alone reads like a balance
+   * and hides this entirely.
+   */
+  totalRealizedLoss: MinorUnitAmount;
+  /** How many open positions are past maturity with no collection. */
+  overdueCount: number;
+}
+
+/** One position's economics, computed server-side (plane.md §3.4). */
+export interface PortfolioPositionDTO {
+  /**
+   * This holder's share of the yield, accrued to today and pro-rata to units
+   * held. Zero once the position has paid out — at that point the payout
+   * record is the truth, not a projection.
+   */
+  accruedYield: MinorUnitAmount;
+  /** Payouts actually received against this position. */
+  payoutsReceived: MinorUnitAmount;
+  /**
+   * Capital lost, for a written-off position: invested less payouts received.
+   * Zero while the position is open — an unrealized loss is not a loss.
+   */
+  realizedLoss: MinorUnitAmount;
+  /** Whole days to maturity; negative once past due. */
+  daysRemaining: number;
+  /** Past maturity with no collection recorded. */
+  overdue: boolean;
+  /** The linked escrow order is disputed, so a payout is held. */
+  disputed: boolean;
 }
 
 /**
@@ -1074,6 +1200,18 @@ export interface PreparedRwaOperationResponse {
 
 export interface TokenizationListResponse {
   tokenizations: TokenizationDTO[];
+  /**
+   * Risk per tokenization, keyed by id (plane.md §3.4).
+   *
+   * Carried on the list rather than left to a detail fetch per card: the
+   * marketplace renders every open tokenization at once, and N+1 requests to
+   * show a maturity date is how a risk disclosure ends up quietly dropped for
+   * being slow.
+   *
+   * Keyed rather than positional so a client that filters or reorders the
+   * list cannot pair a card with another deal's risk.
+   */
+  risk: Record<string, TokenizationRiskDTO>;
 }
 
 export interface AssetListResponse {

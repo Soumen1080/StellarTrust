@@ -39,6 +39,8 @@ import type {
   PositionsResponse,
   PayoutDistributionDTO,
   PurchaseUnitsInput,
+  SecondaryTransferInput,
+  SecondaryTransferResponse,
   TokenizationDTO,
   TokenizationDetailsResponse,
   TokenizationListResponse,
@@ -460,6 +462,22 @@ export const api = {
   ) =>
     request<TokenizationDetailsResponse>(
       `/api/rwa/tokenizations/${tokenizationId}/purchase`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: JSON.stringify(input),
+      },
+    ),
+  /** Sell units to another holder at an agreed price (plane.md §3.3). */
+  transferUnits: (
+    accessToken: string,
+    tokenizationId: string,
+    idempotencyKey: string,
+    input: SecondaryTransferInput,
+  ) =>
+    request<SecondaryTransferResponse>(
+      `/api/rwa/tokenizations/${tokenizationId}/transfer`,
       {
         method: "POST",
         accessToken,

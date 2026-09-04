@@ -10,10 +10,11 @@ import {
   type CurrencyCode,
   type InvestorPortfolioResponse,
   type TokenizationDTO,
+  type TokenizationRiskDTO,
 } from "@stellartrust/shared";
 import Link from "next/link";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
-import { Icon } from "@/components/Icon";
+import { Icon, type IconName } from "@/components/Icon";
 import { useIdentity } from "@/components/IdentityProvider";
 import { StatusPill } from "@/components/StatusPill";
 import { api } from "@/lib/api";
@@ -60,6 +61,27 @@ function toBps(percent: string): number {
   return bps;
 }
 
+/** Render basis points as the percentage a human reads (8000 → "80%"). */
+function fromBps(bps: number): string {
+  const percent = bps / 100;
+  return `${Number.isInteger(percent) ? percent : percent.toFixed(2)}%`;
+}
+
+/**
+ * How long is left, in words.
+ *
+ * Negative days are the overdue case and are said plainly rather than as
+ * "-5 days": an investor scanning a list needs the word, not the sign.
+ */
+function daysPhrase(days: number): string {
+  if (days < 0) {
+    const late = Math.abs(days);
+    return `${late} day${late === 1 ? "" : "s"} overdue`;
+  }
+  if (days === 0) return "Due today";
+  return `${days} day${days === 1 ? "" : "s"} left`;
+}
+
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "The tokenization operation failed";
 }
@@ -77,6 +99,7 @@ export function RwaConsole() {
   const { session } = useIdentity();
   const [tab, setTab] = useState<Tab>("marketplace");
   const [tokenizations, setTokenizations] = useState<TokenizationDTO[]>([]);
+  const [risk, setRisk] = useState<Record<string, TokenizationRiskDTO>>({});
   const [assets, setAssets] = useState<AssetDTO[]>([]);
   const [portfolio, setPortfolio] = useState<InvestorPortfolioResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,13 +107,14 @@ export function RwaConsole() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const refresh = useCallback(async (active: AuthSessionResponse) => {
-    const [{ tokenizations: list }, { assets: myAssets }, myPortfolio] =
+    const [{ tokenizations: list, risk: riskById }, { assets: myAssets }, myPortfolio] =
       await Promise.all([
         api.listTokenizations(active.accessToken),
         api.listAssets(active.accessToken),
         api.getRwaPortfolio(active.accessToken),
       ]);
     setTokenizations(list);
+    setRisk(riskById ?? {});
     setAssets(myAssets);
     setPortfolio(myPortfolio);
   }, []);
@@ -98,6 +122,7 @@ export function RwaConsole() {
   useEffect(() => {
     if (!session) {
       setTokenizations([]);
+      setRisk({});
       setAssets([]);
       setPortfolio(null);
       setLoading(false);
@@ -174,6 +199,7 @@ export function RwaConsole() {
         <div className="space-y-md">{Array.from({ length: 3 }).map((_, index) => <div key={index} className="panel-dark h-32 animate-pulse" />)}</div>
       ) : tab === "marketplace" ? (
         <Marketplace
+          risk={risk}
           session={session}
           tokenizations={tokenizations}
           onError={setError}
@@ -190,7 +216,13 @@ export function RwaConsole() {
           onChanged={reload}
         />
       ) : (
-        <PortfolioPanel portfolio={portfolio} />
+        <PortfolioPanel
+          portfolio={portfolio}
+          session={session}
+          onError={setError}
+          onNotice={setNotice}
+          onChanged={() => refresh(session).catch((e: unknown) => setError(message(e)))}
+        />
       )}
     </div>
   );
@@ -201,12 +233,14 @@ export function RwaConsole() {
 function Marketplace({
   session,
   tokenizations,
+  risk,
   onError,
   onNotice,
   onChanged,
 }: {
   session: AuthSessionResponse;
   tokenizations: TokenizationDTO[];
+  risk: Record<string, TokenizationRiskDTO>;
   onError: (m: string) => void;
   onNotice: (m: string) => void;
   onChanged: () => Promise<void>;
@@ -232,6 +266,7 @@ function Marketplace({
           key={t.id}
           session={session}
           tokenization={t}
+          risk={risk[t.id]}
           onError={onError}
           onNotice={onNotice}
           onChanged={onChanged}
@@ -244,18 +279,25 @@ function Marketplace({
 function TokenizationCard({
   session,
   tokenization,
+  risk,
   onError,
   onNotice,
   onChanged,
 }: {
   session: AuthSessionResponse;
   tokenization: TokenizationDTO;
+  risk: TokenizationRiskDTO | undefined;
   onError: (m: string) => void;
   onNotice: (m: string) => void;
   onChanged: () => Promise<void>;
 }) {
   const [units, setUnits] = useState("");
   const [pending, setPending] = useState(false);
+  // The risk disclosure is a two-step confirm (plane.md §3.4): entering an
+  // amount opens the disclosure, and only the second click buys. A single
+  // button next to a number field is how someone invests without once being
+  // told what they are taking on.
+  const [confirming, setConfirming] = useState(false);
 
   const available = (BigInt(tokenization.totalUnits) - BigInt(tokenization.unitsSold)).toString();
   const soldPct = Number((BigInt(tokenization.unitsSold) * 100n) / BigInt(tokenization.totalUnits));
@@ -276,6 +318,7 @@ function TokenizationCard({
         holderAddress: session.wallet.stellarPublicKey,
       });
       setUnits("");
+      setConfirming(false);
       onNotice(`Purchased ${units} units successfully`);
       await onChanged();
     } catch (err) {
@@ -314,19 +357,42 @@ function TokenizationCard({
           </div>
         </div>
 
+        {risk ? <RiskSummary risk={risk} currency={tokenization.pricePerUnitCurrency} /> : null}
+
         {canInvest ? (
-          <form onSubmit={invest} className="mt-lg flex flex-col gap-sm min-[420px]:flex-row min-[420px]:items-end">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!confirming) {
+                // First submit opens the disclosure. Nothing is bought until
+                // the investor has seen what the position actually is.
+                if (!/^\d+$/.test(units.trim()) || BigInt(units || "0") <= 0n) {
+                  onError("Enter a whole number of units");
+                  return;
+                }
+                setConfirming(true);
+                return;
+              }
+              void invest(event);
+            }}
+            className="mt-lg flex flex-col gap-sm min-[420px]:flex-row min-[420px]:items-end"
+          >
             <label className="min-w-0 flex-1 text-sm font-medium text-body">Units
               <input
                 value={units}
-                onChange={(e) => setUnits(e.target.value)}
+                onChange={(e) => {
+                  setUnits(e.target.value);
+                  // Changing the amount invalidates the disclosure that was
+                  // shown for the previous one.
+                  setConfirming(false);
+                }}
                 placeholder={`Max ${available}`}
                 inputMode="numeric"
                 className="input mt-xs font-mono"
               />
             </label>
             <button disabled={pending} className="btn-primary w-full shrink-0 min-[420px]:w-auto">
-              {pending ? "Buying…" : "Invest"}
+              {pending ? "Buying…" : confirming ? "Confirm investment" : "Invest"}
             </button>
           </form>
         ) : (
@@ -339,8 +405,144 @@ function TokenizationCard({
             Est. cost: <span className="font-mono text-body">{formatMinor(estCost, tokenization.pricePerUnitCurrency)} {tokenization.pricePerUnitCurrency}</span>
           </p>
         ) : null}
+
+        {canInvest && confirming ? (
+          <RiskDisclosure
+            risk={risk}
+            units={units}
+            estCost={estCost}
+            currency={tokenization.pricePerUnitCurrency}
+            onCancel={() => setConfirming(false)}
+          />
+        ) : null}
       </div>
     </article>
+  );
+}
+
+/**
+ * The risk metrics every card must show (plane.md §3.4).
+ *
+ * Advance rate, yield, maturity, days remaining, issuer reputation and dispute
+ * state. Before this the card advertised a unit price and nothing else, which
+ * told an investor the cost of a position but nothing about what it was.
+ */
+function RiskSummary({
+  risk,
+  currency,
+}: {
+  risk: TokenizationRiskDTO;
+  currency: CurrencyCode;
+}) {
+  return (
+    <div className="mt-md border-t border-hairline-dark pt-md">
+      {/* The two states that change the decision get said first and loudly. */}
+      {risk.disputed ? (
+        <p className="mb-sm flex items-start gap-xs rounded-lg border border-status-disputed/30 bg-status-disputed/10 p-sm text-xs leading-5 text-status-disputed">
+          <Icon name="shield" className="mt-0.5 h-4 w-4 shrink-0" />
+          The underlying invoice is disputed. If it is refunded to the buyer
+          there may be nothing to pay out.
+        </p>
+      ) : null}
+      {risk.overdue ? (
+        <p className="mb-sm flex items-start gap-xs rounded-lg border border-status-review/30 bg-status-review/10 p-sm text-xs leading-5 text-status-review">
+          <Icon name="clock" className="mt-0.5 h-4 w-4 shrink-0" />
+          Past its maturity date with no collection received.
+        </p>
+      ) : null}
+
+      <dl className="grid grid-cols-2 gap-sm text-xs sm:grid-cols-3">
+        <Detail label="Advance rate" value={fromBps(risk.advanceRateBps)} />
+        <Detail label="Yield" value={fromBps(risk.discountRateBps)} />
+        <Detail label="Maturity" value={new Date(risk.maturityDate).toLocaleDateString()} />
+        <Detail label="Time left" value={daysPhrase(risk.daysRemaining)} />
+        <Detail
+          label="Issuer score"
+          value={risk.issuerReputationScore === null ? "Unrated" : `${risk.issuerReputationScore}/100`}
+        />
+        <Detail
+          label="Projected yield"
+          value={`${formatMinor(risk.projectedYieldAmount, currency)} ${currency}`}
+        />
+      </dl>
+      {risk.counterparty ? (
+        <p className="mt-sm text-xs text-muted">
+          Debtor: <span className="text-body">{risk.counterparty.name}</span>
+          {risk.counterparty.reputationScore === null
+            ? " · unrated"
+            : ` · ${risk.counterparty.reputationScore}/100`}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * The explicit disclosure shown before the purchase confirm step
+ * (plane.md §3.4).
+ *
+ * Deliberately blunt about the ways the money does not come back. A
+ * disclosure that only lists upside is marketing; the point of this one is
+ * that nobody can say afterwards that they were not told.
+ */
+function RiskDisclosure({
+  risk,
+  units,
+  estCost,
+  currency,
+  onCancel,
+}: {
+  risk: TokenizationRiskDTO | undefined;
+  units: string;
+  estCost: string;
+  currency: CurrencyCode;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="mt-md rounded-lg border border-hairline-dark bg-surface-elevated-dark p-md">
+      <h4 className="flex items-center gap-xs text-sm font-semibold text-on-dark">
+        <Icon name="shield" className="h-4 w-4" />
+        Before you invest
+      </h4>
+      <p className="mt-sm text-xs leading-5 text-body">
+        You are buying {units} units for{" "}
+        <span className="font-mono">{formatMinor(estCost, currency)} {currency}</span>.
+        This is a claim on a receivable, not a deposit.
+      </p>
+      <ul className="mt-sm space-y-xs text-xs leading-5 text-muted">
+        <li>
+          · Your money is repaid only when the debtor pays. If they pay late you
+          are paid late; if they do not pay at all, you may lose some or all of
+          it.
+        </li>
+        <li>
+          · Returns are not guaranteed
+          {risk ? ` — the ${fromBps(risk.discountRateBps)} yield is the agreed rate, not a promise` : ""}.
+        </li>
+        <li>
+          · The platform verifies documents but does not underwrite the debt or
+          insure your capital.
+        </li>
+        {risk?.disputed ? (
+          <li className="text-status-disputed">
+            · This invoice is currently disputed and the payout is held.
+          </li>
+        ) : null}
+        {risk?.overdue ? (
+          <li className="text-status-review">
+            · This position is already past its maturity date.
+          </li>
+        ) : null}
+      </ul>
+      <p className="mt-sm text-xs text-muted">
+        Press <span className="text-body">Confirm investment</span> to continue,
+        or{" "}
+        <button type="button" onClick={onCancel} className="underline hover:text-body">
+          cancel
+        </button>
+        .
+      </p>
+    </div>
   );
 }
 
@@ -655,7 +857,19 @@ function IssuePanel({
 
 // ── Portfolio panel (investor holdings) ───────────────────────────────────────
 
-function PortfolioPanel({ portfolio }: { portfolio: InvestorPortfolioResponse | null }) {
+function PortfolioPanel({
+  portfolio,
+  session,
+  onError,
+  onNotice,
+  onChanged,
+}: {
+  portfolio: InvestorPortfolioResponse | null;
+  session: AuthSessionResponse;
+  onError: (m: string) => void;
+  onNotice: (m: string) => void;
+  onChanged: () => Promise<void>;
+}) {
   if (!portfolio || portfolio.holdings.length === 0) {
     return (
       <div className="panel-dark px-lg py-xxl text-center">
@@ -668,12 +882,42 @@ function PortfolioPanel({ portfolio }: { portfolio: InvestorPortfolioResponse | 
 
   return (
     <div>
-      <section className="mb-lg grid gap-md sm:grid-cols-2">
+      {/*
+        "Total invested" on its own reads like a balance. These four say what
+        the position is actually doing: what it has earned but not yet been
+        paid, what is late, and what has genuinely been lost (plane.md §3.4).
+      */}
+      <section className="mb-lg grid gap-md sm:grid-cols-2 lg:grid-cols-4">
         <Metric label="Total invested" value={formatMinor(portfolio.totalInvested, "USDC")} detail="Across all holdings" icon="wallet" />
         <Metric label="Payouts received" value={formatMinor(portfolio.totalPayoutsReceived, "USDC")} detail="Pro-rata distributions" icon="sparkles" />
+        <Metric
+          label="Accrued yield"
+          value={formatMinor(portfolio.totalAccruedYield, "USDC")}
+          detail="Earned, not yet paid"
+          icon="clock"
+        />
+        <Metric
+          label="Realized loss"
+          value={formatMinor(portfolio.totalRealizedLoss, "USDC")}
+          detail={
+            portfolio.overdueCount > 0
+              ? `${portfolio.overdueCount} position${portfolio.overdueCount === 1 ? "" : "s"} overdue`
+              : "On written-off positions"
+          }
+          icon="shield"
+        />
       </section>
+
+      {portfolio.overdueCount > 0 ? (
+        <p className="mb-lg flex items-start gap-xs rounded-lg border border-status-review/30 bg-status-review/10 p-sm text-xs leading-5 text-status-review">
+          <Icon name="clock" className="mt-0.5 h-4 w-4 shrink-0" />
+          {portfolio.overdueCount} of your positions{" "}
+          {portfolio.overdueCount === 1 ? "is" : "are"} past maturity with no
+          collection received.
+        </p>
+      ) : null}
       <div className="space-y-md">
-        {portfolio.holdings.map(({ holding, tokenization, asset }) => (
+        {portfolio.holdings.map(({ holding, tokenization, asset, position }) => (
           <article key={holding.id} className="panel-dark p-md sm:p-lg">
             <div className="flex flex-wrap items-center justify-between gap-sm">
               <div className="flex items-center gap-sm">
@@ -702,16 +946,170 @@ function PortfolioPanel({ portfolio }: { portfolio: InvestorPortfolioResponse | 
                 the transfer. Payouts start once they do.
               </p>
             ) : null}
+            {position.disputed ? (
+              <p className="mt-md flex items-start gap-xs rounded-lg border border-status-disputed/30 bg-status-disputed/10 p-sm text-xs leading-5 text-status-disputed">
+                <Icon name="shield" className="mt-0.5 h-4 w-4 shrink-0" />
+                The underlying invoice is disputed and the payout is held
+                pending its resolution.
+              </p>
+            ) : position.overdue ? (
+              <p className="mt-md flex items-start gap-xs rounded-lg border border-status-review/30 bg-status-review/10 p-sm text-xs leading-5 text-status-review">
+                <Icon name="clock" className="mt-0.5 h-4 w-4 shrink-0" />
+                {daysPhrase(position.daysRemaining)} — the debtor has not paid.
+              </p>
+            ) : null}
+            <SellPosition
+              session={session}
+              tokenizationId={tokenization.id}
+              heldUnits={holding.units}
+              currency={holding.purchaseCurrency}
+              tradeable={
+                !tokenization.frozen &&
+                !position.disputed &&
+                holding.status !== "pending"
+              }
+              onError={onError}
+              onNotice={onNotice}
+              onChanged={onChanged}
+            />
             <dl className="mt-md grid grid-cols-2 gap-md border-t border-hairline-dark pt-md sm:grid-cols-3">
               <Detail label="Invested" value={`${formatMinor(holding.purchaseAmount, holding.purchaseCurrency)} ${holding.purchaseCurrency}`} />
               <Detail label="Ownership" value={`${Number((BigInt(holding.units) * 10000n) / BigInt(tokenization.totalUnits)) / 100}%`} />
-              <Detail label="Delivery" value={holding.status === "pending" ? "Pending" : "Settled"} />
-              <Detail label="Authorized" value={holding.authorized ? "Yes" : "Pending"} />
+              <Detail label="Time left" value={daysPhrase(position.daysRemaining)} />
+              <Detail label="Accrued yield" value={`${formatMinor(position.accruedYield, holding.purchaseCurrency)} ${holding.purchaseCurrency}`} />
+              <Detail label="Paid out" value={`${formatMinor(position.payoutsReceived, holding.purchaseCurrency)} ${holding.purchaseCurrency}`} />
+              {BigInt(position.realizedLoss) > 0n ? (
+                <Detail label="Realized loss" value={`${formatMinor(position.realizedLoss, holding.purchaseCurrency)} ${holding.purchaseCurrency}`} />
+              ) : (
+                <Detail label="Delivery" value={holding.status === "pending" ? "Pending" : "Settled"} />
+              )}
             </dl>
           </article>
         ))}
       </div>
     </div>
+  );
+}
+
+/**
+ * Sell part or all of a position to another holder (plane.md §3.3).
+ *
+ * The price is typed, not derived: a secondary trade is priced by the parties,
+ * and an invoice near maturity is worth more than one just issued. The form
+ * collapses by default because selling is the exception — most of the time an
+ * investor is looking at the position, not leaving it.
+ */
+function SellPosition({
+  session,
+  tokenizationId,
+  heldUnits,
+  currency,
+  tradeable,
+  onError,
+  onNotice,
+  onChanged,
+}: {
+  session: AuthSessionResponse;
+  tokenizationId: string;
+  heldUnits: string;
+  currency: CurrencyCode;
+  tradeable: boolean;
+  onError: (m: string) => void;
+  onNotice: (m: string) => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [toUserId, setToUserId] = useState("");
+  const [toHolderAddress, setToHolderAddress] = useState("");
+  const [units, setUnits] = useState("");
+  const [price, setPrice] = useState("");
+
+  if (!tradeable) {
+    return (
+      <p className="mt-md text-xs text-muted">
+        These units cannot be sold right now — the tokenization is frozen,
+        disputed, or awaiting delivery.
+      </p>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="btn-secondary-dark mt-md w-full sm:w-auto"
+      >
+        Sell units
+      </button>
+    );
+  }
+
+  async function sell(event: FormEvent) {
+    event.preventDefault();
+    setPending(true);
+    try {
+      if (!/^\d+$/.test(units.trim()) || BigInt(units) <= 0n) {
+        throw new Error("Enter a whole number of units");
+      }
+      if (BigInt(units) > BigInt(heldUnits)) {
+        throw new Error(`You hold ${heldUnits} units`);
+      }
+      if (!toUserId.trim()) throw new Error("Enter the buyer's user id");
+      if (!toHolderAddress.trim()) throw new Error("Enter the buyer's address");
+
+      await api.transferUnits(session.accessToken, tokenizationId, crypto.randomUUID(), {
+        toUserId: toUserId.trim(),
+        toHolderAddress: toHolderAddress.trim(),
+        units: units.trim(),
+        // Typed as a decimal amount and converted at the boundary, exactly as
+        // every other amount in this console.
+        priceAmount: toMinorUnits(price, currency),
+      });
+      setOpen(false);
+      setToUserId("");
+      setToHolderAddress("");
+      setUnits("");
+      setPrice("");
+      onNotice("Units transferred");
+      await onChanged();
+    } catch (err) {
+      onError(message(err));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <form onSubmit={sell} className="mt-md space-y-sm rounded-lg border border-hairline-dark bg-surface-elevated-dark p-md">
+      <p className="text-xs text-muted">
+        Selling transfers your claim to the buyer at the price you agree between
+        you. The platform records the trade; it does not price or guarantee it.
+      </p>
+      <div className="grid gap-sm sm:grid-cols-2">
+        <label className="text-sm font-medium text-body">Buyer user id
+          <input value={toUserId} onChange={(e) => setToUserId(e.target.value)} className="input mt-xs font-mono" />
+        </label>
+        <label className="text-sm font-medium text-body">Buyer address
+          <input value={toHolderAddress} onChange={(e) => setToHolderAddress(e.target.value)} placeholder="G…" className="input mt-xs font-mono" />
+        </label>
+        <label className="text-sm font-medium text-body">Units
+          <input value={units} onChange={(e) => setUnits(e.target.value)} placeholder={`Max ${heldUnits}`} inputMode="numeric" className="input mt-xs font-mono" />
+        </label>
+        <label className="text-sm font-medium text-body">Agreed price ({currency})
+          <input value={price} onChange={(e) => setPrice(e.target.value)} inputMode="decimal" className="input mt-xs font-mono" />
+        </label>
+      </div>
+      <div className="flex flex-col gap-sm min-[420px]:flex-row">
+        <button disabled={pending} className="btn-primary w-full min-[420px]:w-auto">
+          {pending ? "Transferring…" : "Confirm sale"}
+        </button>
+        <button type="button" onClick={() => setOpen(false)} className="btn-secondary-dark w-full min-[420px]:w-auto">
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -742,7 +1140,7 @@ function TabButton({
   );
 }
 
-function Metric({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: "sparkles" | "document" | "wallet" }) {
+function Metric({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: IconName }) {
   return (
     <div className="panel-dark flex items-center justify-between p-lg">
       <div>
