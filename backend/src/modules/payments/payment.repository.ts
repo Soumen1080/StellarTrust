@@ -30,6 +30,16 @@ export interface CustodyStateCommit {
 export interface PaymentRepository {
   findOrder(orderId: string): Promise<OrderDTO | undefined>;
   listOrders(userId: string): Promise<OrderDTO[]>;
+  /**
+   * Every record, newest first — the admin console's platform-wide view
+   * (plane.md admin panel).
+   *
+   * Separate from the user-scoped list rather than a filter on it. The
+   * caller-scoped read is the one every ordinary endpoint uses, and making
+   * "no user" mean "everyone" would turn a forgotten argument into a data
+   * leak. The routes that reach this are behind the compliance role.
+   */
+  listAllOrders(limit?: number): Promise<OrderDTO[]>;
   findEscrow(orderId: string): Promise<EscrowDTO | undefined>;
   /**
    * Persist an order/escrow state change that moves no money.
@@ -68,6 +78,12 @@ export class InMemoryPaymentRepository implements PaymentRepository {
     return [...this.orders.values()]
       .filter((order) => order.buyerId === userId || order.sellerId === userId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async listAllOrders(limit = 500): Promise<OrderDTO[]> {
+    return [...this.orders.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit);
   }
 
   async findEscrow(orderId: string): Promise<EscrowDTO | undefined> {

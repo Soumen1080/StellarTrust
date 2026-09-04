@@ -53,6 +53,16 @@ export interface SettlementRepository {
    */
   findSettlementByOrder?(orderId: string): Promise<SettlementDTO | undefined>;
   listSettlements(userId: string): Promise<SettlementDTO[]>;
+  /**
+   * Every record, newest first — the admin console's platform-wide view
+   * (plane.md admin panel).
+   *
+   * Separate from the user-scoped list rather than a filter on it. The
+   * caller-scoped read is the one every ordinary endpoint uses, and making
+   * "no user" mean "everyone" would turn a forgotten argument into a data
+   * leak. The routes that reach this are behind the compliance role.
+   */
+  listAllSettlements(limit?: number): Promise<SettlementDTO[]>;
   listTransitions(settlementId?: string): Promise<SettlementTransitionDTO[]>;
   commitTransition(
     input: SettlementTransitionCommit,
@@ -109,6 +119,12 @@ export class InMemorySettlementRepository implements SettlementRepository {
     return [...this.settlements.values()]
       .filter((settlement) => settlement.userId === userId)
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async listAllSettlements(limit = 500): Promise<SettlementDTO[]> {
+    return [...this.settlements.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit);
   }
 
   async listTransitions(

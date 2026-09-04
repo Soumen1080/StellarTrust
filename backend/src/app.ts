@@ -142,6 +142,14 @@ import {
 import { PgFeedbackRepository } from "./modules/feedback/pg-feedback.repository.js";
 import { FeedbackService } from "./modules/feedback/feedback.service.js";
 import { createFeedbackRouter } from "./modules/feedback/feedback.routes.js";
+import { AdminService } from "./modules/admin/admin.service.js";
+import { createAdminRouter } from "./modules/admin/admin.routes.js";
+import {
+  InMemoryPolicyRepository,
+  PgPolicyRepository,
+  type PolicyRepository,
+} from "./modules/admin/policy.repository.js";
+import { VerificationDomain } from "./modules/admin/verification-policy.js";
 
 type HelmetFactory = () => RequestHandler;
 
@@ -388,6 +396,14 @@ export function createApp(): Express {
       "KYC_RISK_ENGINE=openai but OPENAI_API_KEY is unset; falling back to the AI service client",
     );
   }
+  // The verification routing policy the admin console edits (migration 0022).
+  // Constructed here rather than with the rest of the admin module because KYC
+  // reads it on every submission; it depends only on the pool, so it can sit
+  // this early without a cycle.
+  const policyRepository: PolicyRepository = usePersistentStore
+    ? new PgPolicyRepository(getPool())
+    : new InMemoryPolicyRepository();
+
   // Persisted whenever a database is configured (plane.md §4.2, migration
   // 0022). KYC gates an investor purchase (§3.2), so an in-memory store meant
   // a deploy silently reset every user to unverified and re-opened every
@@ -405,6 +421,9 @@ export function createApp(): Express {
       // Development shortcut only — never auto-approve in production.
       autoApprove: config.KYC_AUTO_APPROVE && !config.isProduction,
       autoApproveDelayMs: config.KYC_AUTO_APPROVE_DELAY_MS,
+      // Read per submission, so a policy an operator tightens during an
+      // incident applies to the next application rather than the next deploy.
+      policy: () => policyRepository.get(VerificationDomain.Kyc),
     },
   );
   // ── Phase 5: RWA Tokenization (opt-in module) ────────────────────────────
@@ -724,6 +743,86 @@ export function createApp(): Express {
   );
   // Public wall: GET is unauthenticated by design, POST is not.
   app.use("/api/feedback", createFeedbackRouter(feedback, bearerVerifier));
+
+  // ── Admin / operations console ────────────────────────────────────────────
+  //
+  // Constructed last, because it reads across every domain. Two things live
+  // here that did not exist before: the platform's health as a *lending
+  // business* rather than as a web service (plane.md §4.4), and the control
+  // surface for verification routing — previously three environment variables,
+  // now a policy an operator edits (migration 0022).
+  //
+  // It depends on narrow read ports rather than on the services themselves, so
+  // the console cannot reach a money-moving method simply because it happens
+  // to hold an object that has one. The four services it *is* given are for
+  // deciding queued cases, which goes through the domain that owns the
+  // decision so a case decided from the console gets the same validation,
+  // audit trail, and downstream effects as one decided anywhere else.
+  const adminService = new AdminService(
+    {
+      tokenizations: async () =>
+        (await rwaRepository.listTokenizations()).map((tokenization) => ({
+          id: tokenization.id,
+          status: tokenization.status,
+          faceValueAmount: tokenization.faceValueAmount,
+          faceValueCurrency: tokenization.faceValueCurrency,
+          totalUnits: tokenization.totalUnits,
+          unitsSold: tokenization.unitsSold,
+          pricePerUnitAmount: tokenization.pricePerUnitAmount,
+          maturityDate: tokenization.maturityDate,
+          collectedAt: tokenization.collectedAt,
+          createdAt: tokenization.createdAt,
+        })),
+      orders: async () =>
+        (await paymentRepository.listAllOrders()).map((order) => ({
+          id: order.id,
+          status: order.status,
+          // `OrderDTO.amount` is a Money pair, not a scalar. The snapshot
+          // flattens it so the metrics never have to know that.
+          amount: order.amount.amount,
+          currency: order.amount.currency,
+          createdAt: order.createdAt,
+        })),
+      disputes: async () =>
+        (await disputeRepository.listAllDisputes()).map((dispute) => ({
+          id: dispute.id,
+          status: dispute.status,
+          orderId: dispute.orderId,
+          createdAt: dispute.createdAt,
+        })),
+    },
+    policyRepository,
+    audit,
+  );
+
+  app.use(
+    "/api/admin",
+    createAdminRouter(
+      adminService,
+      {
+        kycReviews: () => kyc.listReviews(),
+        // Read through the service so the compliance check that guards the
+        // queue is the service's own, not a second copy of it here.
+        assetReviewQueue: () =>
+          rwa.listAssetsForReview({
+            userId: "system:admin-console",
+            roles: ["compliance"],
+          }),
+        tokenizations: () => rwaRepository.listTokenizations(),
+        disputes: () => disputeRepository.listAllDisputes(),
+        settlements: () => settlementRepository.listAllSettlements(),
+        treasuryMovements: () => treasury.listAll({ limit: 200 }),
+        recentAudit: (limit) => audit.listRecent(limit),
+        eventSpineHealth: async () => ({
+          published: metrics.domainEventsTotal.snapshot(),
+          handlers: metrics.domainEventHandlersTotal.snapshot(),
+        }),
+      },
+      { kyc, rwa, disputes, treasury },
+      bearerVerifier,
+      idempotencyStore,
+    ),
+  );
 
   // ── Error boundary ──────────────────────────────────────────────────────
   app.use(notFoundHandler);

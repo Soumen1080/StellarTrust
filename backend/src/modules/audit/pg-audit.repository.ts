@@ -77,4 +77,15 @@ export class PgAuditRepository implements AuditRepository {
     );
     return rows.map((row) => this.map(row));
   }
+
+  async listRecent(limit: number): Promise<AuditEvent[]> {
+    const { rows } = await this.pool.query<AuditRow>(
+      `select id, actor, action, entity, entity_id, metadata, created_at
+       from audit_log
+       order by created_at desc
+       limit $1`,
+      [Math.min(Math.max(limit, 1), 1000)],
+    );
+    return rows.map((row) => this.map(row));
+  }
 }

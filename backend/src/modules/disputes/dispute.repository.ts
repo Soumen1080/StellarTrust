@@ -65,6 +65,16 @@ export interface DisputeRepository {
    * was filed against, who then could not answer it inside the evidence window.
    */
   listForParty(userId: string): Promise<DisputeDTO[]>;
+  /**
+   * Every record, newest first — the admin console's platform-wide view
+   * (plane.md admin panel).
+   *
+   * Separate from the user-scoped list rather than a filter on it. The
+   * caller-scoped read is the one every ordinary endpoint uses, and making
+   * "no user" mean "everyone" would turn a forgotten argument into a data
+   * leak. The routes that reach this are behind the compliance role.
+   */
+  listAllDisputes(limit?: number): Promise<DisputeDTO[]>;
   listOpen(): Promise<DisputeDTO[]>;
 }
 
@@ -95,6 +105,12 @@ export class InMemoryDisputeRepository implements DisputeRepository {
           dispute.buyerId === userId || dispute.sellerId === userId,
       )
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  }
+
+  async listAllDisputes(limit = 500): Promise<DisputeDTO[]> {
+    return [...this.disputes.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, limit);
   }
 
   async listOpen(): Promise<DisputeDTO[]> {

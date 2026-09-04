@@ -21,6 +21,7 @@ import { decideKyc } from "./kyc-decision.engine.js";
 import type { KycRepository } from "./kyc.repository.js";
 import type { KycRiskClient } from "./kyc-risk.client.js";
 import type { KycProvider } from "./providers/kyc-provider.js";
+import type { VerificationPolicy } from "../admin/verification-policy.js";
 
 function statusForDecision(decision: KycDecision): KycStatus {
   if (decision === KycDecision.Approve) return KycStatus.Verified;
@@ -37,6 +38,17 @@ function statusForDecision(decision: KycDecision): KycStatus {
 export interface KycServiceOptions {
   autoApprove?: boolean;
   autoApproveDelayMs?: number;
+  /**
+   * Read the live verification policy an operator edits through the admin
+   * console (migration 0022).
+   *
+   * A function rather than a value, and read per submission rather than at
+   * construction: a policy an operator tightens during an incident has to
+   * apply to the next application, not to the next deploy. Optional — when it
+   * is absent the engine falls back to the environment thresholds, which is
+   * what every existing construction and test relies on.
+   */
+  policy?: () => Promise<VerificationPolicy>;
 }
 
 export class KycService {
@@ -111,11 +123,29 @@ export class KycService {
           signals: providerResult.riskSignals.map((signal) => signal.name),
         };
       }
-      const policy = decideKyc(providerResult.checks, advisory, { aiAvailable });
-      status = statusForDecision(policy.decision);
-      reviewId = policy.decision === KycDecision.Review ? randomUUID() : null;
-      auditReasons = policy.reasons;
-      auditDecision = policy.decision;
+      // A policy read that fails must not fail the application. Falling back
+      // to the environment thresholds is the conservative direction: they are
+      // what the platform used before the policy table existed, and a KYC
+      // submission refused because a settings row was briefly unreadable is an
+      // outage for the user rather than a control.
+      let activePolicy: VerificationPolicy | undefined;
+      try {
+        activePolicy = await this.options.policy?.();
+      } catch (err) {
+        logger.warn(
+          { errorType: (err as Error).name },
+          "KYC verification policy unreadable; falling back to configured thresholds",
+        );
+      }
+
+      const decision = decideKyc(providerResult.checks, advisory, {
+        aiAvailable,
+        policy: activePolicy,
+      });
+      status = statusForDecision(decision.decision);
+      reviewId = decision.decision === KycDecision.Review ? randomUUID() : null;
+      auditReasons = decision.reasons;
+      auditDecision = decision.decision;
     }
 
     const response: KycApplicationResponse = {

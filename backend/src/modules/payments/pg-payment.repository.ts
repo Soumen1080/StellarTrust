@@ -128,6 +128,20 @@ export class PgPaymentRepository implements PaymentRepository {
     return rows.map((row) => this.mapOrder(row));
   }
 
+  async listAllOrders(limit = 500): Promise<OrderDTO[]> {
+    // Capped rather than paginated: an operator reads the head of this list to
+    // see what is happening now, and an unbounded scan of a table that only
+    // grows is a query that gets slower every day it runs.
+    const { rows } = await this.pool.query<OrderRow>(
+      `select id, buyer_id, seller_id, amount, currency, status, created_at, updated_at
+       from orders
+       order by created_at desc
+       limit $1`,
+      [Math.min(Math.max(limit, 1), 1000)],
+    );
+    return rows.map((row) => this.mapOrder(row));
+  }
+
   async findEscrow(orderId: string): Promise<EscrowDTO | undefined> {
     const { rows } = await this.pool.query<EscrowRow>(
       `select id, order_id, contract_id, state, created_at, updated_at

@@ -51,6 +51,21 @@ export class Counter {
     }
   }
 
+  /**
+   * The current series as data rather than as Prometheus text.
+   *
+   * The admin console shows event-spine health — how many facts were
+   * published, how many handler runs failed — and re-parsing the exposition
+   * format to get numbers we already hold would be absurd. Returns a copy, so
+   * a reader cannot mutate the registry.
+   */
+  snapshot(): Array<{ labels: Labels; value: number }> {
+    return [...this.values.values()].map((entry) => ({
+      labels: { ...entry.labels },
+      value: entry.value,
+    }));
+  }
+
   render(): string {
     const lines = [
       `# HELP ${this.meta.name} ${this.meta.help}`,
