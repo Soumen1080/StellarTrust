@@ -20,7 +20,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const accountLink = isVerified
     ? { href: "/dashboard", label: "Dashboard" }
     : { href: "/kyc", label: "Verification" };
-  const links = isVerified ? [...baseLinks, accountLink] : baseLinks;
+  // Balance sits behind verification with the dashboard: investing draws on a
+  // platform balance, and a user who cannot yet invest has nothing to fund.
+  const links = isVerified
+    ? [...baseLinks, { href: "/wallet", label: "Balance" }, accountLink]
+    : baseLinks;
   const [open, setOpen] = useState(false);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
   const mobileNavRef = useRef<HTMLElement>(null);
