@@ -609,6 +609,12 @@ export interface SettlementQuoteDTO {
 export interface SettlementExecuteInput {
   quoteId: string;
   /**
+   * Escrow order this settlement funds (plane.md §2.1). When set, the
+   * settlement's completion drives the order's deposit rather than the buyer
+   * paying the corridor and then the escrow separately.
+   */
+  orderId?: string;
+  /**
    * Beneficiary handle for the quoted rail (UPI ID, IFSC account, IBAN, ABA
    * account, NUBAN). Validated against the scheme's own checksums; only a
    * masked form and a fingerprint are persisted.
@@ -697,6 +703,11 @@ export interface SettlementDTO {
   payout: SettlementPayoutDTO;
   /** Remittance memo (falls back to the masked handle). Never a raw account. */
   destinationReference: string;
+  /**
+   * Escrow order this settlement funds, if any (plane.md §2.1). At most one
+   * settlement may fund a given order, enforced by a partial unique index.
+   */
+  orderId: string | null;
   /** Set when the settlement reaches a terminal state. */
   completedAt: string | null;
   /** Why the settlement failed, when it did. */
@@ -902,6 +913,36 @@ export interface TokenizationDetailsResponse {
   availableUnits: string;
   /** Total raised from investors (minor-unit integer string). */
   totalRaised: MinorUnitAmount;
+}
+
+/**
+ * One authenticated call returning everything the caller has a position in,
+ * with the links between them (plane.md §2.4).
+ *
+ * The four domains each had their own console, so a user financing an invoice
+ * through a corridor and disputing the delivery saw three unrelated screens and
+ * had to work out for themselves that they described one trade. The `links`
+ * block is the part that could not be assembled client-side: it is the join
+ * across settlements, orders, disputes, and tokenizations.
+ */
+export interface PositionsResponse {
+  orders: OrderDetailsResponse[];
+  settlements: SettlementDetailsResponse[];
+  disputes: DisputeDTO[];
+  holdings: InvestorPortfolioResponse["holdings"];
+  /** How the records above relate, keyed by order id. */
+  links: PositionLink[];
+}
+
+/** The cross-domain story of one escrow order. */
+export interface PositionLink {
+  orderId: string;
+  /** Settlement that funded this order, if any (§2.1). */
+  fundedBySettlementId: string | null;
+  /** Disputes raised against it. */
+  disputeIds: string[];
+  /** Tokenizations whose payout this order's release triggers (§2.2). */
+  tokenizationIds: string[];
 }
 
 export interface InvestorPortfolioResponse {

@@ -256,6 +256,15 @@ export const payoutDestinationInputSchema = z.object({
 export const settlementExecuteInputSchema = z.object({
   quoteId: z.string().uuid(),
   destination: payoutDestinationInputSchema,
+  /**
+   * Escrow order this settlement funds (plane.md §2.1).
+   *
+   * When present, completing the settlement drives the order's `Deposit`
+   * transition instead of the buyer funding the escrow a second time. The
+   * credited amount must match the order amount exactly, or the settlement is
+   * refused before any money moves.
+   */
+  orderId: z.string().uuid().optional(),
 });
 
 // ── Phase 4: Disputes + AI (advisory) ─────────────────────────────────────────

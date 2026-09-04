@@ -8,6 +8,7 @@ import { Icon } from "@/components/Icon";
 import { useIdentity } from "@/components/IdentityProvider";
 import { StatusPill } from "@/components/StatusPill";
 import { FeedbackCta } from "@/features/feedback/FeedbackCta";
+import { LinkedPositions } from "@/features/dashboard/LinkedPositions";
 import { ApiClientError, api } from "@/lib/api";
 import { clearSession } from "@/lib/wallet-auth";
 
@@ -177,6 +178,8 @@ export function UserDashboard() {
         </aside>
       </section>
 
+      {/* One trade across four domains (plane.md §2.4). */}
+      {session ? <LinkedPositions accessToken={session.accessToken} /> : null}
       <FeedbackCta />
     </div>
   );

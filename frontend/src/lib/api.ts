@@ -36,6 +36,7 @@ import type {
   CreateAssetInput,
   CreateTokenizationInput,
   InvestorPortfolioResponse,
+  PositionsResponse,
   PayoutDistributionDTO,
   PurchaseUnitsInput,
   TokenizationDTO,
@@ -158,6 +159,16 @@ export const api = {
   /** The connected wallet's real, live Horizon balances (XLM + any bound token). */
   getWalletBalances: (accessToken: string) =>
     request<WalletBalancesResponse>("/api/wallet/balances", { accessToken }),
+  /**
+   * Every position the caller holds, across all four domains, with the links
+   * between them (plane.md §2.4).
+   *
+   * One call rather than four: the `links` block joins settlements, orders,
+   * disputes, and tokenizations, which is a relationship the client cannot
+   * compute from the individual list endpoints.
+   */
+  getPositions: (accessToken: string) =>
+    request<PositionsResponse>("/api/positions", { accessToken }),
   submitKyc: (
     accessToken: string,
     idempotencyKey: string,

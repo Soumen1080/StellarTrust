@@ -180,40 +180,92 @@ Replace "distribute the whole order amount" with an ordered waterfall:
 ## 2. Cross-domain synchronization (the "make it compose" work)
 
 ### 2.1 🔴 Link settlement to escrow orders
-- [ ] Add `orderId: string | null` to `SettlementDTO` + migration.
-- [ ] `POST /api/settlement/orders` accepts an `orderId`; on completion it
-      drives the order's `Deposit` transition instead of the buyer paying twice.
-- [ ] The settlement's credited amount must equal the order amount, or the
-      settlement is rejected before it starts.
-- [ ] One ledger transaction spans both legs so the corridor fee and the escrow
-      deposit reconcile together.
-- [ ] Tests: a full corridor-funded escrow order, and a mismatch refused.
+- [x] `orderId: string | null` on `SettlementDTO`, plus migration `0017`. The
+      column carries a FK to `orders` and a **partial** unique index, so the
+      ordinary settlement (no order) is unconstrained while a second attempt to
+      fund an already-funded order fails at the database rather than on a read.
+- [x] `POST /api/settlement` accepts an optional `orderId`; on completion it
+      publishes `settlement.completed`, and the `payments.deposit-on-settlement`
+      subscriber drives the order's `Deposit`. The buyer pays the corridor once
+      instead of paying the corridor and then the escrow.
+- [x] The credited amount must equal the order amount **exactly**, checked
+      before the first leg runs — a corridor that has already moved money and
+      only then discovers it cannot fund the order has left the user paying for
+      nothing. Currency mismatch, non-buyer, unknown order, and already-funded
+      are all refused at the same point.
+- [ ] One ledger transaction spanning both legs. Not done: the settlement legs
+      and the escrow deposit still post as separate transactions. Spanning them
+      needs a cross-module transaction boundary that does not exist yet, and
+      forcing one through the event handler would make the deposit roll back a
+      completed corridor payout. Deferred with §4.2/§4.3, where the transaction
+      boundary work belongs.
+- [x] Tests: the full corridor-funded order (accepted → deposited with no second
+      payment), the link recorded both ways, an ordinary orderless settlement
+      untouched, and five refusal paths each asserting no settlement was created.
+      (8 tests in `settlement-order.test.ts`.)
 
 ### 2.2 🔴 Make disputes gate RWA payouts
-- [ ] `RwaService.distributePayout` refuses while an open dispute exists on the
-      linked order.
-- [ ] Opening a dispute on a tokenization-linked order flips it to
-      `PayoutHeld` and notifies holders.
-- [ ] Dispute resolved in the buyer's favour (refund) → tokenization moves to
-      `Defaulted`, triggering the recovery path in §1.4 rather than paying out.
-- [ ] Dispute resolved in the seller's favour → payout resumes automatically.
-- [ ] Tests: each of the three outcomes, asserting no payout escapes during a
-      held dispute.
+- [x] `distributePayout` refuses on **two** independent checks: the durable
+      `PayoutHeld` status (survives a restart) and a live `DisputeReader` read
+      (catches the window where a dispute was filed but its event has not been
+      handled). Either alone leaves a gap through which money reaches investors
+      who may have to give it back.
+- [x] `dispute.opened` flips a linked `Active`/`Funded` tokenization to
+      `PayoutHeld`. Notification is left to §3's holder-comms work; the status is
+      what the holder sees and what the payout refuses on.
+- [x] Resolved for the buyer (refund) → `Defaulted`, which routes into the §1.4
+      write-off/recovery path rather than paying a waterfall on money that went
+      back to the buyer.
+- [x] Resolved for the seller → the hold lifts to `Funded` and the payout
+      resumes. Note the real sequence: resolving for the seller auto-executes the
+      release, so the position passes through `Funded` and lands on `Repaid` in
+      one go — `Funded` is a state it transits, not one it rests in.
+- [x] Tests: all three outcomes plus the acceptance condition — a full
+      dispute-and-refund cycle distributing **zero** payouts. (7 tests in
+      `cross-domain.test.ts`, wired with real services exactly as `app.ts` does.)
 
 ### 2.3 🟠 One event spine across the four domains
-- [ ] Introduce a `DomainEvent` table + append helper (order.released,
-      dispute.opened, settlement.completed, tokenization.matured, …).
-- [ ] Each module publishes; subscribers react. Replaces today's direct service
-      call from payments into RWA, which is why the coupling is one-way.
-- [ ] Handlers are idempotent and retried with backoff; failures are visible in
-      `/metrics`, not swallowed in a log line.
-- [ ] Tests: a replayed event produces no second effect.
+- [x] `domain_events` (append-only, unique `dedupe_key`) and
+      `domain_event_handled` (unique on `(event_id, handler)`) in migration
+      `0017`, with in-memory and Postgres repositories. Both idempotency
+      guarantees live in the **database**, not a convention: two API instances
+      racing the same publish or handler are settled by a unique index, which is
+      what Golden Rule #4 actually asks for.
+- [x] Event types and dedupe-key construction are centralised in
+      `event.types.ts` — a hand-typed event string is a subscriber that silently
+      never fires.
+- [x] `PaymentService.triggerRwaPayout` is superseded. Payments publishes
+      `order.released`; RWA subscribes. Payments no longer imports RWA to react
+      to its own state change. The old direct call is retained only as a
+      fallback for constructions built without a bus, and is marked deprecated.
+- [x] Handlers claim **before** running, retry with exponential backoff, and a
+      handler that exhausts its attempts is recorded and counted in
+      `domain_event_handlers_total{result="failed"}` rather than thrown back at
+      a publisher whose own work already succeeded. The claim-then-run ordering
+      is deliberate: between "possibly skipped, visibly" and "possibly
+      duplicated, silently", only the first is safe when the handler moves money.
+- [x] A durable re-dispatch loop for events whose handler never ran is **not**
+      built — that is a queue, and belongs with the infrastructure work. The
+      schema is shaped for it (`domain_events` left-joined against
+      `domain_event_handled`).
+- [x] Tests: the replay guarantee at both levels — a redelivered event runs a
+      handler once (12 tests in `event.test.ts`), and a redelivered
+      `order.released` distributes exactly one payout through the real wiring
+      (`cross-domain.test.ts`).
 
 ### 2.4 🟠 Unified position view
-- [ ] `GET /api/positions` — one authenticated call returning the caller's
-      orders, settlements, disputes, and holdings with their linkage.
-- [ ] Frontend dashboard consumes it so a user sees one story instead of four
-      disconnected consoles.
+- [x] `GET /api/positions` returns the caller's orders, settlements, disputes,
+      and holdings, plus a `links` block keyed by order id. The links are the
+      point: which settlement funded which order, which tokenizations that
+      order's release pays out. Those are joins the client cannot compute from
+      the four list endpoints. Caller-scoped with no compliance variant — a
+      single endpoint returning any user's whole financial position would be a
+      wider grant than any individual domain intends.
+- [x] Frontend `LinkedPositions` on the dashboard renders only orders that
+      actually reach into another domain; unlinked ones are already in the
+      orders table above, and repeating them would bury the linked ones.
+- [x] Tests: 4 in `positions.test.ts` covering the link assembly, an unlinked
+      order, and per-order isolation when a user holds several.
 
 ---
 

@@ -168,6 +168,24 @@ export class PgSettlementRepository implements SettlementRepository {
     return rows[0]?.data;
   }
 
+  /**
+   * The settlement funding an order (plane.md §2.1).
+   *
+   * Reads the `order_id` column rather than the JSON snapshot: it is indexed,
+   * and it is the column the partial unique index constrains, so this query and
+   * the constraint that enforces one-settlement-per-order agree by
+   * construction.
+   */
+  async findSettlementByOrder(
+    orderId: string,
+  ): Promise<SettlementDTO | undefined> {
+    const { rows } = await this.pool.query<SnapshotRow<SettlementDTO>>(
+      `select data from settlements where order_id = $1`,
+      [orderId],
+    );
+    return rows[0]?.data;
+  }
+
   async listSettlements(userId: string): Promise<SettlementDTO[]> {
     const { rows } = await this.pool.query<SnapshotRow<SettlementDTO>>(
       `select data from settlements
@@ -476,9 +494,10 @@ export class PgSettlementRepository implements SettlementRepository {
           source_amount, destination_currency, destination_amount,
           payout_rail, payout_country, payout_fee, payout_net_amount,
           payout_destination_masked, payout_destination_fingerprint,
-          data, completed_at, failure_reason, created_at, updated_at)
+          data, completed_at, failure_reason, created_at, updated_at,
+          order_id)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
-               $15, $16::jsonb, $17, $18, $19, $20)
+               $15, $16::jsonb, $17, $18, $19, $20, $21)
        on conflict (id) do update
          set status = excluded.status,
              data = excluded.data,
@@ -506,6 +525,7 @@ export class PgSettlementRepository implements SettlementRepository {
         settlement.failureReason,
         settlement.createdAt,
         settlement.updatedAt,
+        settlement.orderId,
       ],
     );
   }

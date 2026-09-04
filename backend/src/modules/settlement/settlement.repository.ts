@@ -44,6 +44,14 @@ export interface SettlementRepository {
   saveSettlement(settlement: SettlementDTO): Promise<void>;
   findSettlement(settlementId: string): Promise<SettlementDTO | undefined>;
   findSettlementByQuote(quoteId: string): Promise<SettlementDTO | undefined>;
+  /**
+   * The settlement funding an order, if one exists (plane.md §2.1).
+   *
+   * Optional on the interface so existing implementations stay valid; the
+   * partial unique index in migration 0017 is what actually enforces one
+   * settlement per order under concurrency.
+   */
+  findSettlementByOrder?(orderId: string): Promise<SettlementDTO | undefined>;
   listSettlements(userId: string): Promise<SettlementDTO[]>;
   listTransitions(settlementId?: string): Promise<SettlementTransitionDTO[]>;
   commitTransition(
@@ -86,6 +94,14 @@ export class InMemorySettlementRepository implements SettlementRepository {
   ): Promise<SettlementDTO | undefined> {
     return [...this.settlements.values()].find(
       (settlement) => settlement.quoteId === quoteId,
+    );
+  }
+
+  async findSettlementByOrder(
+    orderId: string,
+  ): Promise<SettlementDTO | undefined> {
+    return [...this.settlements.values()].find(
+      (settlement) => settlement.orderId === orderId,
     );
   }
 

@@ -53,7 +53,14 @@ import {
   NotFoundError,
   ValidationError,
 } from "../../lib/errors.js";
+import { logger } from "../../lib/logger.js";
 import type { AuditRepository } from "../audit/audit.repository.js";
+import type { DomainEvent } from "../events/event.repository.js";
+import {
+  DomainEventType,
+  EventEntity,
+  dedupeKey,
+} from "../events/event.types.js";
 import {
   SETTLEMENT_DEST_ANCHOR_CLEARING,
   SETTLEMENT_FX_CONVERSION,
@@ -82,6 +89,30 @@ export interface SettlementActor {
 /** Normalized beneficiary fields — held only for the duration of one request. */
 type NormalizedFields = Record<string, string>;
 
+/**
+ * The escrow order facts a settlement needs before it can fund one.
+ *
+ * A narrow port, not the payment service: settlement needs to know an order
+ * exists, who its buyer is, and what it costs. Satisfied structurally by
+ * `PaymentRepository`.
+ */
+export interface SettlementOrderReader {
+  findOrder(orderId: string): Promise<
+    | {
+        id: string;
+        buyerId: string;
+        status: string;
+        amount: { amount: string; currency: string };
+      }
+    | undefined
+  >;
+}
+
+/** The publish side of the event spine, as a narrow port. */
+export interface SettlementEventPublisher {
+  publish(event: Omit<DomainEvent, "id" | "occurredAt">): Promise<DomainEvent>;
+}
+
 export class SettlementService {
   private readonly routing = new RoutingService();
 
@@ -90,7 +121,65 @@ export class SettlementService {
     private readonly liquidity: LiquidityGateway,
     private readonly anchor: AnchorGateway,
     private readonly audit: AuditRepository,
+    /** Reads the escrow order a settlement may fund (plane.md §2.1). */
+    private readonly orders?: SettlementOrderReader,
+    /** Announces `settlement.completed` so the order's deposit can follow. */
+    private readonly events?: SettlementEventPublisher,
   ) {}
+
+  /**
+   * Refuse a settlement that cannot legitimately fund the order it names.
+   *
+   * Every check runs before the first leg, because the failure mode being
+   * closed is a corridor that delivers money and only then discovers the order
+   * cannot accept it — the user has paid for nothing and the funds are already
+   * across a border.
+   */
+  private async assertCanFundOrder(
+    orderId: string,
+    userId: string,
+    credited: { amount: string; currency: string },
+  ): Promise<void> {
+    if (!this.orders) {
+      throw new ValidationError(
+        "This deployment cannot fund escrow orders from a settlement",
+      );
+    }
+
+    const order = await this.orders.findOrder(orderId);
+    if (!order) throw new NotFoundError("Order not found");
+
+    // Only the buyer funds an escrow. Anyone else paying into it would be
+    // making a gift to a trade they are not party to.
+    if (order.buyerId !== userId) {
+      throw new ForbiddenError("Only the order's buyer can fund it");
+    }
+
+    // At most one settlement per order, checked here for a clear error and
+    // enforced by a partial unique index for the concurrent case.
+    const existing = await this.repository.findSettlementByOrder?.(orderId);
+    if (existing) {
+      throw new ConflictError("This order is already funded by a settlement");
+    }
+
+    // The credited amount must equal the order amount exactly. A short
+    // delivery would leave the escrow underfunded while the order claims to be
+    // paid; an over-delivery would strand the difference with no owner. Both
+    // are refused rather than reconciled after the fact.
+    if (credited.currency !== order.amount.currency) {
+      throw new ValidationError(
+        `Settlement delivers ${credited.currency} but order ${orderId} is ` +
+          `denominated in ${order.amount.currency}`,
+      );
+    }
+    if (BigInt(credited.amount) !== BigInt(order.amount.amount)) {
+      throw new ValidationError(
+        `Settlement would credit ${credited.amount} but order ${orderId} ` +
+          `requires exactly ${order.amount.amount}; adjust the quote so the ` +
+          "net delivered amount matches the order",
+      );
+    }
+  }
 
   /**
    * Quote a corridor for a delivery rail: route over available liquidity, apply
@@ -258,6 +347,19 @@ export class SettlementService {
       estimatedSeconds: rail.estimatedSeconds,
     };
 
+    // ── Escrow order funding (plane.md §2.1) ────────────────────────────────
+    //
+    // Checked here, before the first leg runs: a corridor that has already
+    // moved money and only then discovers it cannot fund the order has left
+    // the user paying for a delivery that resolves nothing.
+    if (parsed.data.orderId) {
+      await this.assertCanFundOrder(
+        parsed.data.orderId,
+        actor.userId,
+        payout.netAmount,
+      );
+    }
+
     const now = new Date().toISOString();
     const settlement: SettlementDTO = {
       id: randomUUID(),
@@ -270,6 +372,7 @@ export class SettlementService {
       route,
       payout,
       destinationReference: destination.reference ?? destination.masked,
+      orderId: parsed.data.orderId ?? null,
       completedAt: null,
       failureReason: null,
       createdAt: now,
@@ -604,6 +707,38 @@ export class SettlementService {
       payoutRail: payout.rail,
       destinationFingerprint: payout.destination.fingerprint,
     });
+
+    // The corridor has delivered. If this settlement was funding an escrow
+    // order, the deposit subscriber turns that into the order's `Deposit`
+    // transition — so the buyer pays once, here, instead of again into escrow
+    // (plane.md §2.1).
+    if (settlement.orderId && this.events) {
+      try {
+        await this.events.publish({
+          eventType: DomainEventType.SettlementCompleted,
+          entity: EventEntity.Settlement,
+          entityId: settlement.id,
+          actor: `user:${actor.userId}`,
+          // No beneficiary handle or fingerprint: a subscriber needs the order
+          // and the amount, and the rest is the settlement's own business.
+          payload: {
+            orderId: settlement.orderId,
+            amount: payout.netAmount.amount,
+            currency: payout.netAmount.currency,
+          },
+          dedupeKey: dedupeKey(
+            DomainEventType.SettlementCompleted,
+            settlement.id,
+          ),
+        });
+      } catch (error) {
+        logger.error(
+          { err: error, settlementId: settlement.id },
+          "failed to publish settlement.completed",
+        );
+      }
+    }
+
     return transition;
   }
 

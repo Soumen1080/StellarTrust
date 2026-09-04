@@ -98,6 +98,20 @@ import { PgRwaRepository } from "./modules/rwa/pg-rwa.repository.js";
 import { RwaService } from "./modules/rwa/rwa.service.js";
 import { RwaReconciliationJob } from "./modules/rwa/rwa.reconciliation.job.js";
 import { RwaLifecycleJob } from "./modules/rwa/rwa.lifecycle.job.js";
+import { EventBus } from "./modules/events/event.bus.js";
+import {
+  InMemoryEventRepository,
+  type EventRepository,
+} from "./modules/events/event.repository.js";
+import { PgEventRepository } from "./modules/events/pg-event.repository.js";
+import {
+  rwaHoldOnDispute,
+  rwaPayoutOnRelease,
+  rwaResumeOnDisputeResolved,
+} from "./modules/rwa/rwa.subscribers.js";
+import { orderDepositOnSettlement } from "./modules/payments/payment.subscribers.js";
+import { PositionsService } from "./modules/positions/positions.service.js";
+import { createPositionsRouter } from "./modules/positions/positions.routes.js";
 import { createRwaRouter } from "./modules/rwa/rwa.routes.js";
 import { InMemoryReputationRepository } from "./modules/reputation/reputation.repository.js";
 import { ReputationService } from "./modules/reputation/reputation.service.js";
@@ -371,12 +385,38 @@ export function createApp(): Express {
   // Under issuer custody the on-chain issuer is the user's own SEP-10 wallet,
   // so the gateway needs the same identity-backed resolver escrow uses.
   const rwaGateway = createRwaGateway(walletAddresses);
+
+  // ── The domain event spine (plane.md §2.3) ───────────────────────────────
+  // Constructed before the services that publish to it. Subscribers are
+  // registered further down, once the services they call exist — the bus is
+  // deliberately the only thing the four domains share.
+  const eventRepository: EventRepository = usePersistentStore
+    ? new PgEventRepository(getPool())
+    : new InMemoryEventRepository();
+  const eventBus = new EventBus(eventRepository, metrics);
+  app.locals.eventBus = eventBus;
+
+  // RWA must refuse a payout while a dispute is open, but the dispute service
+  // is constructed further down and itself depends (via settlement) on
+  // payments, which depends on RWA. Rather than reorder four services around
+  // one boolean, the reader is bound late: the closure below resolves through
+  // this holder, which is filled in once `disputes` exists. It is only ever
+  // called during a request, never during wiring.
+  const disputeRef: {
+    current?: { hasOpenDispute(orderId: string): Promise<boolean> };
+  } = {};
+
   const rwa = new RwaService(
     rwaRepository,
     rwaGateway,
     audit,
     ledgerService,
     walletAddresses,
+    // Late-bound; see `disputeRef` above.
+    {
+      hasOpenDispute: (orderId) =>
+        disputeRef.current?.hasOpenDispute(orderId) ?? Promise.resolve(false),
+    },
   );
 
   // ── Phase 6: Reputation store (advisory prior for dispute risk) ───────────
@@ -406,6 +446,7 @@ export function createApp(): Express {
     audit,
     rwa,
     reputationService,
+    eventBus,
   );
   const reconciliation = new ReconciliationJob(
     paymentRepository,
@@ -455,6 +496,10 @@ export function createApp(): Express {
     liquidityGateway,
     anchorGateway,
     audit,
+    // Settlement reads the order it funds; it never writes one. The deposit
+    // itself happens through the subscriber below, on the payments side.
+    { findOrder: (orderId: string) => paymentRepository.findOrder(orderId) },
+    eventBus,
   );
   const settlementReconciliation = new SettlementReconciliationJob(
     settlementRepository,
@@ -504,7 +549,35 @@ export function createApp(): Express {
           .raiseDispute(orderId, { userId: actorUserId, roles: ["user"] })
           .then(() => undefined),
     },
+    eventBus,
   );
+  // Close the late binding declared above, now that the service exists.
+  disputeRef.current = disputes;
+
+  // ── Event subscribers (plane.md §2.1, §2.2, §2.3) ────────────────────────
+  //
+  // Registered here, at the one place that already knows every service, so no
+  // module has to import another to react to it. Everything below replaces a
+  // direct cross-module call that either existed (payments → RWA) or would
+  // have had to be written (settlement → payments, disputes → RWA).
+  eventBus.subscribe(rwaPayoutOnRelease(rwa, rwaRepository, disputes));
+  eventBus.subscribe(rwaHoldOnDispute(rwaRepository));
+  eventBus.subscribe(rwaResumeOnDisputeResolved(rwaRepository));
+  eventBus.subscribe(orderDepositOnSettlement(payments));
+
+  // ── The unified position view (plane.md §2.4) ────────────────────────────
+  // Assembles one story from the four domains. Read-only, caller-scoped, and
+  // built from the same services the individual consoles use.
+  const positions = new PositionsService({
+    listOrders: (userId) => payments.list(userId),
+    listSettlements: (userId) => settlement.list(userId),
+    listDisputes: (userId) => disputes.list(userId),
+    portfolio: (userId) => rwa.getInvestorPortfolio(userId),
+    tokenizationIdsForOrder: async (orderId) =>
+      (await rwaRepository.listTokenizations({ linkedOrderId: orderId })).map(
+        (tokenization) => tokenization.id,
+      ),
+  });
 
   // ── Module routers ────────────────────────────────────────────────────────
   app.use("/api/auth", createAuthRouter(sep10, identities, bearerVerifier));
@@ -516,6 +589,7 @@ export function createApp(): Express {
   // Same instance the RWA payouts write through, so `/api/ledger` reads back
   // the transactions those payouts posted rather than a second, empty store.
   app.use("/api/ledger", createLedgerRouter(ledgerService, bearerVerifier));
+  app.use("/api/positions", createPositionsRouter(positions, bearerVerifier));
   app.use(
     "/api/payments",
     createPaymentRouter(payments, reconciliation, bearerVerifier),

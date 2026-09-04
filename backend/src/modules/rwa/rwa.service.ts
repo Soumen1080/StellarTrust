@@ -81,6 +81,18 @@ export interface PayoutLedgerRecorder {
   ): Promise<{ id: string } | undefined>;
 }
 
+/**
+ * Whether an order currently has an unresolved dispute (plane.md §2.2).
+ *
+ * A narrow port rather than the dispute service itself: RWA needs one boolean,
+ * and depending on the whole service would recreate the cross-module coupling
+ * the event spine exists to remove. Satisfied structurally by
+ * `DisputeService`.
+ */
+export interface DisputeReader {
+  hasOpenDispute(orderId: string): Promise<boolean>;
+}
+
 export class RwaService {
   /**
    * @param ledger - required, not optional. A payout that cannot post balanced
@@ -98,6 +110,12 @@ export class RwaService {
     private readonly audit: AuditRepository,
     private readonly ledger: PayoutLedgerRecorder,
     private readonly addresses: WalletAddressResolver,
+    /**
+     * Optional so existing constructions keep working. When absent, the
+     * `PayoutHeld` status is still honoured — only the live cross-check against
+     * the dispute module is skipped.
+     */
+    private readonly disputes?: DisputeReader,
   ) {}
 
   /** Create a new asset for tokenization. */
@@ -836,6 +854,29 @@ export class RwaService {
 
     if (!actor.roles.includes("compliance") && !actor.roles.includes("system")) {
       throw new ForbiddenError("Only authorized systems can trigger payouts");
+    }
+
+    // No payout escapes a live dispute (plane.md §2.2).
+    //
+    // Two checks, because they fail independently. The status is the durable
+    // record — set when the dispute opened, and still true after a restart that
+    // loses nothing else. The live read catches the window where a dispute was
+    // filed but its event has not been handled yet. Either one alone leaves a
+    // gap through which money reaches investors who may have to give it back.
+    if (tokenization.status === TokenizationStatus.PayoutHeld) {
+      throw new ConflictError(
+        `Payout for ${tokenizationId} is held pending dispute resolution`,
+      );
+    }
+    if (
+      this.disputes &&
+      tokenization.linkedOrderId &&
+      (await this.disputes.hasOpenDispute(tokenization.linkedOrderId))
+    ) {
+      throw new ConflictError(
+        `Cannot distribute a payout while order ${tokenization.linkedOrderId} ` +
+          "has an open dispute",
+      );
     }
 
     // Only delivered holdings earn a payout. A pending one is a claim on units

@@ -34,6 +34,12 @@ import type {
 import { networkPassphrase } from "../stellar/stellar.client.js";
 import type { PaymentRepository } from "./payment.repository.js";
 import type { RwaService } from "../rwa/rwa.service.js";
+import type { DomainEvent } from "../events/event.repository.js";
+import {
+  DomainEventType,
+  EventEntity,
+  dedupeKey,
+} from "../events/event.types.js";
 import { logger } from "../../lib/logger.js";
 import {
   CASH_CLEARING,
@@ -103,6 +109,17 @@ export interface ReputationRecorder {
   recordOrderCompleted(userId: string): Promise<void>;
 }
 
+/**
+ * The publish side of the event spine, as a narrow port.
+ *
+ * Structurally satisfied by `EventBus`. Declared here so payments depends on
+ * the capability to announce a fact rather than on the bus's class — the same
+ * reason the ledger is a port in the RWA module.
+ */
+export interface EventPublisher {
+  publish(event: Omit<DomainEvent, "id" | "occurredAt">): Promise<DomainEvent>;
+}
+
 export class PaymentService {
   constructor(
     private readonly repository: PaymentRepository,
@@ -110,6 +127,12 @@ export class PaymentService {
     private readonly audit: AuditRepository,
     private readonly rwa?: RwaService,
     private readonly reputation?: ReputationRecorder,
+    /**
+     * The event spine (plane.md §2.3). Optional so existing constructions keep
+     * working; when present, a release publishes `order.released` instead of
+     * calling into RWA directly, and payments stops knowing that RWA exists.
+     */
+    private readonly events?: EventPublisher,
   ) {}
 
   async createOrder(
@@ -732,17 +755,81 @@ export class PaymentService {
       },
     });
 
-    // Phase 5: Trigger RWA payout distribution on escrow release
-    if (transition === PaymentTransition.Release && this.rwa) {
-      await this.triggerRwaPayout(order, transition, actorId);
+    // Publish what happened, and let whoever cares react (plane.md §2.3).
+    //
+    // This replaces a direct call into the RWA service. Payments does not know
+    // what a tokenization is; it knows an escrow was released, which is a fact
+    // about payments. The RWA payout subscriber turns that into a collection.
+    //
+    // The fallback below keeps the old direct call alive for constructions that
+    // do not pass a bus (notably existing tests), so the migration does not
+    // change behaviour anywhere that has not opted in.
+    if (
+      transition === PaymentTransition.Release ||
+      transition === PaymentTransition.Refund
+    ) {
+      if (this.events) {
+        await this.publishSettlementFact(order, transition, actorId);
+      } else if (transition === PaymentTransition.Release && this.rwa) {
+        await this.triggerRwaPayout(order, transition, actorId);
+      }
     }
 
     return { order, escrow, transition: persistedTransition };
   }
 
   /**
+   * Publish the fact that an escrow reached a terminal money state.
+   *
+   * Failure here is logged, not thrown: the release or refund already committed
+   * and is the truth, so refusing to return it because the spine was briefly
+   * unavailable would leave the caller believing a settled transition failed.
+   * That is the same trade the old direct call made — except the event is
+   * durable, so a missed publish is recoverable rather than lost.
+   */
+  private async publishSettlementFact(
+    order: OrderDTO,
+    transition: PaymentTransition,
+    actorId: string,
+  ): Promise<void> {
+    const eventType =
+      transition === PaymentTransition.Release
+        ? DomainEventType.OrderReleased
+        : DomainEventType.OrderRefunded;
+
+    try {
+      await this.events?.publish({
+        eventType,
+        entity: EventEntity.Order,
+        entityId: order.id,
+        actor: `user:${actorId}`,
+        // Amounts and opaque ids only — no counterparty identities
+        // (Rules.md §3). A subscriber that needs more reads its own domain.
+        payload: {
+          amount: order.amount.amount,
+          currency: order.amount.currency,
+          status: order.status,
+        },
+        // An order is released at most once, so the order id alone is the
+        // natural key: a retried release converges on the same fact.
+        dedupeKey: dedupeKey(eventType, order.id),
+      });
+    } catch (error) {
+      logger.error(
+        { err: error, orderId: order.id, eventType },
+        "failed to publish order event",
+      );
+    }
+  }
+
+  /**
    * Trigger RWA payout distribution for orders linked to tokenizations.
-   * This is called automatically when an escrow is released (buyer payment confirmed).
+   *
+   * Superseded by the `order.released` subscriber (plane.md §2.3) and retained
+   * only for constructions built without an event bus. New call sites should
+   * publish rather than reach across domains like this.
+   *
+   * @deprecated Use the event spine.
    */
   private async triggerRwaPayout(
     order: OrderDTO,
