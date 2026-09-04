@@ -16,6 +16,9 @@ import { ReconciliationJob } from "./jobs/reconciliation.job.js";
 import { logger } from "./lib/logger.js";
 import { metrics } from "./lib/metrics.js";
 import { LoggingAlertSink } from "./lib/alerts.js";
+import { getRedis } from "./lib/redis.js";
+import { createIdempotencyStore } from "./middleware/idempotency.js";
+import { RedisRateLimitStore } from "./middleware/rate-limit.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.js";
 import { httpMetrics } from "./middleware/metrics.js";
 import { requestId, type RequestWithId } from "./middleware/requestId.js";
@@ -41,7 +44,11 @@ import {
   type IdentityRepository,
 } from "./modules/identity/identity.repository.js";
 import { PgIdentityRepository } from "./modules/identity/pg-identity.repository.js";
-import { InMemoryKycRepository } from "./modules/kyc/kyc.repository.js";
+import {
+  InMemoryKycRepository,
+  type KycRepository,
+} from "./modules/kyc/kyc.repository.js";
+import { PgKycRepository } from "./modules/kyc/pg-kyc.repository.js";
 import { createKycRouter } from "./modules/kyc/kyc.routes.js";
 import {
   DeterministicKycRiskClient,
@@ -121,7 +128,11 @@ import { createTreasuryRouter } from "./modules/treasury/treasury.routes.js";
 import { PositionsService } from "./modules/positions/positions.service.js";
 import { createPositionsRouter } from "./modules/positions/positions.routes.js";
 import { createRwaRouter } from "./modules/rwa/rwa.routes.js";
-import { InMemoryReputationRepository } from "./modules/reputation/reputation.repository.js";
+import {
+  InMemoryReputationRepository,
+  type ReputationRepository,
+} from "./modules/reputation/reputation.repository.js";
+import { PgReputationRepository } from "./modules/reputation/pg-reputation.repository.js";
 import { ReputationService } from "./modules/reputation/reputation.service.js";
 import { createReputationRouter } from "./modules/reputation/reputation.routes.js";
 import {
@@ -201,12 +212,39 @@ export function createApp(): Express {
   );
   app.use(httpMetrics(metrics));
 
+  // ── Cross-instance idempotency and rate limiting (plane.md §4.1) ─────────
+  //
+  // Both were per-process, which is the standing Golden Rule #4 hole: two API
+  // instances each kept their own copy, so a retry that landed on the other
+  // one found nothing stored and re-executed. On a money-mutating endpoint
+  // that is a double spend, and a 300/minute limit behind two instances is
+  // really 600/minute.
+  //
+  // Redis closes both when it is configured. When it is not, each falls back
+  // to its in-memory implementation and the single-instance constraint stands
+  // — announced at boot rather than discovered in production. Failing closed
+  // here would mean an operator who has not yet provisioned Redis cannot run
+  // the platform at all, which trades a known limitation for an outage.
+  const redis = getRedis();
+  if (redis) {
+    logger.info("idempotency/rate-limit: using Redis — limits are global");
+  } else {
+    logger.warn(
+      "idempotency/rate-limit: using in-memory stores — SINGLE INSTANCE ONLY. " +
+        "Set REDIS_URL before running more than one API instance.",
+    );
+  }
+  // One store for every router. A store per router is a store per route group,
+  // so a retry is only recognised by the group that first served it.
+  const idempotencyStore = createIdempotencyStore(redis);
+
   app.use(
     rateLimit({
       windowMs: 60_000,
       limit: 300,
       standardHeaders: true,
       legacyHeaders: false,
+      ...(redis ? { store: new RedisRateLimitStore(redis) } : {}),
     }),
   );
 
@@ -350,10 +388,17 @@ export function createApp(): Express {
       "KYC_RISK_ENGINE=openai but OPENAI_API_KEY is unset; falling back to the AI service client",
     );
   }
+  // Persisted whenever a database is configured (plane.md §4.2, migration
+  // 0022). KYC gates an investor purchase (§3.2), so an in-memory store meant
+  // a deploy silently reset every user to unverified and re-opened every
+  // review a compliance officer had already closed.
+  const kycRepository: KycRepository = usePersistentStore
+    ? new PgKycRepository(getPool())
+    : new InMemoryKycRepository();
   const kyc = new KycService(
     createKycProvider(),
     kycRiskClient,
-    new InMemoryKycRepository(),
+    kycRepository,
     identities,
     audit,
     {
@@ -445,8 +490,15 @@ export function createApp(): Express {
   // Constructed here rather than after RWA because RWA now reads it to score
   // an asset's counterparty (plane.md §3.1). It depends only on a repository
   // and the audit log, so it can sit this early without a cycle.
+  // Persisted for the same reason KYC is (plane.md §4.2): reputation feeds
+  // dispute risk and counterparty scoring at asset verification, so a restart
+  // discarded exactly the history those signals are built from — and a seller
+  // with fifty clean orders read the same as one with none.
+  const reputationRepository: ReputationRepository = usePersistentStore
+    ? new PgReputationRepository(getPool())
+    : new InMemoryReputationRepository();
   const reputationService = new ReputationService(
-    new InMemoryReputationRepository(),
+    reputationRepository,
     audit,
   );
 
@@ -642,22 +694,30 @@ export function createApp(): Express {
     "/api/wallet",
     createWalletBalancesRouter(stellarClient, walletAddresses, bearerVerifier),
   );
-  app.use("/api/kyc", createKycRouter(kyc, bearerVerifier));
+  app.use("/api/kyc", createKycRouter(kyc, bearerVerifier, idempotencyStore));
   // Same instance the RWA payouts write through, so `/api/ledger` reads back
   // the transactions those payouts posted rather than a second, empty store.
-  app.use("/api/ledger", createLedgerRouter(ledgerService, bearerVerifier));
-  app.use("/api/treasury", createTreasuryRouter(treasury, bearerVerifier));
+  app.use("/api/ledger", createLedgerRouter(ledgerService, bearerVerifier, idempotencyStore));
+  app.use("/api/treasury", createTreasuryRouter(treasury, bearerVerifier, idempotencyStore));
   app.use("/api/positions", createPositionsRouter(positions, bearerVerifier));
   app.use(
     "/api/payments",
-    createPaymentRouter(payments, reconciliation, bearerVerifier),
+    createPaymentRouter(payments, reconciliation, bearerVerifier, idempotencyStore),
   );
   app.use(
     "/api/settlement",
-    createSettlementRouter(settlement, settlementReconciliation, bearerVerifier),
+    createSettlementRouter(
+      settlement,
+      settlementReconciliation,
+      bearerVerifier,
+      idempotencyStore,
+    ),
   );
-  app.use("/api/disputes", createDisputeRouter(disputes, bearerVerifier));
-  app.use("/api/rwa", createRwaRouter(rwa, rwaReconciliation, bearerVerifier));
+  app.use(
+    "/api/disputes",
+    createDisputeRouter(disputes, bearerVerifier, idempotencyStore),
+  );
+  app.use("/api/rwa", createRwaRouter(rwa, rwaReconciliation, bearerVerifier, idempotencyStore));
   app.use(
     "/api/reputation",
     createReputationRouter(reputationService, bearerVerifier),

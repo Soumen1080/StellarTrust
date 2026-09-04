@@ -26,6 +26,7 @@ import { requireRole } from "../../middleware/authorization.js";
 import {
   idempotency,
   InMemoryIdempotencyStore,
+  type IdempotencyStore,
 } from "../../middleware/idempotency.js";
 import type { KycService } from "./kyc.service.js";
 
@@ -53,9 +54,10 @@ function requireDevApprovalPassword(
 export function createKycRouter(
   service: KycService,
   bearerVerifier: BearerVerifier,
+  // Injected so every router shares one store (plane.md §4.1).
+  idempotencyStore: IdempotencyStore = new InMemoryIdempotencyStore(),
 ): Router {
   const router = Router();
-  const idempotencyStore = new InMemoryIdempotencyStore();
 
   router.get(
     "/status",

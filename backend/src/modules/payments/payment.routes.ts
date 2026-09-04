@@ -12,6 +12,7 @@ import {
 import {
   idempotency,
   InMemoryIdempotencyStore,
+  type IdempotencyStore,
 } from "../../middleware/idempotency.js";
 import type { ReconciliationJob } from "../../jobs/reconciliation.job.js";
 import type { PaymentService } from "./payment.service.js";
@@ -48,9 +49,9 @@ export function createPaymentRouter(
   service: PaymentService,
   reconciliation: ReconciliationJob,
   verifier?: BearerVerifier,
+  mutations: IdempotencyStore = new InMemoryIdempotencyStore(),
 ): Router {
   const router = Router();
-  const mutations = new InMemoryIdempotencyStore();
 
   router.post(
     "/orders",

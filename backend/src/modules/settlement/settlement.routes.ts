@@ -12,6 +12,7 @@ import {
 import {
   idempotency,
   InMemoryIdempotencyStore,
+  type IdempotencyStore,
 } from "../../middleware/idempotency.js";
 import { CORRIDORS } from "./corridors.js";
 import type { SettlementReconciliationJob } from "./settlement.reconciliation.job.js";
@@ -21,9 +22,9 @@ export function createSettlementRouter(
   service: SettlementService,
   reconciliation: SettlementReconciliationJob,
   verifier?: BearerVerifier,
+  mutations: IdempotencyStore = new InMemoryIdempotencyStore(),
 ): Router {
   const router = Router();
-  const mutations = new InMemoryIdempotencyStore();
 
   // Supported corridors (non-sensitive catalog); still authenticated for parity
   // with the rest of the money surface.

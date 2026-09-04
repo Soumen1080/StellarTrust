@@ -12,15 +12,20 @@ import {
 import {
   idempotency,
   InMemoryIdempotencyStore,
+  type IdempotencyStore,
 } from "../../middleware/idempotency.js";
 import type { DisputeService } from "./dispute.service.js";
 
 export function createDisputeRouter(
   service: DisputeService,
   verifier?: BearerVerifier,
+  // Injected so every router shares one store (plane.md §4.1). A store per
+  // router is a store per *route group*, which means a retry is only
+  // recognised by the group that first served it — and across two API
+  // instances, not even that.
+  mutations: IdempotencyStore = new InMemoryIdempotencyStore(),
 ): Router {
   const router = Router();
-  const mutations = new InMemoryIdempotencyStore();
 
   // Open a dispute against an order (order party only).
   router.post(

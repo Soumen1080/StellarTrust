@@ -18,6 +18,7 @@ import {
 import {
   idempotency,
   InMemoryIdempotencyStore,
+  type IdempotencyStore,
 } from "../../middleware/idempotency.js";
 import type { RwaReconciliationJob } from "./rwa.reconciliation.job.js";
 import type { RwaService } from "./rwa.service.js";
@@ -61,9 +62,9 @@ export function createRwaRouter(
   service: RwaService,
   reconciliation: RwaReconciliationJob,
   verifier?: BearerVerifier,
+  mutations: IdempotencyStore = new InMemoryIdempotencyStore(),
 ): Router {
   const router = Router();
-  const mutations = new InMemoryIdempotencyStore();
 
   // ── Assets ────────────────────────────────────────────────────────────────
 

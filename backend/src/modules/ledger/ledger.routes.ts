@@ -8,6 +8,7 @@ import { requireAuth, type BearerVerifier } from "../../middleware/auth.js";
 import {
   idempotency,
   InMemoryIdempotencyStore,
+  type IdempotencyStore,
 } from "../../middleware/idempotency.js";
 import { InMemoryLedgerRepository } from "./ledger.repository.js";
 import { LedgerService } from "./ledger.service.js";
@@ -15,9 +16,10 @@ import { LedgerService } from "./ledger.service.js";
 export function createLedgerRouter(
   service: LedgerService = new LedgerService(new InMemoryLedgerRepository()),
   verifier?: BearerVerifier,
+  // Injected so every router shares one store (plane.md §4.1).
+  idempotencyStore: IdempotencyStore = new InMemoryIdempotencyStore(),
 ): Router {
   const router = Router();
-  const idempotencyStore = new InMemoryIdempotencyStore();
 
   // Record a balanced double-entry transaction.
   router.post(
