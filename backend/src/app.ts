@@ -144,6 +144,7 @@ import { FeedbackService } from "./modules/feedback/feedback.service.js";
 import { createFeedbackRouter } from "./modules/feedback/feedback.routes.js";
 import { AdminService } from "./modules/admin/admin.service.js";
 import { createAdminRouter } from "./modules/admin/admin.routes.js";
+import { BusinessMetricsJob } from "./modules/admin/business-metrics.job.js";
 import {
   InMemoryPolicyRepository,
   PgPolicyRepository,
@@ -794,6 +795,23 @@ export function createApp(): Express {
     policyRepository,
     audit,
   );
+
+  // The console shows an operator these numbers; this sweep pages someone when
+  // one crosses a threshold, which is what covers the evening the dashboard is
+  // closed (plane.md §4.4). Alerts carry rates and counts only, never amounts
+  // or identities — an alerting pipeline fans out to pagers and chat.
+  const businessMetricsJob = new BusinessMetricsJob(
+    adminService,
+    config.BUSINESS_METRICS_INTERVAL_MS,
+    alerts,
+    metrics,
+    {
+      defaultRateBps: config.BUSINESS_ALERT_DEFAULT_RATE_BPS,
+      disputeRateBps: config.BUSINESS_ALERT_DISPUTE_RATE_BPS,
+      minimumResolvedPositions: config.BUSINESS_ALERT_MIN_RESOLVED,
+    },
+  );
+  app.locals.businessMetricsJob = businessMetricsJob;
 
   app.use(
     "/api/admin",

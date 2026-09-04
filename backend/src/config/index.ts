@@ -209,6 +209,31 @@ const envSchema = z.object({
     .default(300_000),
   RWA_DEFAULT_GRACE_DAYS: z.coerce.number().int().min(0).max(365).default(30),
 
+  // ── Business-metric alerting (plane.md §4.4) ─────────────────────────────
+  // A book goes bad slowly and then all at once, and the failure this guards
+  // against is a rate crossing a threshold with the dashboard closed. The
+  // numbers are credit policy, not code, so they are configurable.
+  BUSINESS_METRICS_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .default(300_000),
+  BUSINESS_ALERT_DEFAULT_RATE_BPS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .default(1_000),
+  BUSINESS_ALERT_DISPUTE_RATE_BPS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .max(10_000)
+    .default(500),
+  // How many positions must have resolved before the default rate is believed.
+  // One default out of one is a 100% rate and no evidence of anything.
+  BUSINESS_ALERT_MIN_RESOLVED: z.coerce.number().int().min(1).default(5),
+
   // ── RWA investor protection (plane.md §3.2) ─────────────────────────────
   // Approximations of the controls a regulator would require, so the
   // architecture is shaped correctly. They are NOT legal compliance and must

@@ -188,6 +188,18 @@ export class MetricsRegistry {
     name: "domain_event_handlers_total",
     help: "Event handler runs, by handler and result (applied|skipped|failed).",
   });
+  // ── Business signals (plane.md §4.4) ──────────────────────────────────────
+  // Everything above says whether the *server* is healthy. These say whether
+  // the lending book is. Rates and counts only — never amounts or identities
+  // (Rules.md §3), since these fan out to whatever scrapes /metrics.
+  readonly businessRateBps = new Gauge({
+    name: "business_rate_bps",
+    help: "Portfolio rates in basis points, by rate (default|dispute).",
+  });
+  readonly businessPositions = new Gauge({
+    name: "business_positions",
+    help: "Position counts, by kind (overdue|resolved|open_disputes).",
+  });
 
   render(): string {
     return [
@@ -199,6 +211,8 @@ export class MetricsRegistry {
       this.rwaLifecycleTransitionsTotal.render(),
       this.domainEventsTotal.render(),
       this.domainEventHandlersTotal.render(),
+      this.businessRateBps.render(),
+      this.businessPositions.render(),
     ].join("\n\n") + "\n";
   }
 }

@@ -3,6 +3,7 @@ import { createApp } from "./app.js";
 import { config } from "./config/index.js";
 import { closePool } from "./db/index.js";
 import { logger } from "./lib/logger.js";
+import { closeRedis } from "./lib/redis.js";
 
 const app = createApp();
 const reconciliationJob = app.locals.reconciliationJob as {
@@ -22,10 +23,15 @@ const rwaLifecycleJob = app.locals.rwaLifecycleJob as {
   start(): void;
   stop(): void;
 };
+const businessMetricsJob = app.locals.businessMetricsJob as {
+  start(): void;
+  stop(): void;
+};
 reconciliationJob.start();
 settlementReconciliationJob.start();
 rwaReconciliationJob.start();
 rwaLifecycleJob.start();
+businessMetricsJob.start();
 
 const server = app.listen(config.PORT, () => {
   logger.info(
@@ -40,8 +46,11 @@ async function shutdown(signal: string): Promise<void> {
   settlementReconciliationJob.stop();
   rwaReconciliationJob.stop();
   rwaLifecycleJob.stop();
+  businessMetricsJob.stop();
   server.close(() => {
-    void closePool().finally(() => process.exit(0));
+    void Promise.allSettled([closePool(), closeRedis()]).finally(() =>
+      process.exit(0),
+    );
   });
   // Force-exit if graceful shutdown stalls.
   setTimeout(() => process.exit(1), 10_000).unref();
