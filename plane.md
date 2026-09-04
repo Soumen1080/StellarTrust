@@ -25,7 +25,7 @@ against impressions. Each is a specific, located defect.
 | D3 | **Settlement is disconnected from escrow.** `SettlementDTO` has no `orderId`. | `shared/src/types` | A cross-border trade cannot actually be paid for through a corridor. The two headline features never touch. |
 | D4 | **Disputes are invisible to RWA.** Zero references to dispute state in the RWA module. | `rwa.service.ts` | A disputed invoice still pays investors in full on release. Investors carry a risk nobody models. |
 | D5 | **No maturity, default, or write-off.** A tokenization can never fail. | `TokenizationStatus` | Every real receivable can go late or bad. Without this there is no risk, so no genuine investment product. |
-| D6 | **No secondary transfer.** Explicitly refused. | `rwa.service.ts:278` | Investors cannot exit before maturity. |
+| D6 | ~~**No secondary transfer.** Explicitly refused.~~ **Closed by §3.3** — holders can top up and sell to each other. | `rwa.service.ts` `transferHolding` | Investors cannot exit before maturity. |
 | D7 | **Asset valuation is self-asserted.** `valuationAmount` is typed by the issuer with no verification, no document, no lien check. | `AssetDTO` | Anyone can tokenize a $10M invoice that does not exist. This is the fraud surface a real platform exists to close. |
 | D8 | **No investor protections at all** — no per-investor cap, no accreditation, no concentration limit, no cooling-off. | RWA module | Regulators require these; their absence is what makes it look like a toy. |
 
@@ -129,94 +129,337 @@ Replace "distribute the whole order amount" with an ordered waterfall:
       "close enough" is not available.
 - [x] Tests: full, partial, late, zero-residual, and zero-collection cases, each
       asserting the legs reconstitute the collection exactly.
-- [ ] **Wire it into `PaymentService.triggerRwaPayout`.** The waterfall exists
-      and is tested but the release hook still distributes the whole order
-      amount. This is the remaining half of defect D2 and the next task.
+- [x] **Wired into `PaymentService.triggerRwaPayout`.** `distributePayout` now
+      runs the collection through `splitCollection` before anyone is paid: only
+      `investorTotal` is distributed pro-rata, and the ledger posts three legs
+      (investors, platform fee, seller residual) against one debit of what was
+      collected. Legs that round to zero are omitted, since the ledger schema
+      rejects a zero-amount entry and a partial collection legitimately leaves
+      the platform and seller nothing. Defect D2 is closed.
+- [x] The on-chain drift check is handed `investorTotal`, not the gross
+      collection: the contract knows unit balances, not the waterfall, so
+      asking it to split the full amount would have compared our shares against
+      a number they were never computed from and failed every payout as drift.
+- [x] Note on the denominator: shares are pro-rata of `totalUnits`, so unsold
+      units' share of the investor leg is simply not paid. The ledger credits
+      the sum of the per-holder records rather than `investorTotal`, so the
+      posting still balances exactly against what was collected.
+- [x] Tests: the §1.2 worked example end to end (832,000 / 10,000 / 158,000 on
+      a 1,000,000 collection), partial collection paying investors only, the
+      repaid transition, and a collection too small to pay anyone. (4 tests in
+      `rwa.test.ts`.)
 
 ### 1.4 🔴 Complete the tokenization lifecycle
-- [ ] Add statuses: `Matured`, `Defaulted`, `WrittenOff`, `Repaid`.
-- [ ] Scheduled job moves `Funded` → `Matured` at `maturityDate`.
-- [ ] Grace window, then `Matured` → `Defaulted`.
-- [ ] Write-off path distributing recovery pro-rata and closing the position.
-- [ ] Tests for each transition and for illegal transitions being refused.
+- [x] Statuses `Matured`, `Defaulted`, `WrittenOff`, `Repaid` (plus
+      `PayoutHeld` for §2.2) were already declared in the shared enum and the
+      Postgres type by migration 0016, but nothing in the backend referenced
+      them. They are now reachable states rather than documentation.
+- [x] `RwaLifecycleJob` (`rwa.lifecycle.job.ts`) moves `Funded` → `Matured` at
+      `maturityDate`, following the `ReconciliationJob` start/stop/run shape and
+      registered in `app.ts`/`index.ts`. The clock is injected, so tests pin a
+      date instead of waiting on timers.
+- [x] Grace window, then `Matured` → `Defaulted`. Configurable via
+      `RWA_DEFAULT_GRACE_DAYS` (default 30 — a credit-policy decision, not a
+      code one). Entering default emits a `warning` alert with counts only, no
+      ids or amounts (Rules.md §3).
+- [x] `RwaService.writeOffTokenization` distributes recovery pro-rata and closes
+      the position. Recovery is split pro-rata *only* — the waterfall's priority
+      exists to pay the platform and seller out of a surplus, and a write-off is
+      the case where none exists; charging a fee against recovered principal
+      would invert the first-loss structure. Operator-initiated, because judging
+      a debt unrecoverable is a credit decision, not a timeout.
+- [x] Both transitions are idempotent (they select on status + clock), and a
+      position with `collectedAt` set is never matured — the payout owns it.
+- [x] Both transitions are published on the event spine as
+      `tokenization.matured` / `tokenization.defaulted` (§2.3). These types were
+      declared in the event vocabulary from the start — §2.3 named
+      `tokenization.matured` as a motivating example — and were published by
+      nothing, which left the lifecycle as the one domain that changed state
+      silently while every other announced its transitions. Payload carries
+      dates, the grace window applied, and the linked order id only: no holder
+      identities, no amounts (Rules.md §3). A spine failure is logged, not
+      thrown — the status change has already committed, and derailing the sweep
+      would strand every remaining position in the run.
+- [x] Interaction with §2.2 checked: the sweep selects only `Funded`/`Matured`,
+      so a position held under `PayoutHeld` for an open dispute is skipped
+      rather than maturing underneath the hold.
+- [x] Tests: each transition, the grace boundary held and crossed, idempotency,
+      a collected position ignored, the refused paths (write-off before default,
+      write-off without the compliance role), both events published with the
+      right actor and payload, no PII in the payload, exactly one fact per
+      transition across repeated sweeps, and the transition still applying when
+      the spine is down. (15 tests in `rwa.lifecycle.test.ts`.)
 
 ---
 
 ## 2. Cross-domain synchronization (the "make it compose" work)
 
 ### 2.1 🔴 Link settlement to escrow orders
-- [ ] Add `orderId: string | null` to `SettlementDTO` + migration.
-- [ ] `POST /api/settlement/orders` accepts an `orderId`; on completion it
-      drives the order's `Deposit` transition instead of the buyer paying twice.
-- [ ] The settlement's credited amount must equal the order amount, or the
-      settlement is rejected before it starts.
-- [ ] One ledger transaction spans both legs so the corridor fee and the escrow
-      deposit reconcile together.
-- [ ] Tests: a full corridor-funded escrow order, and a mismatch refused.
+- [x] `orderId: string | null` on `SettlementDTO`, plus migration `0017`. The
+      column carries a FK to `orders` and a **partial** unique index, so the
+      ordinary settlement (no order) is unconstrained while a second attempt to
+      fund an already-funded order fails at the database rather than on a read.
+- [x] `POST /api/settlement` accepts an optional `orderId`; on completion it
+      publishes `settlement.completed`, and the `payments.deposit-on-settlement`
+      subscriber drives the order's `Deposit`. The buyer pays the corridor once
+      instead of paying the corridor and then the escrow.
+- [x] The credited amount must equal the order amount **exactly**, checked
+      before the first leg runs — a corridor that has already moved money and
+      only then discovers it cannot fund the order has left the user paying for
+      nothing. Currency mismatch, non-buyer, unknown order, and already-funded
+      are all refused at the same point.
+- [ ] One ledger transaction spanning both legs. Not done: the settlement legs
+      and the escrow deposit still post as separate transactions. Spanning them
+      needs a cross-module transaction boundary that does not exist yet, and
+      forcing one through the event handler would make the deposit roll back a
+      completed corridor payout. Deferred with §4.2/§4.3, where the transaction
+      boundary work belongs.
+- [x] Tests: the full corridor-funded order (accepted → deposited with no second
+      payment), the link recorded both ways, an ordinary orderless settlement
+      untouched, and five refusal paths each asserting no settlement was created.
+      (8 tests in `settlement-order.test.ts`.)
 
 ### 2.2 🔴 Make disputes gate RWA payouts
-- [ ] `RwaService.distributePayout` refuses while an open dispute exists on the
-      linked order.
-- [ ] Opening a dispute on a tokenization-linked order flips it to
-      `PayoutHeld` and notifies holders.
-- [ ] Dispute resolved in the buyer's favour (refund) → tokenization moves to
-      `Defaulted`, triggering the recovery path in §1.4 rather than paying out.
-- [ ] Dispute resolved in the seller's favour → payout resumes automatically.
-- [ ] Tests: each of the three outcomes, asserting no payout escapes during a
-      held dispute.
+- [x] `distributePayout` refuses on **two** independent checks: the durable
+      `PayoutHeld` status (survives a restart) and a live `DisputeReader` read
+      (catches the window where a dispute was filed but its event has not been
+      handled). Either alone leaves a gap through which money reaches investors
+      who may have to give it back.
+- [x] `dispute.opened` flips a linked `Active`/`Funded` tokenization to
+      `PayoutHeld`. Notification is left to §3's holder-comms work; the status is
+      what the holder sees and what the payout refuses on.
+- [x] Resolved for the buyer (refund) → `Defaulted`, which routes into the §1.4
+      write-off/recovery path rather than paying a waterfall on money that went
+      back to the buyer.
+- [x] Resolved for the seller → the hold lifts to `Funded` and the payout
+      resumes. Note the real sequence: resolving for the seller auto-executes the
+      release, so the position passes through `Funded` and lands on `Repaid` in
+      one go — `Funded` is a state it transits, not one it rests in.
+- [x] Tests: all three outcomes plus the acceptance condition — a full
+      dispute-and-refund cycle distributing **zero** payouts. (7 tests in
+      `cross-domain.test.ts`, wired with real services exactly as `app.ts` does.)
 
 ### 2.3 🟠 One event spine across the four domains
-- [ ] Introduce a `DomainEvent` table + append helper (order.released,
-      dispute.opened, settlement.completed, tokenization.matured, …).
-- [ ] Each module publishes; subscribers react. Replaces today's direct service
-      call from payments into RWA, which is why the coupling is one-way.
-- [ ] Handlers are idempotent and retried with backoff; failures are visible in
-      `/metrics`, not swallowed in a log line.
-- [ ] Tests: a replayed event produces no second effect.
+- [x] `domain_events` (append-only, unique `dedupe_key`) and
+      `domain_event_handled` (unique on `(event_id, handler)`) in migration
+      `0017`, with in-memory and Postgres repositories. Both idempotency
+      guarantees live in the **database**, not a convention: two API instances
+      racing the same publish or handler are settled by a unique index, which is
+      what Golden Rule #4 actually asks for.
+- [x] Event types and dedupe-key construction are centralised in
+      `event.types.ts` — a hand-typed event string is a subscriber that silently
+      never fires.
+- [x] `PaymentService.triggerRwaPayout` is superseded. Payments publishes
+      `order.released`; RWA subscribes. Payments no longer imports RWA to react
+      to its own state change. The old direct call is retained only as a
+      fallback for constructions built without a bus, and is marked deprecated.
+- [x] Handlers claim **before** running, retry with exponential backoff, and a
+      handler that exhausts its attempts is recorded and counted in
+      `domain_event_handlers_total{result="failed"}` rather than thrown back at
+      a publisher whose own work already succeeded. The claim-then-run ordering
+      is deliberate: between "possibly skipped, visibly" and "possibly
+      duplicated, silently", only the first is safe when the handler moves money.
+- [x] A durable re-dispatch loop for events whose handler never ran is **not**
+      built — that is a queue, and belongs with the infrastructure work. The
+      schema is shaped for it (`domain_events` left-joined against
+      `domain_event_handled`).
+- [x] Tests: the replay guarantee at both levels — a redelivered event runs a
+      handler once (12 tests in `event.test.ts`), and a redelivered
+      `order.released` distributes exactly one payout through the real wiring
+      (`cross-domain.test.ts`).
 
 ### 2.4 🟠 Unified position view
-- [ ] `GET /api/positions` — one authenticated call returning the caller's
-      orders, settlements, disputes, and holdings with their linkage.
-- [ ] Frontend dashboard consumes it so a user sees one story instead of four
-      disconnected consoles.
+- [x] `GET /api/positions` returns the caller's orders, settlements, disputes,
+      and holdings, plus a `links` block keyed by order id. The links are the
+      point: which settlement funded which order, which tokenizations that
+      order's release pays out. Those are joins the client cannot compute from
+      the four list endpoints. Caller-scoped with no compliance variant — a
+      single endpoint returning any user's whole financial position would be a
+      wider grant than any individual domain intends.
+- [x] Frontend `LinkedPositions` on the dashboard renders only orders that
+      actually reach into another domain; unlinked ones are already in the
+      orders table above, and repeating them would bury the linked ones.
+- [x] Tests: 4 in `positions.test.ts` covering the link assembly, an unlinked
+      order, and per-order isolation when a user holds several.
 
 ---
 
 ## 3. Making the RWA section a real tokenization product
 
 ### 3.1 🔴 Asset verification before tokenization
-- [ ] Require ≥1 supporting document reference per asset (invoice PDF, bill of
-      lading, appraisal) stored as an opaque reference.
-- [ ] Verification workflow: `Unverified → UnderReview → Verified | Rejected`.
-      Only a `Verified` asset may be tokenized.
-- [ ] Duplicate-asset guard: the same `assetRef` cannot be tokenized twice while
-      an active tokenization exists — this is double-pledging, the classic
-      invoice-financing fraud.
-- [ ] Counterparty (the invoice debtor) recorded and reputation-scored.
-- [ ] Tests: unverified asset refused; double-pledge refused.
+- [x] `documents` on `AssetDTO` — opaque references only (`docRef`, `docType`,
+      a hex SHA-256, `uploadedAt`). The digest is what makes a document swapped
+      after approval detectable. Attachable over several calls before review
+      and frozen once a decision lands: adding evidence to an approved asset
+      would change what was approved without anyone re-reading it.
+- [x] Workflow `Unverified → UnderReview → Verified | Rejected`
+      (`AssetVerificationStatus`, migration `0018`). Only `Verified` may be
+      tokenized, and the gate is in `createTokenization` rather than at
+      purchase — an unverified deal never reaches an investor at all, so there
+      is no window in which one can subscribe to something that later proves to
+      have no evidence behind it. Submitting requires ≥1 document, and a
+      counterparty when the asset is an invoice; deciding requires the
+      `compliance` role (the issuer included — self-verification is the gate's
+      whole failure mode) and a stated reason on a rejection.
+- [x] Double-pledge guard matching `assetRef` **across owners**. That is the
+      point: the unique constraint on `(owner_user_id, asset_ref)` cannot see
+      the same receivable filed under a second account, which is how the fraud
+      is actually done. Checked at verification *and* again at tokenization,
+      because a competing pledge can be filed in between. `LIVE_PLEDGE_STATUSES`
+      names which statuses constitute an outstanding claim — `Repaid`,
+      `Distributed`, `Cancelled` and `WrittenOff` are finished, so the
+      receivable is legitimately financeable again.
+- [x] Counterparty recorded (`ref`, `name`, advisory `reputationScore`) and
+      scored at verification through a narrow `CounterpartyReputationReader`
+      port. Advisory only, never a gate: a counterparty with no history scores
+      null, and refusing those would exclude exactly the new sellers the
+      platform exists to finance. A scoring outage logs and leaves the score
+      unset rather than blocking a decision that is otherwise ready.
+- [x] Tests: both acceptance conditions (unverified refused, double-pledge
+      refused) plus the whole workflow, the review queue, the audit trail
+      carrying document *references* and never contents, and the conflicting
+      tokenization id withheld from the competing issuer while compliance sees
+      it in the audit row. (24 tests in `rwa.verification.test.ts`.)
+- [x] Existing assets backfill as `unverified`, not grandfathered as verified —
+      nothing has ever been reviewed, and a migration should not assert
+      otherwise. An already-tokenized asset therefore reads unverified while
+      its tokenization keeps running untouched; the gate is at creation, so no
+      live position is stranded.
 
 ### 3.2 🟠 Investor protection and compliance
-- [ ] Investor must be KYC-verified before any purchase (today it is not
-      checked in the RWA path).
-- [ ] Per-investor concentration limit (max % of one tokenization).
-- [ ] Per-investor exposure cap across all tokenizations.
-- [ ] Minimum ticket size and unit granularity.
-- [ ] Cooling-off window during which a purchase can be cancelled.
-- [ ] Tests for each limit at its boundary.
+- [x] KYC checked in the RWA path via a narrow `InvestorKycReader` port, at
+      `purchaseUnits` rather than trusted from onboarding — the purchase is the
+      money-moving step and the only place that can refuse.
+- [x] Per-investor concentration limit (`RWA_MAX_CONCENTRATION_BPS`, default
+      2500). Compared by cross-multiplication rather than division, so a limit
+      like 33.33% applies exactly instead of rounding in the investor's favour.
+- [x] Per-investor exposure cap across all tokenizations
+      (`RWA_MAX_INVESTOR_EXPOSURE`); zero disables it.
+- [x] Minimum ticket (`RWA_MIN_TICKET_AMOUNT`) and unit granularity
+      (`RWA_UNIT_GRANULARITY`). All the arithmetic is `bigint`: a cap computed
+      in floating point is a cap that rounding can step over.
+- [x] Cooling-off window (`RWA_COOLING_OFF_HOURS`, default 24).
+      `cancelPurchase` posts a **reversing** ledger transaction rather than
+      deleting the original — the ledger is append-only and is the system of
+      record (Golden Rule #1), so an unwound subscription is two facts, not the
+      absence of one. The two net to zero on every account they touch.
+- [x] **Constraint discovered while building it:** the token contract's
+      `transfer` calls `from.require_auth()`, so units already delivered to an
+      investor can only be moved back by that investor — no custody mode gives
+      the platform their key. A cancellation is therefore refused once a
+      holding is `Settled`, which under platform custody is immediate. The
+      window is genuinely exitable under issuer custody, where delivery waits
+      for the issuer's signature. The honest exit for a delivered position is
+      §3.3, not a refund this side cannot enforce.
+- [x] Every limit runs *before* the ledger posting, so a refused purchase has
+      moved no money and left nothing to unwind.
+- [x] Limits default to `UNRESTRICTED_INVESTOR_LIMITS` when not wired.
+      Deliberate: a construction that forgot to pass them keeps its old
+      behaviour and its tests keep meaning what they meant, while `app.ts` — the
+      only wiring facing real users — passes the configured ones. Defaulting to
+      the strict production numbers would silently change what a dozen existing
+      tests assert about arithmetic unrelated to §3.2.
+- [x] Tests: each limit at its boundary — exactly at the cap allowed, one over
+      refused — plus the non-dividing concentration case, per-investor rather
+      than aggregate scoping, the reversal netting to zero, both ends of the
+      cooling-off window, and the settled-units refusal.
+      (25 tests in `rwa.protection.test.ts`.)
+- [ ] Not built: an insufficient-funds check at purchase. Same blocker as §1.1
+      — there are no per-user ledger accounts, so there is no balance to check.
+      Blocked on §4.5.
 
 ### 3.3 🟠 Secondary market (replaces the D6 refusal)
-- [ ] Allow an existing holder to increase their position.
-- [ ] Holder-to-holder transfer at an agreed price, honouring the authorization
-      allowlist and the frozen flag.
-- [ ] Ledger posts both legs; on-chain transfer follows the custody mode.
-- [ ] Tests: transfer to an unauthorized holder refused; frozen token refused.
+- [x] An existing holder can add to their position. `purchaseUnits` used to
+      refuse outright ("Secondary purchases not yet supported"); it now
+      increases the existing row, since the holding is unique on
+      `(tokenization, holder)`. A top-up into a *different* address is still
+      refused — the row is also unique on `(tokenization, address)` and the
+      on-chain balance lives at one account, so allowing it would split a
+      position the record claims is one.
+- [x] **The ledger reference had to change with it.** It keyed on the units
+      being bought, so "buy 10, then buy 10 more" produced the same
+      `rwa-subscription:{tok}:{investor}:10` reference — and the conflict path
+      would have recovered the first posting and handed over the second 10
+      units free. It now keys on the *resulting* total, which keeps each step
+      distinct while a retry of any step still converges.
+- [x] Concentration is measured on the **resulting** position, not the
+      increment. Otherwise an investor walks past the cap in small steps, which
+      is the one thing a concentration cap exists to stop.
+- [x] `RwaService.transferHolding` — holder-to-holder sale at a price the
+      parties agree. Not derived from the financing terms: an invoice near
+      maturity is worth more than one just issued, and a disputed one less. The
+      platform records the trade; it does not price it.
+- [x] Honours the authorization allowlist (checked via `gateway.isAuthorized`
+      *before* any money moves, since the contract would reject the transfer
+      anyway) and the frozen flag. Also refuses a sale of undelivered units, a
+      sale to oneself, and a sale once the position is paying out, held under
+      dispute, or collected — units changing hands around a distribution makes
+      it ambiguous who the payout belongs to.
+- [x] The buyer is subject to the full §3.2 protection set. A secondary market
+      that skipped it would be the way around every limit the platform has.
+- [x] Ledger posts both legs through a new `rwa_secondary_seller_payable`
+      account (migration `0019`), deliberately *not*
+      `rwa_issuer_proceeds_payable`: the issuer is not party to the trade, and
+      crediting them would overstate what the platform owes them. Cost basis
+      moves with the units pro-rata, so the seller's remainder is not
+      overstated and the buyer's basis is what they actually paid.
+- [x] **On-chain leg is the seller's to sign, and that is the contract's rule
+      not a choice.** `transfer` calls `from.require_auth()`, so the platform
+      can only move units it is itself the `from` for — which it never is on a
+      holder-to-holder trade. Same constraint §3.2 hit on cooling-off. The
+      records are the platform's account of the trade and the reconciliation
+      job surfaces a chain that has not caught up.
+- [x] **Bug found and fixed while building this.** `InMemoryRwaRepository`
+      *accumulated* `units_sold` on insert while the 0006 `sync_units_sold`
+      trigger *recomputes* it from the surviving rows. Invisible until units
+      could move between holders — a secondary trade issues nothing, so the
+      sold total must not change, but the in-memory adapter counted the same
+      units twice. It also meant the §3.2 cooling-off cancellation would have
+      drifted `units_sold` differently under Postgres than in every test. Both
+      now recompute (Rules.md §2: a deterministic adapter must behave exactly
+      as the real one).
+- [x] Tests: both acceptance conditions (unauthorized holder refused, frozen
+      token refused) plus top-up arithmetic, the reference-id collision, basis
+      apportionment, `units_sold` staying put across a trade, and every
+      refusal. (24 tests in `rwa.secondary.test.ts`.)
 
 ### 3.4 🟠 Risk surfacing in the UI
-- [ ] Every tokenization card shows: advance rate, yield, maturity, days
-      remaining, issuer reputation, and dispute state.
-- [ ] Explicit risk disclosure before the purchase confirm step.
-- [ ] Portfolio shows accrued yield, overdue positions, and realized losses —
-      not just "total invested".
+- [x] `TokenizationRiskDTO` computed server-side and carried on **both** the
+      details response and the *list* response, keyed by id. On the list
+      because the marketplace renders every open deal at once, and a detail
+      fetch per card is how a risk disclosure ends up quietly dropped for being
+      slow. Keyed rather than positional so a client that filters or reorders
+      cannot pair a card with another deal's risk.
+- [x] Every card shows advance rate, yield, maturity, days remaining, issuer
+      reputation, projected yield, and the debtor — plus loud banners for the
+      two states that change the decision: disputed and overdue.
+      `daysRemaining` is deliberately **signed**; `daysBetween` floors at zero,
+      which would erase exactly the overdue case the field exists to surface.
+- [x] The dispute read is live rather than inferred from `PayoutHeld`, which is
+      only set once the dispute event has been handled — an investor about to
+      buy needs to know about a dispute filed a moment ago. A reader outage
+      falls back to the durable status rather than failing the marketplace; the
+      payout path keeps its own two independent checks (§2.2).
+- [x] Risk disclosure before the confirm step: entering an amount opens the
+      disclosure and only a second click buys. Blunt about how the money does
+      not come back — a disclosure listing only upside is marketing.
+- [x] Portfolio carries accrued yield, overdue count, and realized loss per
+      position and in total. Accrual stops once a position has paid out (the
+      payout record is then the truth, and continuing to accrue double-counts),
+      and a loss is realized only on write-off — while open, a shortfall is a
+      risk, not a loss.
+- [x] **Bug found and fixed while building this.** `writeOffTokenization`
+      posted the recovery to the ledger but created **no distribution and no
+      payout records**. The ledger knew the platform owed 30,000 and nothing
+      recorded which holders it was owed to — so "invested less received"
+      reported the *whole* investment as lost even when most of it had come
+      back. The pro-rata shares were already computed to split the posting;
+      they simply were not written down.
+- [x] Tests: 15 in `rwa.risk.test.ts` covering the terms, the signed
+      days-remaining, overdue vs. collected-late, the live dispute read and its
+      outage fallback, accrual stopping at payout, loss realized only on
+      write-off, recovery netted against it, and payouts attributed to the
+      position that earned them.
 
 ---
 
@@ -285,8 +528,8 @@ Do them in this order; later work depends on earlier work.
 | **1** | §1.1, §1.2, §1.3 | Without money movement and correct economics, everything above it is decoration. |
 | **2** | §1.4, §2.2, §3.1 | Risk and fraud controls — what makes it a real product rather than a marketplace of assertions. |
 | **3** | §2.1, §2.3, §2.4 | Composition across domains. |
-| **4** | §3.2, §3.3, §4.1, §4.2, §4.5 | Compliance, liquidity, per-user balances, and the durability gaps. |
-| **5** | §3.4, §4.3, §4.4, §4.6 | Surfacing and hardening. |
+| **4** | ~~§3.2~~, ~~§3.3~~ (both done early with §3.1 — all three touch `purchaseUnits`, and splitting them would have meant three passes over the same method), §4.1, §4.2, §4.5 | Compliance, liquidity, per-user balances, and the durability gaps. |
+| **5** | ~~§3.4~~ (done with §3.3 — the secondary market gave the portfolio a second cost basis to show, so surfacing it separately would have meant revisiting the same panel), §4.3, §4.4, §4.6 | Surfacing and hardening. |
 
 ---
 

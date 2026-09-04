@@ -161,6 +161,18 @@ export class MetricsRegistry {
     name: "alerts_total",
     help: "Alerts emitted, by severity and source.",
   });
+  readonly rwaLifecycleTransitionsTotal = new Counter({
+    name: "rwa_lifecycle_transitions_total",
+    help: "RWA lifecycle transitions applied, by transition (matured|defaulted).",
+  });
+  readonly domainEventsTotal = new Counter({
+    name: "domain_events_total",
+    help: "Domain events published, by event type.",
+  });
+  readonly domainEventHandlersTotal = new Counter({
+    name: "domain_event_handlers_total",
+    help: "Event handler runs, by handler and result (applied|skipped|failed).",
+  });
 
   render(): string {
     return [
@@ -169,6 +181,9 @@ export class MetricsRegistry {
       this.reconciliationUnresolved.render(),
       this.reconciliationRunsTotal.render(),
       this.alertsTotal.render(),
+      this.rwaLifecycleTransitionsTotal.render(),
+      this.domainEventsTotal.render(),
+      this.domainEventHandlersTotal.render(),
     ].join("\n\n") + "\n";
   }
 }

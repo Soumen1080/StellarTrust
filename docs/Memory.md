@@ -27,17 +27,22 @@
   real users, a real KMS signer, Redis-backed idempotency, live anchors, an
   independent security audit, and MSB licensing.
 
-### Verified state (2026-09-03 — re-measured, not assumed)
+### Verified state (2026-09-04 — re-measured, not assumed)
 
 | Check | Result |
 |---|---|
-| `contracts` — `cargo test` | ✅ **27 pass** (escrow 9, rwa_token 18) |
-| `backend` — `vitest run` | ✅ **257 pass**, 26 files, 0 failures |
-| `frontend` — `tsc --noEmit` | ✅ clean |
+| `contracts` — `cargo test` | ✅ **27 pass** (escrow 9, rwa_token 18) — last measured 2026-09-03 |
+| `backend` — `vitest run` | ✅ **439 pass**, 36 files, 0 failures |
+| `backend` — `tsc --noEmit`, `eslint src` | ✅ clean |
+| `frontend` — `tsc --noEmit`, `eslint .`, `next build` | ✅ clean (1 pre-existing warning in `EscrowDashboard.tsx`) |
 | `ai` — pytest | ⚠️ CI-only (native wheels blocked on this machine), 6 tests |
 | Database invariant tests (psql) | ⚠️ CI-only, 2 smoke tests |
 
-**Total across suites: 292 tests.**
+**Total across suites: 474 tests.**
+
+> The 292 figure in `README.md` is a captured run from 2026-08-27 and is now
+> stale; it is a transcript of that run, so refreshing it means re-capturing
+> the output rather than editing the number.
 
 - **Repo state:** All portions present. Postgres repositories exist and are used
   when `DATABASE_URL` is set for: identity, auth, audit, ledger, payments,
@@ -65,12 +70,16 @@
 
 ## 2. Current Focus
 
-- **Currently working on:** documentation accuracy pass — every `.md` rewritten
-  against the actual codebase (2026-09-03).
-- **Immediately next (code):** Redis-backed idempotency — the last place a
+- **Currently working on:** `plane.md` §3 is **complete** — §3.1 verification,
+  §3.2 investor protection, §3.3 secondary market, and §3.4 risk surfacing all
+  landed 2026-09-04. The RWA section is now a real tokenization product:
+  evidence is reviewed, investors are protected and can exit, and the risk they
+  carry is on the screen.
+- **Immediately next (code):** §4.1 Redis-backed idempotency — the last place a
   golden rule (#4) is aspirational rather than enforced in a multi-instance
-  deployment. Then Postgres repositories for kyc and reputation, the last two
-  domains that lose state on restart.
+  deployment. Then §4.5 per-user ledger accounts, which is the standing blocker
+  on the insufficient-funds check in §1.1 and §3.2, and Postgres repositories
+  for kyc and reputation, the last two domains that lose state on restart.
 - **Blocked on you (operational):** run a real testnet order end-to-end with
   `ESCROW_GATEWAY=soroban-rpc` so a live contract instance ID and transaction
   hash exist to record; onboard 10+ real wallet users. See `SUBMISSION_TODO.md`.
@@ -78,6 +87,63 @@
 ---
 
 ## 3. Recent Work
+
+### RWA secondary market and risk surfacing (plane.md §3.3, §3.4 — most recent)
+
+Closes finding D6. An investor could enter a position and never leave it, and
+could not add to one they liked.
+
+- **Top-ups and holder-to-holder sales.** `purchaseUnits` increases an existing
+  holding instead of refusing; `transferHolding` sells units to another holder
+  at a price the two parties agree — not derived from the financing terms,
+  because an invoice near maturity is worth more than one just issued. Honours
+  the authorization allowlist and the frozen flag, and refuses a sale of
+  undelivered units or one around a running distribution.
+- **The on-chain leg is the seller's to sign.** `transfer` calls
+  `from.require_auth()`, so the platform can only move units it is the `from`
+  for — the same contract constraint §3.2 hit on cooling-off cancellation.
+- **Risk on every card.** Advance rate, yield, maturity, signed days remaining,
+  issuer reputation, projected yield, debtor, and dispute state — computed
+  server-side and carried on the *list* response so the marketplace does not
+  need a fetch per card. Plus an explicit disclosure before the confirm step,
+  and a portfolio that shows accrued yield, overdue positions, and realized
+  losses rather than only "total invested".
+- **Two latent bugs found by the new arithmetic.** `InMemoryRwaRepository`
+  accumulated `units_sold` while the Postgres trigger recomputes it — harmless
+  until units could move between holders, and it meant the §3.2 cancellation
+  would have drifted differently in production than in every test.
+  `writeOffTokenization` posted recovery to the ledger but wrote no payout
+  records, so a written-off position reported the whole investment as lost even
+  when most of it had been recovered.
+- 39 new tests (439 total, was 400).
+
+### RWA asset verification and investor protection (plane.md §3.1, §3.2)
+
+Closes finding D7 and D8. An asset's valuation used to be whatever the issuer
+typed: no document behind it, no review, and no check that the same receivable
+was not already financed elsewhere.
+
+- **Verification workflow.** `Unverified → UnderReview → Verified | Rejected`
+  on `assets` (migration `0018`). Only a `Verified` asset may be tokenized, and
+  the gate sits at `createTokenization` — an unverified deal never reaches an
+  investor, so nobody can subscribe to something later found to have no
+  evidence. Documents are opaque references with a SHA-256, never files.
+  Deciding requires the `compliance` role, the issuer included.
+- **Double-pledge guard.** Matches `assetRef` *across owners*, because the
+  unique constraint on `(owner_user_id, asset_ref)` cannot see the same invoice
+  filed under a second account — which is how the fraud is actually done.
+  Checked at verification and again at tokenization, since a competing pledge
+  can appear in between.
+- **Investor limits.** KYC, concentration, exposure, minimum ticket, unit
+  granularity, and a cooling-off window, all configurable and all `bigint`.
+  Every check runs before the ledger posting, so a refusal moves no money.
+- **Cooling-off has a hard boundary the contract sets, not policy.**
+  `transfer` calls `from.require_auth()`, so delivered units can only be
+  returned by their holder — no custody mode gives the platform that key. A
+  cancellation is refused once a holding is `Settled` (immediate under platform
+  custody); the window is genuinely usable under issuer custody, where delivery
+  waits on the issuer's signature.
+- 49 new tests (400 total, was 351).
 
 ### Product feedback wall (Phase 6, most recent)
 A public, in-app feedback surface — not a form link.
@@ -213,6 +279,20 @@ issuer's to arm. The RWA reconciliation job reports each divergence.
 | Blank env vars mean "unset" | `FOO=` in a `.env` and an empty hosting-dashboard field both mean "not configured" to a human, but arrive as `""` and fail a format check instead of falling through to `.optional()`. |
 | Feedback contact fields stored, never returned | The wall is public; email and wallet are for follow-up only. Enforced in the service *and* by row-level security. |
 | Forward-only migrations, never edited after landing | Repairs ship as new numbered migrations (`0014`, `0015`), not edits to history. |
+| Existing assets backfill as `unverified`, not verified | Nothing has ever been reviewed, so marking those rows verified would be a lie told by a migration. An already-tokenized asset reads unverified while its tokenization runs on untouched — the gate is at creation, so no live position is stranded. |
+| The double-pledge check matches `assetRef` across owners | The classic invoice-financing fraud is the same receivable financed twice under two accounts. A per-owner unique constraint cannot see it. |
+| Verification is refused at tokenization, not at purchase | Refusing later would leave a window in which an investor could subscribe to a deal that then fails review. The unverified deal never becomes investable at all. |
+| A cooling-off cancellation cannot reclaim delivered units | The token contract requires `from.require_auth()`, so only the holder can move their own units back. Refusing a `Settled` holding is the contract's constraint surfaced honestly; the exit for a delivered position is the secondary market (§3.3). |
+| A cancellation posts a reversal, never deletes the subscription | The ledger is append-only and is the system of record (Golden Rule #1). An unwound subscription is two facts — it happened, and it was reversed. |
+| Investor limits default to unrestricted when unwired | A construction that forgot to pass them keeps its prior behaviour; only `app.ts` passes the configured numbers. Defaulting to production limits would silently change what existing tests assert about unrelated arithmetic. |
+| A secondary trade credits `rwa_secondary_seller_payable`, not the issuer's payable | The issuer is not party to a holder-to-holder trade. Crediting their proceeds account would overstate what the platform owes them for a sale they had no part in. |
+| A secondary price is agreed by the parties, never derived | An invoice near maturity is worth more than one just issued, and a disputed one less. The platform records the trade; it does not price or guarantee it. |
+| The subscription ledger reference keys on the resulting unit total, not the increment | Once top-ups are possible, "buy 10 then 10 more" would build the same reference twice and the conflict path would hand over the second 10 free. The running total keeps each step distinct while a retry still converges. |
+| Concentration is measured on the resulting position | Checking only the increment lets an investor walk past the cap in small steps, which is the one thing a concentration cap exists to stop. |
+| `daysRemaining` is signed, not floored at zero | `daysBetween` floors, which would erase exactly the overdue case the field exists to surface. |
+| Risk is carried on the list response, keyed by id | The marketplace renders every open deal at once; a detail fetch per card is how a risk disclosure ends up dropped for being slow. Keyed rather than positional so filtering cannot pair a card with another deal's risk. |
+| An unrealized shortfall is not a realized loss | While a position is open a shortfall is a risk. Reporting it as a loss puts a number on the screen that is not yet true; it is realized only on write-off. |
+| Counterparty reputation is advisory, never a gate | A counterparty with no history scores null, and refusing those would exclude the new sellers the platform exists to finance. |
 
 ---
 
@@ -220,6 +300,8 @@ issuer's to arm. The RWA reconciliation job reports each divergence.
 
 | Date | Change |
 |---|---|
+| 2026-09-04 | RWA secondary market and risk surfacing (plane.md §3.3, §3.4; migration `0019`). |
+| 2026-09-04 | RWA asset verification and investor protection (plane.md §3.1, §3.2; migration `0018`). |
 | 2026-09-03 | Full documentation accuracy pass — every `.md` rewritten against the codebase. |
 | 2026-09-03 | Removed the account/verification link from the primary nav; the CTA button remains the path to `/kyc`. |
 | 2026-08-27 | README updated with verified test count (292) and demo video link. |

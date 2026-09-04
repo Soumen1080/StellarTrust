@@ -609,6 +609,12 @@ export interface SettlementQuoteDTO {
 export interface SettlementExecuteInput {
   quoteId: string;
   /**
+   * Escrow order this settlement funds (plane.md §2.1). When set, the
+   * settlement's completion drives the order's deposit rather than the buyer
+   * paying the corridor and then the escrow separately.
+   */
+  orderId?: string;
+  /**
    * Beneficiary handle for the quoted rail (UPI ID, IFSC account, IBAN, ABA
    * account, NUBAN). Validated against the scheme's own checksums; only a
    * masked form and a fingerprint are persisted.
@@ -697,6 +703,11 @@ export interface SettlementDTO {
   payout: SettlementPayoutDTO;
   /** Remittance memo (falls back to the masked handle). Never a raw account. */
   destinationReference: string;
+  /**
+   * Escrow order this settlement funds, if any (plane.md §2.1). At most one
+   * settlement may fund a given order, enforced by a partial unique index.
+   */
+  orderId: string | null;
   /** Set when the settlement reaches a terminal state. */
   completedAt: string | null;
   /** Why the settlement failed, when it did. */
@@ -753,8 +764,69 @@ export interface AssetDTO {
   valuationCurrency: CurrencyCode;
   /** Opaque metadata references (documents, appraisals). Never raw content. */
   metadata?: Record<string, unknown>;
+
+  // ── Verification (plane.md §3.1) ────────────────────────────────────────
+  // A valuation is an assertion until someone has looked at the evidence
+  // behind it. These carry that review; only a `Verified` asset may be
+  // tokenized.
+  verificationStatus: import("../constants/index.js").AssetVerificationStatus;
+  /**
+   * Supporting evidence: opaque references only (a storage key, a document
+   * hash), never the document itself and never its contents. At least one is
+   * required to submit an asset for review.
+   */
+  documents: AssetDocumentDTO[];
+  /**
+   * The party who owes on this asset — an invoice debtor, a warehouse
+   * operator. Recorded because the credit risk an investor takes is the
+   * counterparty's, not the issuer's.
+   */
+  counterparty: AssetCounterpartyDTO | null;
+  /** Who decided, and why. Null until the asset leaves `UnderReview`. */
+  verifiedByUserId: string | null;
+  verifiedAt: string | null;
+  /** Reviewer's stated reason. Present on a rejection, optional otherwise. */
+  verificationNote: string | null;
+
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * A reference to supporting evidence for an asset.
+ *
+ * Deliberately a *reference*: the platform records that a document exists,
+ * its kind, and a digest that proves the reviewed file is the stored one. The
+ * file itself lives in object storage, and its contents never enter the
+ * database or a log (Rules.md §3).
+ */
+export interface AssetDocumentDTO {
+  /** Opaque storage reference, e.g. "s3://assets/inv-001.pdf". */
+  docRef: string;
+  /** What kind of evidence this is, e.g. "invoice", "bill_of_lading". */
+  docType: string;
+  /** Hex SHA-256 of the file, so a swapped document is detectable. */
+  sha256: string | null;
+  uploadedAt: string;
+}
+
+/**
+ * The debtor on a tokenized receivable.
+ *
+ * `ref` is an opaque business identifier, never PII: the platform needs to
+ * recognise that two invoices name the same debtor without storing who they
+ * are.
+ */
+export interface AssetCounterpartyDTO {
+  /** Opaque counterparty reference, e.g. "counterparty:ACME-LTD". */
+  ref: string;
+  /** Trading name, for display. */
+  name: string;
+  /**
+   * Advisory credit score in [0, 100], or null when the counterparty has no
+   * history. Surfaced to investors; never a gate on its own.
+   */
+  reputationScore: number | null;
 }
 
 /** An on-chain RWA token contract representing fractional ownership. */
@@ -866,6 +938,28 @@ export interface CreateAssetInput {
   valuationAmount: MinorUnitAmount;
   valuationCurrency: CurrencyCode;
   metadata?: Record<string, unknown>;
+  /** Optional at creation; at least one is required to submit for review. */
+  documents?: AssetDocumentInput[];
+  counterparty?: AssetCounterpartyInput;
+}
+
+export interface AssetDocumentInput {
+  docRef: string;
+  docType: string;
+  /** Hex SHA-256 of the file, if the uploader computed one. */
+  sha256?: string;
+}
+
+export interface AssetCounterpartyInput {
+  ref: string;
+  name: string;
+}
+
+/** Compliance decision on an asset under review (plane.md §3.1). */
+export interface ReviewAssetInput {
+  decision: "verify" | "reject";
+  /** Required on a rejection: the issuer is entitled to know why. */
+  note?: string;
 }
 
 export interface CreateTokenizationInput {
@@ -893,6 +987,49 @@ export interface PurchaseUnitsInput {
   holderAddress: string;
 }
 
+/**
+ * A holder-to-holder sale of units at an agreed price (plane.md §3.3).
+ *
+ * The price is *agreed between the two parties*, not derived from the
+ * financing terms the way a primary subscription's is. That is the whole
+ * difference between the two markets: a primary unit price is fixed by the
+ * deal, while a secondary price is whatever a buyer will pay for a claim whose
+ * risk has since changed — an invoice nearing maturity is worth more than one
+ * just issued, and a disputed one less.
+ *
+ * `toUserId` rather than an address: the buyer must be a platform user with
+ * their own KYC and limits, and a raw address would let units reach someone
+ * the platform has never checked.
+ */
+export interface SecondaryTransferInput {
+  /** Who receives the units. Must be an existing platform user. */
+  toUserId: string;
+  /** The buyer's Stellar address, where the units land. */
+  toHolderAddress: string;
+  /** Units to sell (integer string). */
+  units: string;
+  /**
+   * Total agreed consideration in minor units — the whole trade, not a
+   * per-unit price. A per-unit price times a unit count is a rounding bug
+   * waiting for a non-dividing quantity.
+   */
+  priceAmount: MinorUnitAmount;
+}
+
+/** The result of a secondary transfer: both sides of the trade. */
+export interface SecondaryTransferResponse {
+  tokenizationId: string;
+  /** The seller's holding after the sale, or null when fully sold out. */
+  sellerHolding: TokenHoldingDTO | null;
+  /** The buyer's holding, created or increased. */
+  buyerHolding: TokenHoldingDTO;
+  units: string;
+  priceAmount: MinorUnitAmount;
+  priceCurrency: CurrencyCode;
+  /** The ledger transaction recording both legs. */
+  ledgerTransactionId: string;
+}
+
 export interface TokenizationDetailsResponse {
   tokenization: TokenizationDTO;
   asset: AssetDTO;
@@ -902,6 +1039,81 @@ export interface TokenizationDetailsResponse {
   availableUnits: string;
   /** Total raised from investors (minor-unit integer string). */
   totalRaised: MinorUnitAmount;
+  /** What an investor is actually taking on (plane.md §3.4). */
+  risk: TokenizationRiskDTO;
+}
+
+/**
+ * The risk an investor carries, computed server-side (plane.md §3.4).
+ *
+ * Every field here was previously derivable only by a client that knew the
+ * financing model — which meant in practice that none of them were shown, and
+ * the card advertised a price with no yield, no maturity, and no hint that the
+ * underlying invoice was in dispute. Computing it here means one definition of
+ * "days remaining" rather than one per screen.
+ */
+export interface TokenizationRiskDTO {
+  /** Share of face value financed, in bps. The rest is the seller's stake. */
+  advanceRateBps: number;
+  /** Investor yield on principal, in bps. */
+  discountRateBps: number;
+  /** ISO-8601 maturity. */
+  maturityDate: string;
+  /**
+   * Whole days until maturity. Negative once past due — the sign is the
+   * signal, so it is not clamped at zero.
+   */
+  daysRemaining: number;
+  /** True once past maturity with no collection recorded. */
+  overdue: boolean;
+  /**
+   * The issuer's advisory reputation score in [0, 100], or null when unscored.
+   * Advisory: it is shown, never used to gate.
+   */
+  issuerReputationScore: number | null;
+  /** The debtor on the underlying asset, if recorded. */
+  counterparty: AssetCounterpartyDTO | null;
+  /**
+   * Whether the linked escrow order has an open dispute. A disputed invoice
+   * may be refunded to the buyer, in which case there is nothing to pay out —
+   * which is exactly what an investor deciding whether to buy needs to know.
+   */
+  disputed: boolean;
+  /**
+   * Total yield an investor would earn across the whole issue if collection
+   * arrived today, in minor units. Scales pro-rata with units held.
+   */
+  projectedYieldAmount: MinorUnitAmount;
+}
+
+/**
+ * One authenticated call returning everything the caller has a position in,
+ * with the links between them (plane.md §2.4).
+ *
+ * The four domains each had their own console, so a user financing an invoice
+ * through a corridor and disputing the delivery saw three unrelated screens and
+ * had to work out for themselves that they described one trade. The `links`
+ * block is the part that could not be assembled client-side: it is the join
+ * across settlements, orders, disputes, and tokenizations.
+ */
+export interface PositionsResponse {
+  orders: OrderDetailsResponse[];
+  settlements: SettlementDetailsResponse[];
+  disputes: DisputeDTO[];
+  holdings: InvestorPortfolioResponse["holdings"];
+  /** How the records above relate, keyed by order id. */
+  links: PositionLink[];
+}
+
+/** The cross-domain story of one escrow order. */
+export interface PositionLink {
+  orderId: string;
+  /** Settlement that funded this order, if any (§2.1). */
+  fundedBySettlementId: string | null;
+  /** Disputes raised against it. */
+  disputeIds: string[];
+  /** Tokenizations whose payout this order's release triggers (§2.2). */
+  tokenizationIds: string[];
 }
 
 export interface InvestorPortfolioResponse {
@@ -909,9 +1121,47 @@ export interface InvestorPortfolioResponse {
     holding: TokenHoldingDTO;
     tokenization: TokenizationDTO;
     asset: AssetDTO;
+    /** Per-position economics and risk (plane.md §3.4). */
+    position: PortfolioPositionDTO;
   }>;
   totalInvested: MinorUnitAmount;
   totalPayoutsReceived: MinorUnitAmount;
+  /**
+   * Yield accrued but not yet paid, across open positions. An estimate of what
+   * the position is currently worth over cost — not a settled amount.
+   */
+  totalAccruedYield: MinorUnitAmount;
+  /**
+   * Capital lost on written-off positions: what was invested less what
+   * recovery actually returned. "Total invested" alone reads like a balance
+   * and hides this entirely.
+   */
+  totalRealizedLoss: MinorUnitAmount;
+  /** How many open positions are past maturity with no collection. */
+  overdueCount: number;
+}
+
+/** One position's economics, computed server-side (plane.md §3.4). */
+export interface PortfolioPositionDTO {
+  /**
+   * This holder's share of the yield, accrued to today and pro-rata to units
+   * held. Zero once the position has paid out — at that point the payout
+   * record is the truth, not a projection.
+   */
+  accruedYield: MinorUnitAmount;
+  /** Payouts actually received against this position. */
+  payoutsReceived: MinorUnitAmount;
+  /**
+   * Capital lost, for a written-off position: invested less payouts received.
+   * Zero while the position is open — an unrealized loss is not a loss.
+   */
+  realizedLoss: MinorUnitAmount;
+  /** Whole days to maturity; negative once past due. */
+  daysRemaining: number;
+  /** Past maturity with no collection recorded. */
+  overdue: boolean;
+  /** The linked escrow order is disputed, so a payout is held. */
+  disputed: boolean;
 }
 
 /**
@@ -950,6 +1200,18 @@ export interface PreparedRwaOperationResponse {
 
 export interface TokenizationListResponse {
   tokenizations: TokenizationDTO[];
+  /**
+   * Risk per tokenization, keyed by id (plane.md §3.4).
+   *
+   * Carried on the list rather than left to a detail fetch per card: the
+   * marketplace renders every open tokenization at once, and N+1 requests to
+   * show a maturity date is how a risk disclosure ends up quietly dropped for
+   * being slow.
+   *
+   * Keyed rather than positional so a client that filters or reorders the
+   * list cannot pair a card with another deal's risk.
+   */
+  risk: Record<string, TokenizationRiskDTO>;
 }
 
 export interface AssetListResponse {

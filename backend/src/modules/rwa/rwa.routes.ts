@@ -22,6 +22,10 @@ import {
 import type { RwaReconciliationJob } from "./rwa.reconciliation.job.js";
 import type { RwaService } from "./rwa.service.js";
 import { AssetType, TokenizationStatus } from "./rwa.types.js";
+import type {
+  AssetCounterpartyInput,
+  AssetDocumentInput,
+} from "./rwa.types.js";
 
 /**
  * Contract operations that can require the issuer's own wallet signature.
@@ -81,6 +85,12 @@ export function createRwaRouter(
           ),
           valuationCurrency: parseCurrency(req.body.valuationCurrency),
           metadata: req.body.metadata,
+          ...(req.body.documents === undefined
+            ? {}
+            : { documents: parseDocuments(req.body.documents) }),
+          ...(req.body.counterparty === undefined
+            ? {}
+            : { counterparty: parseCounterparty(req.body.counterparty) }),
         };
         res.status(201).json(await service.createAsset(actor.userId, input));
       } catch (err) {
@@ -98,6 +108,92 @@ export function createRwaRouter(
       next(err);
     }
   });
+
+  // ── Asset verification (plane.md §3.1) ────────────────────────────────────
+  //
+  // Declared before `/assets/:assetId/...` would be reachable by a wildcard:
+  // `/assets/review-queue` is a fixed path and must not be parsed as an asset
+  // id by a route registered above it.
+
+  /** GET /rwa/assets/review-queue — assets awaiting a compliance decision. */
+  router.get(
+    "/assets/review-queue",
+    requireAuth(verifier),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        res.json({ assets: await service.listAssetsForReview(actor) });
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /** POST /rwa/assets/:assetId/documents — attach supporting evidence. */
+  router.post(
+    "/assets/:assetId/documents",
+    requireAuth(verifier),
+    idempotency(mutations),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        res.json(
+          await service.addAssetDocuments(
+            String(req.params.assetId),
+            actor,
+            parseDocuments(req.body.documents),
+          ),
+        );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /** POST /rwa/assets/:assetId/submit — submit for compliance review. */
+  router.post(
+    "/assets/:assetId/submit",
+    requireAuth(verifier),
+    idempotency(mutations),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        res.json(
+          await service.submitAssetForReview(String(req.params.assetId), actor),
+        );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /** POST /rwa/assets/:assetId/review — compliance verdict on an asset. */
+  router.post(
+    "/assets/:assetId/review",
+    requireAuth(verifier),
+    idempotency(mutations),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        const decision = String(req.body.decision ?? "");
+        if (decision !== "verify" && decision !== "reject") {
+          throw new ValidationError(
+            'decision must be "verify" or "reject"',
+          );
+        }
+        res.json(
+          await service.reviewAsset(String(req.params.assetId), actor, {
+            decision,
+            ...(req.body.note === undefined
+              ? {}
+              : { note: String(req.body.note) }),
+          }),
+        );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
 
   // ── Tokenizations ───────────────────────────────────────────────────────────
 
@@ -196,7 +292,10 @@ export function createRwaRouter(
       if (req.query.status) {
         filters.status = parseTokenizationStatus(String(req.query.status));
       }
-      res.json({ tokenizations: await service.listTokenizations(filters) });
+      // The enriched listing: the marketplace needs each deal's risk to render
+      // a card at all (plane.md §3.4), and a detail fetch per card would make
+      // the disclosure the slowest part of the page.
+      res.json(await service.listTokenizationsWithRisk(filters));
     } catch (err) {
       next(err);
     }
@@ -261,6 +360,70 @@ export function createRwaRouter(
             String(req.params.tokenizationId),
             actor,
             input,
+          ),
+        );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /**
+   * POST /rwa/tokenizations/:id/transfer — sell units to another holder
+   * (plane.md §3.3).
+   *
+   * The caller is always the seller: units leave the authenticated user's own
+   * position. A route that let one user move another's units would be a
+   * transfer authorization the platform has no business holding.
+   */
+  router.post(
+    "/tokenizations/:tokenizationId/transfer",
+    requireAuth(verifier),
+    idempotency(mutations),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        const input = {
+          toUserId: String(req.body.toUserId ?? ""),
+          toHolderAddress: String(req.body.toHolderAddress ?? ""),
+          units: parseIntegerString(req.body.units, "units"),
+          priceAmount: parseIntegerString(req.body.priceAmount, "priceAmount"),
+        };
+        if (!input.toUserId) {
+          throw new ValidationError("toUserId is required");
+        }
+        res.json(
+          await service.transferHolding(
+            String(req.params.tokenizationId),
+            actor,
+            input,
+          ),
+        );
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /**
+   * POST /rwa/tokenizations/:id/cancel — unwind a purchase within the
+   * cooling-off window (plane.md §3.2).
+   *
+   * A POST rather than a DELETE on the holding: this posts a reversing ledger
+   * transaction and may move units back on-chain, so it is an operation with
+   * consequences, not the removal of a resource.
+   */
+  router.post(
+    "/tokenizations/:tokenizationId/cancel",
+    requireAuth(verifier),
+    idempotency(mutations),
+    async (req, res, next) => {
+      try {
+        const actor = requireActor(req as AuthedRequest);
+        res.json(
+          await service.cancelPurchase(
+            String(req.params.tokenizationId),
+            actor,
           ),
         );
       } catch (err) {
@@ -450,6 +613,58 @@ function parseBps(value: unknown, field: string): number {
     );
   }
   return parsed;
+}
+
+/**
+ * Parse supporting-document references (plane.md §3.1).
+ *
+ * References only. A caller that sends file contents here gets them rejected
+ * by the shape rather than stored: this platform records that a document
+ * exists and can prove which one was reviewed, and never holds the file
+ * (Rules.md §3).
+ */
+function parseDocuments(value: unknown): AssetDocumentInput[] {
+  if (!Array.isArray(value)) {
+    throw new ValidationError("documents must be an array");
+  }
+  if (value.length === 0) {
+    throw new ValidationError("At least one document is required");
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null) {
+      throw new ValidationError(`documents[${index}] must be an object`);
+    }
+    const { docRef, docType, sha256 } = entry as Record<string, unknown>;
+    if (typeof docRef !== "string" || docRef.trim().length === 0) {
+      throw new ValidationError(`documents[${index}].docRef is required`);
+    }
+    if (typeof docType !== "string" || docType.trim().length === 0) {
+      throw new ValidationError(`documents[${index}].docType is required`);
+    }
+    if (sha256 !== undefined && typeof sha256 !== "string") {
+      throw new ValidationError(`documents[${index}].sha256 must be a string`);
+    }
+    return {
+      docRef: docRef.trim(),
+      docType: docType.trim(),
+      ...(sha256 === undefined ? {} : { sha256: sha256.trim() }),
+    };
+  });
+}
+
+/** Parse the counterparty (the debtor) on an asset. */
+function parseCounterparty(value: unknown): AssetCounterpartyInput {
+  if (typeof value !== "object" || value === null) {
+    throw new ValidationError("counterparty must be an object");
+  }
+  const { ref, name } = value as Record<string, unknown>;
+  if (typeof ref !== "string" || ref.trim().length === 0) {
+    throw new ValidationError("counterparty.ref is required");
+  }
+  if (typeof name !== "string" || name.trim().length === 0) {
+    throw new ValidationError("counterparty.name is required");
+  }
+  return { ref: ref.trim(), name: name.trim() };
 }
 
 function parseCurrency(value: unknown): CurrencyCode {

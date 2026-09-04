@@ -12,6 +12,7 @@ import { DeterministicRwaGateway } from "./rwa.gateway.js";
 import { InMemoryRwaRepository } from "./rwa.repository.js";
 import { RwaService, type RwaActor } from "./rwa.service.js";
 import { AssetType, TokenizationStatus, PayoutStatus } from "./rwa.types.js";
+import { createVerifiedAsset } from "./rwa.test-fixtures.js";
 
 
 /**
@@ -57,15 +58,10 @@ async function createActiveTokenization(
     linkedOrderId?: string;
     discountRateBps?: number;
     advanceRateBps?: number;
+    platformFeeBps?: number;
   },
 ) {
-  const asset = await service.createAsset(issuer.userId, {
-    assetType: AssetType.Invoice,
-    assetRef: `invoice:INV-${Math.random().toString(36).slice(2, 8)}`,
-    description: "90-day receivable",
-    valuationAmount: "1000000",
-    valuationCurrency: "USDC",
-  });
+  const asset = await createVerifiedAsset(service, issuer.userId);
   const tokenization = await service.createTokenization(issuer.userId, {
     assetId: asset.id,
     totalUnits: overrides?.totalUnits ?? "1000",
@@ -73,6 +69,7 @@ async function createActiveTokenization(
     faceValueCurrency: "USDC",
     advanceRateBps: overrides?.advanceRateBps ?? 10_000,
     discountRateBps: overrides?.discountRateBps ?? 0,
+    platformFeeBps: overrides?.platformFeeBps ?? 0,
     maturityDate: FUTURE_MATURITY,
     requireAuthorization: overrides?.requireAuthorization ?? false,
     linkedOrderId: overrides?.linkedOrderId,
@@ -92,12 +89,11 @@ describe("Phase 5 RWA tokenization", () => {
 
   it("prevents tokenizing an asset the actor does not own", async () => {
     const { service } = setup();
-    const asset = await service.createAsset(issuer.userId, {
+    const asset = await createVerifiedAsset(service, issuer.userId, {
       assetType: AssetType.Commodity,
       assetRef: "commodity:GOLD-1",
       description: "gold bar",
       valuationAmount: "500000",
-      valuationCurrency: "USDC",
     });
     await expect(
       service.createTokenization("someone-else", {
@@ -116,12 +112,10 @@ describe("Phase 5 RWA tokenization", () => {
     const { service } = setup();
     const { tokenization } = await createActiveTokenization(service);
     // Already deployed; create a fresh draft to test deploy authorization.
-    const asset = await service.createAsset(issuer.userId, {
-      assetType: AssetType.Invoice,
+    const asset = await createVerifiedAsset(service, issuer.userId, {
       assetRef: "invoice:INV-DEPLOY",
       description: "draft",
       valuationAmount: "1000",
-      valuationCurrency: "USDC",
     });
     const draft = await service.createTokenization(issuer.userId, {
       assetId: asset.id,
@@ -635,12 +629,10 @@ describe("Phase 5 RWA payout integration with escrow release", () => {
     const orderId = created.order.id;
 
     // Issuer tokenizes an asset linked to this order and an investor buys in.
-    const asset = await rwa.createAsset(issuer.userId, {
-      assetType: AssetType.Invoice,
+    const asset = await createVerifiedAsset(rwa, issuer.userId, {
       assetRef: "invoice:INV-LINKED",
       description: "linked receivable",
       valuationAmount: "10000",
-      valuationCurrency: "USDC",
     });
     const tokenization = await rwa.createTokenization(issuer.userId, {
       assetId: asset.id,
@@ -701,5 +693,173 @@ describe("Phase 5 RWA payout integration with escrow release", () => {
     expect(all).toHaveLength(0);
     // Sanity: no distribution rows anywhere.
     expect(await rwaRepository.listDistributions("nonexistent")).toHaveLength(0);
+  });
+});
+
+/**
+ * The payout waterfall (plane.md §1.3).
+ *
+ * Before this, `distributePayout` handed the *entire* collection to unit
+ * holders: the platform earned nothing and the seller's retained first-loss —
+ * the thing that makes the structure work — silently went to investors. These
+ * tests pin the ordering and the exact minor units, because "roughly right" in
+ * a waterfall is a misallocation of somebody's money.
+ */
+describe("RWA payout waterfall", () => {
+  /**
+   * The worked example from plane.md §1.2, scaled to whole units.
+   *
+   * 100,000 face @ 80% advance, 4% discount, 1% fee:
+   *   financed 80,000 · investors 83,200 · platform 800 · seller 16,000
+   */
+  async function fundedInvoice(service: RwaService) {
+    const { tokenization } = await createActiveTokenization(service, {
+      totalUnits: "1000",
+      advanceRateBps: 8_000,
+      discountRateBps: 400,
+      platformFeeBps: 100,
+    });
+    // The helper derives face value as totalUnits × 1000 = 1,000,000 minor
+    // units. All the amounts below are that scale, not the doc's 100,000.
+    return tokenization;
+  }
+
+  it("pays investors, then the platform, then the seller's residual", async () => {
+    const { service, repository, ledger } = setup();
+    const tokenization = await fundedInvoice(service);
+
+    // Fully subscribed: shares are pro-rata of *total* units, so the whole
+    // investor leg is paid out only when every unit is held by an investor.
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "750",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+    await service.purchaseUnits(tokenization.id, investor2, {
+      units: "250",
+      holderAddress: INVESTOR2_ADDRESS,
+    });
+
+    // The debtor pays face value, on time.
+    const distribution = await service.distributePayout(
+      tokenization.id,
+      "order-1",
+      "release",
+      1_000_000n,
+      "USDC",
+      system,
+    );
+    expect(distribution.status).toBe(PayoutStatus.Completed);
+
+    // Investors receive principal 800,000 + 4% yield 32,000 = 832,000 —
+    // NOT the full 1,000,000 collected.
+    const records = await repository.listPayoutRecords(distribution.id);
+    const paid = records.reduce((sum, r) => sum + BigInt(r.shareAmount), 0n);
+    expect(paid).toBe(832_000n);
+
+    // 750/250 of the investor leg, not of the gross collection.
+    const byUser = Object.fromEntries(
+      records.map((r) => [r.holderUserId, r.shareAmount]),
+    );
+    expect(byUser[investor.userId]).toBe("624000");
+    expect(byUser[investor2.userId]).toBe("208000");
+
+    // The ledger carries all three legs and still balances: 1% fee of face is
+    // 10,000, leaving the seller the retained 20% less the yield = 158,000.
+    const posted = await ledger.getByReference(
+      `rwa-payout:${tokenization.id}:order-1:release`,
+    );
+    expect(isBalanced(posted!.entries)).toBe(true);
+    const credited = posted!.entries
+      .filter((e) => e.direction === "credit")
+      .map((e) => e.amount)
+      .sort();
+    expect(credited).toEqual(["10000", "158000", "832000"].sort());
+
+    // The legs reconstitute the collection exactly — no minor unit invented
+    // or lost between what the debtor paid and what the books recorded.
+    const debited = posted!.entries
+      .filter((e) => e.direction === "debit")
+      .reduce((sum, e) => sum + BigInt(e.amount), 0n);
+    expect(debited).toBe(1_000_000n);
+  });
+
+  it("marks the position repaid and stamps when it was collected", async () => {
+    const { service, repository } = setup();
+    const tokenization = await fundedInvoice(service);
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "1000",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+
+    await service.distributePayout(
+      tokenization.id,
+      "order-1",
+      "release",
+      1_000_000n,
+      "USDC",
+      system,
+    );
+
+    const after = await repository.findTokenization(tokenization.id);
+    expect(after?.status).toBe(TokenizationStatus.Repaid);
+    expect(after?.collectedAt).toBeTruthy();
+  });
+
+  it("pays investors first and leaves platform and seller nothing on a partial collection", async () => {
+    const { service, repository, ledger } = setup();
+    const tokenization = await fundedInvoice(service);
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "1000",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+
+    // Only half the face value arrives — less than the investors' 832,000
+    // entitlement, so strict priority gives them all of it.
+    const distribution = await service.distributePayout(
+      tokenization.id,
+      "order-1",
+      "release",
+      500_000n,
+      "USDC",
+      system,
+    );
+
+    const records = await repository.listPayoutRecords(distribution.id);
+    const paid = records.reduce((sum, r) => sum + BigInt(r.shareAmount), 0n);
+    expect(paid).toBe(500_000n);
+
+    // One credit leg only: nothing reached the platform or the seller.
+    const posted = await ledger.getByReference(
+      `rwa-payout:${tokenization.id}:order-1:release`,
+    );
+    expect(isBalanced(posted!.entries)).toBe(true);
+    expect(posted!.entries.filter((e) => e.direction === "credit")).toHaveLength(
+      1,
+    );
+
+    // A shortfall leaves the position open — it is the input to the default
+    // path, not a completed repayment.
+    const after = await repository.findTokenization(tokenization.id);
+    expect(after?.status).not.toBe(TokenizationStatus.Repaid);
+  });
+
+  it("refuses a collection too small to pay any investor", async () => {
+    const { service } = setup();
+    const tokenization = await fundedInvoice(service);
+    await service.purchaseUnits(tokenization.id, investor, {
+      units: "1000",
+      holderAddress: INVESTOR1_ADDRESS,
+    });
+
+    await expect(
+      service.distributePayout(
+        tokenization.id,
+        "order-1",
+        "release",
+        0n,
+        "USDC",
+        system,
+      ),
+    ).rejects.toThrow(/too small/i);
   });
 });

@@ -18,9 +18,14 @@ const rwaReconciliationJob = app.locals.rwaReconciliationJob as {
   start(): void;
   stop(): void;
 };
+const rwaLifecycleJob = app.locals.rwaLifecycleJob as {
+  start(): void;
+  stop(): void;
+};
 reconciliationJob.start();
 settlementReconciliationJob.start();
 rwaReconciliationJob.start();
+rwaLifecycleJob.start();
 
 const server = app.listen(config.PORT, () => {
   logger.info(
@@ -34,6 +39,7 @@ async function shutdown(signal: string): Promise<void> {
   reconciliationJob.stop();
   settlementReconciliationJob.stop();
   rwaReconciliationJob.stop();
+  rwaLifecycleJob.stop();
   server.close(() => {
     void closePool().finally(() => process.exit(0));
   });

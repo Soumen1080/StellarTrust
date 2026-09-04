@@ -47,6 +47,14 @@ export const RWA_ISSUER_PROCEEDS_PAYABLE = "a0000000-0000-4000-8000-000000000006
 export const RWA_PLATFORM_FEE_REVENUE = "a0000000-0000-4000-8000-000000000007";
 /** Expected recovery on a defaulted position. */
 export const RWA_RECOVERY_RECEIVABLE = "a0000000-0000-4000-8000-000000000008";
+/**
+ * Owed to a holder who sold units on the secondary market (plane.md §3.3).
+ *
+ * Distinct from `rwa_issuer_proceeds_payable`: on a secondary trade the issuer
+ * receives nothing — the money is between two investors, and posting it to the
+ * issuer's payable would credit them for a sale they were not party to.
+ */
+export const RWA_SECONDARY_SELLER_PAYABLE = "a0000000-0000-4000-8000-000000000009";
 
 /**
  * Cross-border settlement accounts (migration 0011 seeds).
@@ -88,6 +96,7 @@ export const SYNTHETIC_ACCOUNT_NAME: Readonly<Record<string, string>> =
     [RWA_ISSUER_PROCEEDS_PAYABLE]: "rwa_issuer_proceeds_payable",
     [RWA_PLATFORM_FEE_REVENUE]: "rwa_platform_fee_revenue",
     [RWA_RECOVERY_RECEIVABLE]: "rwa_recovery_receivable",
+    [RWA_SECONDARY_SELLER_PAYABLE]: "rwa_secondary_seller_payable",
     [SETTLEMENT_SOURCE_ANCHOR_CLEARING]: "settlement_source_anchor_clearing",
     [SETTLEMENT_USER_SOURCE_LIABILITY]: "settlement_user_source_liability",
     [SETTLEMENT_FX_CONVERSION]: "settlement_fx_conversion",

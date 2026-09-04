@@ -36,8 +36,11 @@ import type {
   CreateAssetInput,
   CreateTokenizationInput,
   InvestorPortfolioResponse,
+  PositionsResponse,
   PayoutDistributionDTO,
   PurchaseUnitsInput,
+  SecondaryTransferInput,
+  SecondaryTransferResponse,
   TokenizationDTO,
   TokenizationDetailsResponse,
   TokenizationListResponse,
@@ -158,6 +161,16 @@ export const api = {
   /** The connected wallet's real, live Horizon balances (XLM + any bound token). */
   getWalletBalances: (accessToken: string) =>
     request<WalletBalancesResponse>("/api/wallet/balances", { accessToken }),
+  /**
+   * Every position the caller holds, across all four domains, with the links
+   * between them (plane.md §2.4).
+   *
+   * One call rather than four: the `links` block joins settlements, orders,
+   * disputes, and tokenizations, which is a relationship the client cannot
+   * compute from the individual list endpoints.
+   */
+  getPositions: (accessToken: string) =>
+    request<PositionsResponse>("/api/positions", { accessToken }),
   submitKyc: (
     accessToken: string,
     idempotencyKey: string,
@@ -449,6 +462,22 @@ export const api = {
   ) =>
     request<TokenizationDetailsResponse>(
       `/api/rwa/tokenizations/${tokenizationId}/purchase`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: JSON.stringify(input),
+      },
+    ),
+  /** Sell units to another holder at an agreed price (plane.md §3.3). */
+  transferUnits: (
+    accessToken: string,
+    tokenizationId: string,
+    idempotencyKey: string,
+    input: SecondaryTransferInput,
+  ) =>
+    request<SecondaryTransferResponse>(
+      `/api/rwa/tokenizations/${tokenizationId}/transfer`,
       {
         method: "POST",
         accessToken,

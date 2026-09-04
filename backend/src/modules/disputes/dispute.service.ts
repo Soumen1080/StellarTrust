@@ -40,7 +40,14 @@ import {
   NotFoundError,
   ValidationError,
 } from "../../lib/errors.js";
+import { logger } from "../../lib/logger.js";
 import type { AuditRepository } from "../audit/audit.repository.js";
+import type { DomainEvent } from "../events/event.repository.js";
+import {
+  DomainEventType,
+  EventEntity,
+  dedupeKey,
+} from "../events/event.types.js";
 import type { ReputationService } from "../reputation/reputation.service.js";
 import type { DisputeRiskClient } from "./dispute-risk.client.js";
 import type {
@@ -58,6 +65,16 @@ export interface DisputeActor {
 /** Neutral fallback when no reputation service is wired (e.g. isolated tests). */
 const DEFAULT_REPUTATION = 0.5;
 
+/**
+ * The publish side of the event spine, as a narrow port.
+ *
+ * Structurally satisfied by `EventBus`. Disputes depends on the capability to
+ * announce a fact, not on the bus's class.
+ */
+export interface DisputeEventPublisher {
+  publish(event: Omit<DomainEvent, "id" | "occurredAt">): Promise<DomainEvent>;
+}
+
 export class DisputeService {
   constructor(
     private readonly repository: DisputeRepository,
@@ -67,7 +84,23 @@ export class DisputeService {
     private readonly reputation?: ReputationService,
     private readonly settlement?: DisputeSettlementGateway,
     private readonly chain?: DisputeChainGateway,
+    /**
+     * The event spine (plane.md §2.3). Optional so existing constructions keep
+     * working; when present, opening and resolving a dispute publish facts that
+     * the RWA module subscribes to in order to hold and release payouts.
+     */
+    private readonly events?: DisputeEventPublisher,
   ) {}
+
+  /**
+   * Whether an order has an unresolved dispute (plane.md §2.2).
+   *
+   * Satisfies the `DisputeReader` port the RWA module depends on: it needs one
+   * boolean before paying investors, not the dispute record itself.
+   */
+  async hasOpenDispute(orderId: string): Promise<boolean> {
+    return (await this.repository.findOpenByOrder(orderId)) !== undefined;
+  }
 
   async open(
     actor: DisputeActor,
@@ -144,7 +177,51 @@ export class DisputeService {
       },
     });
     await this.freezeCustody(dispute, actor);
+    // Announce the claim. The RWA module subscribes to hold any payout on a
+    // tokenization linked to this order (plane.md §2.2) — disputes does not
+    // know that, and does not need to.
+    await this.publishFact(
+      DomainEventType.DisputeOpened,
+      dispute.id,
+      `user:${actor.userId}`,
+      { orderId: dispute.orderId },
+      dispute.id,
+    );
     return dispute;
+  }
+
+  /**
+   * Publish a dispute fact, tolerating a spine failure.
+   *
+   * The dispute itself has already been persisted by the time this runs, so
+   * throwing here would report a filed dispute as failed. The event is durable
+   * once written, which makes a missed publish recoverable.
+   */
+  private async publishFact(
+    eventType: DomainEventType,
+    disputeId: string,
+    actor: string,
+    payload: Record<string, unknown>,
+    qualifier?: string,
+  ): Promise<void> {
+    if (!this.events) return;
+    try {
+      await this.events.publish({
+        eventType,
+        entity: EventEntity.Dispute,
+        entityId: disputeId,
+        actor,
+        payload,
+        // Qualified by the dispute id: one order may be disputed, resolved,
+        // and disputed again, and each is a distinct fact.
+        dedupeKey: dedupeKey(eventType, disputeId, qualifier),
+      });
+    } catch (error) {
+      logger.error(
+        { err: error, disputeId, eventType },
+        "failed to publish dispute event",
+      );
+    }
   }
 
   /**
@@ -398,6 +475,18 @@ export class DisputeService {
     // best-effort; the settlement attempt's OUTCOME is written back onto the
     // dispute so the parties can see whether the money actually moved.
     await this.updateReputation(dispute.orderId, resolutionOutcome, dispute.id);
+
+    // The outcome decides whether a held RWA position resumes or defaults
+    // (plane.md §2.2). Published before the settlement executes so the hold is
+    // lifted against the same decision the money moves on.
+    await this.publishFact(
+      DomainEventType.DisputeResolved,
+      dispute.id,
+      resolvedActor,
+      { orderId: dispute.orderId, outcome: resolutionOutcome },
+      dispute.id,
+    );
+
     return this.autoExecuteSettlement(resolved, resolutionOutcome);
   }
 
