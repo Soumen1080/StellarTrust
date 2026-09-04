@@ -43,9 +43,9 @@ jobs:
         working-directory: backend
         run: npm run build
 
-  # ── Frontend: build (Next runs lint + typecheck during build) ───────────────
+  # ── Frontend: test + build (Next runs lint + typecheck during build) ───────
   frontend:
-    name: frontend (build)
+    name: frontend (test · build)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -58,6 +58,11 @@ jobs:
       - name: Install frontend
         working-directory: frontend
         run: npm install --no-audit --no-fund
+      # Runs before the build: a failing component test should stop the job at
+      # the cheap step, not after Next has compiled everything.
+      - name: Test
+        working-directory: frontend
+        run: npm test
       - name: Build
         working-directory: frontend
         run: npm run build
@@ -157,3 +162,8 @@ jobs:
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/supabase/tests/ledger_balance_test.sql
       - name: Phase 2 financial transition smoke test
         run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/supabase/tests/phase2_transition_test.sql
+      # plane.md §4.3/§4.5: the money-safety invariants and the per-user
+      # balance view. Every block asserts a *refusal*, so a constraint that
+      # silently stopped working fails the job rather than passing quietly.
+      - name: Money invariants smoke test
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/supabase/tests/money_invariants_test.sql

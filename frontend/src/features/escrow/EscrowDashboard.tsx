@@ -186,7 +186,16 @@ function escrowLabel(details: OrderDetailsResponse): string {
   }
 }
 
-function nextAction(details: OrderDetailsResponse, userId: string): EscrowAction | null {
+/**
+ * The single step this user can take on this order right now, or null.
+ *
+ * Exported so it can be tested directly (plane.md §4.6). It is the escrow
+ * state machine as the UI understands it — which side of the trade may act,
+ * and on what — and it is what decides whether someone is shown a button that
+ * moves money. A divergence between this and the server's own transition rules
+ * shows up as a button that always errors, so it is worth pinning down.
+ */
+export function nextAction(details: OrderDetailsResponse, userId: string): EscrowAction | null {
   const { order } = details;
   if (order.status === OrderStatus.Created && order.sellerId === userId) return "accept";
   if (order.buyerId !== userId) return null;

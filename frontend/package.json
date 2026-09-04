@@ -2,14 +2,16 @@
   "name": "@stellartrust/frontend",
   "version": "0.0.0",
   "private": true,
-  "description": "StellarTrust frontend — Next.js (App Router) + TypeScript + Tailwind. Dashboards (dark) + transactional surfaces (light) per DESIGN.md.",
+  "description": "StellarTrust frontend \u2014 Next.js (App Router) + TypeScript + Tailwind. Dashboards (dark) + transactional surfaces (light) per DESIGN.md.",
   "scripts": {
     "dev": "npm run build:shared && next dev",
     "build:shared": "npm install --prefix ../shared --include=dev --no-audit --no-fund && npm run build --prefix ../shared",
     "build": "npm run build:shared && next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@creit.tech/stellar-wallets-kit": "2.5.0",
@@ -23,15 +25,21 @@
   },
   "devDependencies": {
     "@eslint/eslintrc": "3.3.6",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.1.0",
+    "@testing-library/user-event": "^14.5.2",
     "@types/node": "22.10.2",
     "@types/react": "19.0.2",
     "@types/react-dom": "19.0.2",
+    "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "10.4.20",
     "eslint": "9.13.0",
     "eslint-config-next": "15.5.20",
+    "jsdom": "^25.0.1",
     "postcss": "8.4.49",
     "tailwindcss": "3.4.17",
-    "typescript": "5.5.4"
+    "typescript": "5.5.4",
+    "vitest": "^3.2.4"
   },
   "overrides": {
     "protobufjs": "7.6.3"

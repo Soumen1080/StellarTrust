@@ -199,6 +199,20 @@ create trigger assert_holding_within_supply
 -- cannot: two distributions posted against the same tokenization — a retry
 -- that escaped idempotency, or a manual re-run — which individually respect
 -- the waterfall and together pay out twice.
+--
+-- Why face value is the right ceiling, and a generous one:
+--   `payout_records` holds *only* the investor leg. The platform fee and the
+--   seller's residual are ledger postings, never payout records, so the sum
+--   here is what investors received and nothing else. Investors are owed
+--   principal + yield, which by the §1.2 payability check is at most the face
+--   value — the check refuses terms whose advance + yield + fee exceed it at
+--   creation. A write-off recovery adds records to a second distribution, and
+--   recovery is money coming back on a position that paid *less* than face,
+--   so the two together still fit under it.
+--
+--   The ceiling is therefore loose enough never to refuse a legitimate payout
+--   and tight enough to catch a duplicate distribution, which is the failure
+--   it exists for.
 create or replace function assert_payout_within_collection()
 returns trigger
 language plpgsql
@@ -244,9 +258,15 @@ end;
 $$;
 
 drop trigger if exists assert_payout_within_collection on payout_records;
--- AFTER, and per-statement rather than per-row: the sum is only meaningful
--- once every record in the distribution has landed. A per-row BEFORE trigger
--- would judge a legitimate multi-holder payout on a partial total.
+-- A DEFERRED constraint trigger, so it runs at COMMIT rather than as each row
+-- lands. That ordering is the whole point: a legitimate multi-holder payout
+-- inserts one record per holder, and a check that fired on the first row would
+-- be judging the total against a partial sum. By COMMIT every record in the
+-- transaction is present and the sum is the real one.
+--
+-- Row-level rather than statement-level because a statement trigger has no
+-- `new` to find the distribution from; the function short-circuits on rows it
+-- cannot resolve, so the repeated evaluation is cheap.
 create constraint trigger assert_payout_within_collection
   after insert or update on payout_records
   deferrable initially deferred
