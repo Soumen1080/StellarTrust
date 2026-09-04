@@ -175,6 +175,18 @@ export function UserDashboard() {
             <div className="flex items-center gap-sm"><span className="grid h-10 w-10 place-items-center rounded-lg bg-surface-elevated-dark text-primary"><Icon name="wallet" /></span><div><h2 className="font-semibold text-on-dark">Connected wallet</h2><p className="text-xs text-muted">SEP-10 authenticated</p></div></div>
             <p className="mt-md break-all font-mono text-xs leading-5 text-muted-strong">{wallet.stellarPublicKey}</p>
           </section>
+
+          {/* The operations console.
+              Shown to everyone rather than gated on a role, because the client
+              session does not carry roles — only the API knows who is
+              compliance. An ordinary user who follows this gets a clear "you
+              do not hold this role" from the console itself, which is a better
+              answer than a link that silently is not there. */}
+          <section className="panel-dark p-lg">
+            <div className="flex items-center gap-sm"><span className="grid h-10 w-10 place-items-center rounded-lg bg-surface-elevated-dark text-primary"><Icon name="shield" /></span><div><h2 className="font-semibold text-on-dark">Operations</h2><p className="text-xs text-muted">Compliance role required</p></div></div>
+            <p className="mt-md text-sm leading-6 text-muted-strong">Platform metrics, verification queues, and the policy that decides what needs a human.</p>
+            <Link href="/admin" className="mt-md inline-flex min-h-11 items-center gap-xs rounded-md border border-hairline-dark px-md text-sm font-medium text-on-dark transition-colors hover:border-border-strong/40">Open console <Icon name="arrow-right" className="h-4 w-4" /></Link>
+          </section>
         </aside>
       </section>
 

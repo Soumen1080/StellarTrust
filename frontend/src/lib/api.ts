@@ -45,6 +45,22 @@ import type {
   TokenizationDetailsResponse,
   TokenizationListResponse,
   WalletBalancesResponse,
+  AuditListResponse,
+  BusinessMetricsDTO,
+  ClaimDepositInput,
+  DisputeDTO as AdminDisputeDTO,
+  EventSpineHealthResponse,
+  SettlementDetailsResponse as AdminSettlementDTO,
+  TreasuryBalancesResponse,
+  TreasuryDepositAddressResponse,
+  TreasuryMovementDTO,
+  TreasuryMovementsResponse,
+  UpdateVerificationPolicyInput,
+  VerificationDomain,
+  VerificationPolicyDTO,
+  VerificationPolicyListResponse,
+  VolumeSeriesResponse,
+  WithdrawInput,
 } from "@stellartrust/shared";
 
 const DEFAULT_API_BASE =
@@ -546,6 +562,164 @@ export const api = {
         accessToken,
         headers: { "idempotency-key": idempotencyKey },
         body: JSON.stringify(input),
+      },
+    ),
+
+  // ── Treasury: funding and withdrawing a balance (plane.md §4.5) ───────────
+
+  /** Where to send funds to top up. */
+  treasuryDepositAddress: (accessToken: string) =>
+    request<TreasuryDepositAddressResponse>("/api/treasury/deposit-address", {
+      accessToken,
+    }),
+  /** The caller's spendable balances, one per currency they hold. */
+  treasuryBalances: (accessToken: string) =>
+    request<TreasuryBalancesResponse>("/api/treasury/balances", {
+      accessToken,
+    }),
+  treasuryMovements: (accessToken: string) =>
+    request<TreasuryMovementsResponse>("/api/treasury/movements", {
+      accessToken,
+    }),
+  /**
+   * Claim a deposit: "this transaction paid you, credit me for it."
+   *
+   * The body carries a hash, never an amount — the amount comes from the
+   * chain, which is what makes a deposit a verification rather than an
+   * instruction.
+   */
+  claimDeposit: (
+    accessToken: string,
+    idempotencyKey: string,
+    input: ClaimDepositInput,
+  ) =>
+    request<TreasuryMovementDTO>("/api/treasury/deposits", {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  withdraw: (
+    accessToken: string,
+    idempotencyKey: string,
+    input: WithdrawInput,
+  ) =>
+    request<TreasuryMovementDTO>("/api/treasury/withdrawals", {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+
+  // ── Admin / operations console (compliance role required) ─────────────────
+
+  adminMetrics: (accessToken: string) =>
+    request<BusinessMetricsDTO>("/api/admin/metrics", { accessToken }),
+  adminVolume: (accessToken: string, days = 30) =>
+    request<VolumeSeriesResponse>(`/api/admin/volume?days=${days}`, {
+      accessToken,
+    }),
+  adminKycReviews: (accessToken: string) =>
+    request<{ reviews: KycReviewItem[] }>("/api/admin/kyc/reviews", {
+      accessToken,
+    }),
+  adminAssetReviews: (accessToken: string) =>
+    request<{ assets: AssetDTO[] }>("/api/admin/assets/reviews", {
+      accessToken,
+    }),
+  adminTokenizations: (accessToken: string) =>
+    request<{ tokenizations: TokenizationDTO[] }>("/api/admin/tokenizations", {
+      accessToken,
+    }),
+  adminDisputes: (accessToken: string) =>
+    request<{ disputes: AdminDisputeDTO[] }>("/api/admin/disputes", {
+      accessToken,
+    }),
+  adminSettlements: (accessToken: string) =>
+    request<{ settlements: AdminSettlementDTO[] }>("/api/admin/settlements", {
+      accessToken,
+    }),
+  adminTreasuryMovements: (accessToken: string) =>
+    request<{ movements: TreasuryMovementDTO[] }>(
+      "/api/admin/treasury/movements",
+      { accessToken },
+    ),
+  adminAudit: (accessToken: string, limit = 100) =>
+    request<AuditListResponse>(`/api/admin/audit?limit=${limit}`, {
+      accessToken,
+    }),
+  adminEventHealth: (accessToken: string) =>
+    request<EventSpineHealthResponse>("/api/admin/events/health", {
+      accessToken,
+    }),
+  adminPolicies: (accessToken: string) =>
+    request<VerificationPolicyListResponse>("/api/admin/policies", {
+      accessToken,
+    }),
+  /** Change how a domain routes its verification decisions. Audited. */
+  adminUpdatePolicy: (
+    accessToken: string,
+    idempotencyKey: string,
+    domain: VerificationDomain,
+    input: UpdateVerificationPolicyInput,
+  ) =>
+    request<VerificationPolicyDTO>(`/api/admin/policies/${domain}`, {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  adminDecideKycReview: (
+    accessToken: string,
+    idempotencyKey: string,
+    reviewId: string,
+    input: { decision: "approve" | "reject"; reason: string },
+  ) =>
+    request<KycReviewItem>(`/api/admin/kyc/reviews/${reviewId}`, {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  adminReviewAsset: (
+    accessToken: string,
+    idempotencyKey: string,
+    assetId: string,
+    input: { decision: "verify" | "reject"; note?: string },
+  ) =>
+    request<AssetDTO>(`/api/admin/assets/${assetId}/review`, {
+      method: "POST",
+      accessToken,
+      headers: { "idempotency-key": idempotencyKey },
+      body: JSON.stringify(input),
+    }),
+  adminApproveWithdrawal: (
+    accessToken: string,
+    idempotencyKey: string,
+    movementId: string,
+  ) =>
+    request<TreasuryMovementDTO>(
+      `/api/admin/treasury/withdrawals/${movementId}/approve`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: JSON.stringify({}),
+      },
+    ),
+  adminRejectWithdrawal: (
+    accessToken: string,
+    idempotencyKey: string,
+    movementId: string,
+    reason: string,
+  ) =>
+    request<TreasuryMovementDTO>(
+      `/api/admin/treasury/withdrawals/${movementId}/reject`,
+      {
+        method: "POST",
+        accessToken,
+        headers: { "idempotency-key": idempotencyKey },
+        body: JSON.stringify({ reason }),
       },
     ),
 };

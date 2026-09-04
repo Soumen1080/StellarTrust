@@ -1294,3 +1294,180 @@ export interface FeedbackListResponse {
 export interface FeedbackMutationResponse {
   feedback: FeedbackDTO;
 }
+
+// ── Treasury: funding and withdrawing a ledger balance (plane.md §4.5) ────────
+
+export type TreasuryDirection = "deposit" | "withdrawal";
+export type TreasuryStatus = "pending" | "completed" | "failed";
+
+/**
+ * One movement of value between a user's Stellar wallet and their ledger
+ * balance.
+ *
+ * A deposit's `stellarTxHash` is what the platform *verified* — the payment
+ * already happened on-chain and this row is the record of crediting it. A
+ * withdrawal's is filled in once the payment is submitted, so it is null while
+ * the movement is pending or after it failed.
+ */
+export interface TreasuryMovementDTO {
+  id: string;
+  userId: string;
+  direction: TreasuryDirection;
+  status: TreasuryStatus;
+  /** Minor units, as a string. Never a float. */
+  amount: MinorUnitAmount;
+  currency: CurrencyCode;
+  stellarTxHash: string | null;
+  counterpartyAddress: string;
+  ledgerTransactionId: string | null;
+  failureReason: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface TreasuryBalanceDTO {
+  currency: CurrencyCode;
+  /** Minor units. Zero is a real answer, not a missing account. */
+  balance: MinorUnitAmount;
+}
+
+export interface TreasuryBalancesResponse {
+  balances: TreasuryBalanceDTO[];
+}
+
+export interface TreasuryMovementsResponse {
+  movements: TreasuryMovementDTO[];
+}
+
+export interface TreasuryDepositAddressResponse {
+  /** Where users send funds to top up. */
+  address: string;
+}
+
+export interface ClaimDepositInput {
+  /** The transaction hash the user says paid the platform. */
+  stellarTxHash: string;
+}
+
+export interface WithdrawInput {
+  amount: MinorUnitAmount;
+  currency: CurrencyCode;
+  /** Defaults to the wallet proved at SEP-10 when omitted. */
+  destinationAddress?: string;
+}
+
+// ── Admin / operations console ───────────────────────────────────────────────
+
+/** Domains that have a verification decision to route. */
+export type VerificationDomain = "kyc" | "rwa_asset";
+
+/**
+ * How a domain decides.
+ *
+ * `auto` does not mean the model decides — AI is advisory in every mode
+ * (Rules.md §6). It means the deterministic policy may conclude without
+ * queueing a human.
+ */
+export type VerificationMode = "auto" | "ai" | "human";
+
+export interface VerificationPolicyDTO {
+  domain: VerificationDomain;
+  mode: VerificationMode;
+  /** Risk at or below which an automatic approval is allowed, in basis points. */
+  approveMaxRiskBps: number;
+  /** Risk at or above which an automatic rejection is allowed, in basis points. */
+  rejectMinRiskBps: number;
+  /** Below this confidence the advisory is not trusted; a human decides. */
+  minConfidenceBps: number;
+  /**
+   * Above this amount (minor units) a decision always requires a human, even
+   * when every threshold is satisfied. Zero disables the gate.
+   */
+  humanReviewAboveAmount: MinorUnitAmount;
+  updatedBy: string | null;
+  updatedAt: string;
+}
+
+export interface VerificationPolicyListResponse {
+  policies: VerificationPolicyDTO[];
+}
+
+export interface UpdateVerificationPolicyInput {
+  mode?: VerificationMode;
+  approveMaxRiskBps?: number;
+  rejectMinRiskBps?: number;
+  minConfidenceBps?: number;
+  humanReviewAboveAmount?: MinorUnitAmount;
+}
+
+/**
+ * The platform's health as a lending business, not as a web service.
+ *
+ * Amounts are keyed by currency rather than summed into one scalar: a
+ * cross-currency total needs an FX rate the platform does not have, and a
+ * number that silently assumes 1 USD = 1 EUR is worse than no number.
+ */
+export interface BusinessMetricsDTO {
+  totalValueLocked: Record<string, MinorUnitAmount>;
+  capitalDeployed: Record<string, MinorUnitAmount>;
+  activeTokenizations: number;
+  fundedTokenizations: number;
+  maturedTokenizations: number;
+  defaultedTokenizations: number;
+  repaidTokenizations: number;
+  writtenOffTokenizations: number;
+  /**
+   * Losses over positions that have *resolved*, in basis points. Positions
+   * still running are excluded from the denominator — counting them as
+   * successes flatters a young book.
+   */
+  defaultRateBps: number;
+  disputeRateBps: number;
+  openDisputes: number;
+  /** Mean days from funding to collection, or null when nothing has collected. */
+  averageDaysToCollect: number | null;
+  overduePositions: number;
+  ordersTotal: number;
+  ordersByStatus: Record<string, number>;
+  generatedAt: string;
+}
+
+/** One day of activity. Quiet days are present and zeroed, never omitted. */
+export interface VolumeBucketDTO {
+  /** ISO date, `YYYY-MM-DD`. */
+  date: string;
+  orderCount: number;
+  orderVolume: Record<string, MinorUnitAmount>;
+  tokenizationCount: number;
+  tokenizationVolume: Record<string, MinorUnitAmount>;
+}
+
+export interface VolumeSeriesResponse {
+  buckets: VolumeBucketDTO[];
+}
+
+/** An append-only audit entry, as the console reads it. */
+export interface AuditEventDTO {
+  id: string;
+  actor: string;
+  action: string;
+  entity: string;
+  entityId: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AuditListResponse {
+  events: AuditEventDTO[];
+}
+
+/** One labelled metric series, as the registry holds it. */
+export interface MetricSeriesDTO {
+  labels: Record<string, string>;
+  value: number;
+}
+
+export interface EventSpineHealthResponse {
+  published: MetricSeriesDTO[];
+  handlers: MetricSeriesDTO[];
+}
