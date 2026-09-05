@@ -74,6 +74,19 @@ export function loginPage(error: string | null): string {
     background: none; color: #707a8a; font: inherit; font-size: 13px;
     text-decoration: underline; cursor: pointer;
   }
+  /* The password field and its show/hide toggle. The toggle sits inside the
+     field's box rather than beside it, so revealing the password does not
+     shift the layout underneath it. */
+  .reveal { position: relative; }
+  .reveal input { padding-right: 68px; }
+  .reveal button {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    width: auto; margin: 0; padding: 5px 10px; border-radius: 4px;
+    background: #2b3139; color: #929aa5; font: inherit; font-size: 12px;
+    font-weight: 500; cursor: pointer;
+  }
+  .reveal button:hover:not([disabled]) { background: #3a4149; color: #eaecef; }
+  .reveal button:focus-visible { outline: 2px solid #fcd535; outline-offset: 1px; }
 </style>
 </head>
 <body>
@@ -87,7 +100,11 @@ export function loginPage(error: string | null): string {
   <!-- Step 1 -->
   <div class="step on" id="step1">
     <label for="password">Password</label>
-    <input id="password" type="password" autocomplete="current-password" autofocus>
+    <div class="reveal">
+      <input id="password" type="password" autocomplete="current-password" autofocus>
+      <button type="button" id="toggle" aria-pressed="false"
+              aria-label="Show password" title="Show password">Show</button>
+    </div>
     <button id="next" type="button">Continue</button>
   </div>
 
@@ -156,6 +173,9 @@ export function loginPage(error: string | null): string {
       .then(function (data) {
         challengeId = data.challengeId;
         document.getElementById("challenge").value = data.message;
+        // hidePassword is a hoisted declaration below, so it is defined by
+        // the time this callback runs.
+        hidePassword();
         step(2);
         show("Password accepted. Now prove the wallet.", "info");
       })
@@ -166,6 +186,42 @@ export function loginPage(error: string | null): string {
   document.getElementById("password").addEventListener("keydown", function (e) {
     if (e.key === "Enter") submitPassword();
   });
+
+  // ── Show / hide the password ──────────────────────────────────────────────
+  //
+  // Typing a password blind is how a correct one gets reported as wrong, and
+  // on this form a wrong one costs an attempt against a five-try lockout.
+  //
+  // Toggling type between "password" and "text" is what browsers and password
+  // managers expect, so autofill keeps working. The aria-pressed attribute
+  // carries the state for a screen reader, which cannot see that the dots
+  // became letters.
+  var toggle = document.getElementById("toggle");
+  var field = document.getElementById("password");
+  toggle.addEventListener("click", function () {
+    var revealed = field.type === "text";
+    field.type = revealed ? "password" : "text";
+    toggle.textContent = revealed ? "Show" : "Hide";
+    toggle.setAttribute("aria-pressed", String(!revealed));
+    var label = revealed ? "Show password" : "Hide password";
+    toggle.setAttribute("aria-label", label);
+    toggle.setAttribute("title", label);
+    // Return focus to the field so typing continues where it left off rather
+    // than stranding the caret on the button.
+    field.focus();
+  });
+
+  // Re-hide once the password has been accepted. Step two can sit on screen
+  // for a while as a wallet is opened, and leaving the password legible for
+  // that whole time is exactly when someone walks past.
+  function hidePassword() {
+    if (field.type !== "text") return;
+    field.type = "password";
+    toggle.textContent = "Show";
+    toggle.setAttribute("aria-pressed", "false");
+    toggle.setAttribute("aria-label", "Show password");
+    toggle.setAttribute("title", "Show password");
+  }
 
   // ── Step 2: wallet signature ──────────────────────────────────────────────
   function verify(signature) {

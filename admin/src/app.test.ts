@@ -130,6 +130,17 @@ describe("nothing reaches the console without a password", () => {
     await request(app).get("/api/overview").set("Cookie", tampered).expect(401);
   });
 
+  it("offers a show/hide toggle on the password field", async () => {
+    // Typing a password blind is how a correct one gets reported as wrong,
+    // and here a wrong one costs an attempt against a five-try lockout.
+    const res = await request(app).get("/login").expect(200);
+    expect(res.text).toContain('id="toggle"');
+    // Starts hidden. A field that renders readable by default would expose the
+    // password to anyone glancing at the screen before it is even submitted.
+    expect(res.text).toContain('id="password" type="password"');
+    expect(res.text).toContain('aria-pressed="false"');
+  });
+
   it("serves the login form without a session", async () => {
     // The one page that must be reachable — and it says nothing about what
     // this system is.
