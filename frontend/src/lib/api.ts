@@ -6,7 +6,6 @@ import type {
   IdentityProfileResponse,
   KycApplicationInput,
   KycApplicationResponse,
-  KycReviewDecisionInput,
   KycReviewItem,
   KycStatusResponse,
   CreateOrderInput,
@@ -45,21 +44,11 @@ import type {
   TokenizationDetailsResponse,
   TokenizationListResponse,
   WalletBalancesResponse,
-  AuditListResponse,
-  BusinessMetricsDTO,
   ClaimDepositInput,
-  DisputeDTO as AdminDisputeDTO,
-  EventSpineHealthResponse,
-  SettlementDetailsResponse as AdminSettlementDTO,
   TreasuryBalancesResponse,
   TreasuryDepositAddressResponse,
   TreasuryMovementDTO,
   TreasuryMovementsResponse,
-  UpdateVerificationPolicyInput,
-  VerificationDomain,
-  VerificationPolicyDTO,
-  VerificationPolicyListResponse,
-  VolumeSeriesResponse,
   WithdrawInput,
 } from "@stellartrust/shared";
 
@@ -200,22 +189,10 @@ export const api = {
     }),
   kycStatus: (accessToken: string) =>
     request<KycStatusResponse>("/api/kyc/status", { accessToken }),
-  listKycReviews: (accessToken: string) =>
-    request<{ reviews: KycReviewItem[] }>("/api/kyc/reviews", {
-      accessToken,
-    }),
-  resolveKycReview: (
-    accessToken: string,
-    reviewId: string,
-    idempotencyKey: string,
-    input: KycReviewDecisionInput,
-  ) =>
-    request<KycReviewItem>(`/api/kyc/reviews/${reviewId}/decision`, {
-      method: "POST",
-      accessToken,
-      headers: { "idempotency-key": idempotencyKey },
-      body: JSON.stringify(input),
-    }),
+  // The compliance review queue moved to the separately deployed admin
+  // console (`admin/`), which reads Postgres directly. The public client no
+  // longer calls it — a reviewer's tools do not belong on the site every user
+  // loads.
   listDevKycReviews: (password: string) =>
     request<{ reviews: KycReviewItem[] }>("/api/kyc/dev/reviews", {
       devApprovalPassword: password,
@@ -611,115 +588,4 @@ export const api = {
       body: JSON.stringify(input),
     }),
 
-  // ── Admin / operations console (compliance role required) ─────────────────
-
-  adminMetrics: (accessToken: string) =>
-    request<BusinessMetricsDTO>("/api/admin/metrics", { accessToken }),
-  adminVolume: (accessToken: string, days = 30) =>
-    request<VolumeSeriesResponse>(`/api/admin/volume?days=${days}`, {
-      accessToken,
-    }),
-  adminKycReviews: (accessToken: string) =>
-    request<{ reviews: KycReviewItem[] }>("/api/admin/kyc/reviews", {
-      accessToken,
-    }),
-  adminAssetReviews: (accessToken: string) =>
-    request<{ assets: AssetDTO[] }>("/api/admin/assets/reviews", {
-      accessToken,
-    }),
-  adminTokenizations: (accessToken: string) =>
-    request<{ tokenizations: TokenizationDTO[] }>("/api/admin/tokenizations", {
-      accessToken,
-    }),
-  adminDisputes: (accessToken: string) =>
-    request<{ disputes: AdminDisputeDTO[] }>("/api/admin/disputes", {
-      accessToken,
-    }),
-  adminSettlements: (accessToken: string) =>
-    request<{ settlements: AdminSettlementDTO[] }>("/api/admin/settlements", {
-      accessToken,
-    }),
-  adminTreasuryMovements: (accessToken: string) =>
-    request<{ movements: TreasuryMovementDTO[] }>(
-      "/api/admin/treasury/movements",
-      { accessToken },
-    ),
-  adminAudit: (accessToken: string, limit = 100) =>
-    request<AuditListResponse>(`/api/admin/audit?limit=${limit}`, {
-      accessToken,
-    }),
-  adminEventHealth: (accessToken: string) =>
-    request<EventSpineHealthResponse>("/api/admin/events/health", {
-      accessToken,
-    }),
-  adminPolicies: (accessToken: string) =>
-    request<VerificationPolicyListResponse>("/api/admin/policies", {
-      accessToken,
-    }),
-  /** Change how a domain routes its verification decisions. Audited. */
-  adminUpdatePolicy: (
-    accessToken: string,
-    idempotencyKey: string,
-    domain: VerificationDomain,
-    input: UpdateVerificationPolicyInput,
-  ) =>
-    request<VerificationPolicyDTO>(`/api/admin/policies/${domain}`, {
-      method: "POST",
-      accessToken,
-      headers: { "idempotency-key": idempotencyKey },
-      body: JSON.stringify(input),
-    }),
-  adminDecideKycReview: (
-    accessToken: string,
-    idempotencyKey: string,
-    reviewId: string,
-    input: { decision: "approve" | "reject"; reason: string },
-  ) =>
-    request<KycReviewItem>(`/api/admin/kyc/reviews/${reviewId}`, {
-      method: "POST",
-      accessToken,
-      headers: { "idempotency-key": idempotencyKey },
-      body: JSON.stringify(input),
-    }),
-  adminReviewAsset: (
-    accessToken: string,
-    idempotencyKey: string,
-    assetId: string,
-    input: { decision: "verify" | "reject"; note?: string },
-  ) =>
-    request<AssetDTO>(`/api/admin/assets/${assetId}/review`, {
-      method: "POST",
-      accessToken,
-      headers: { "idempotency-key": idempotencyKey },
-      body: JSON.stringify(input),
-    }),
-  adminApproveWithdrawal: (
-    accessToken: string,
-    idempotencyKey: string,
-    movementId: string,
-  ) =>
-    request<TreasuryMovementDTO>(
-      `/api/admin/treasury/withdrawals/${movementId}/approve`,
-      {
-        method: "POST",
-        accessToken,
-        headers: { "idempotency-key": idempotencyKey },
-        body: JSON.stringify({}),
-      },
-    ),
-  adminRejectWithdrawal: (
-    accessToken: string,
-    idempotencyKey: string,
-    movementId: string,
-    reason: string,
-  ) =>
-    request<TreasuryMovementDTO>(
-      `/api/admin/treasury/withdrawals/${movementId}/reject`,
-      {
-        method: "POST",
-        accessToken,
-        headers: { "idempotency-key": idempotencyKey },
-        body: JSON.stringify({ reason }),
-      },
-    ),
 };

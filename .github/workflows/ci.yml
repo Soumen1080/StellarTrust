@@ -67,6 +67,28 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+  # ── Admin console: a separately deployed app, so it builds and tests alone ──
+  admin:
+    name: admin (typecheck · test · build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install
+        working-directory: admin
+        run: npm install --no-audit --no-fund
+      - name: Typecheck
+        working-directory: admin
+        run: npm run typecheck
+      - name: Test
+        working-directory: admin
+        run: npm test
+      - name: Build
+        working-directory: admin
+        run: npm run build
+
   # ── AI Risk Service: lint (ruff) + tests (pytest) on Python 3.12 ────────────
   ai:
     name: ai (ruff · pytest)

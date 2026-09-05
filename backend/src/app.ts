@@ -143,7 +143,6 @@ import { PgFeedbackRepository } from "./modules/feedback/pg-feedback.repository.
 import { FeedbackService } from "./modules/feedback/feedback.service.js";
 import { createFeedbackRouter } from "./modules/feedback/feedback.routes.js";
 import { AdminService } from "./modules/admin/admin.service.js";
-import { createAdminRouter } from "./modules/admin/admin.routes.js";
 import { BusinessMetricsJob } from "./modules/admin/business-metrics.job.js";
 import {
   InMemoryPolicyRepository,
@@ -846,34 +845,17 @@ export function createApp(): Express {
   );
   app.locals.businessMetricsJob = businessMetricsJob;
 
-  app.use(
-    "/api/admin",
-    createAdminRouter(
-      adminService,
-      {
-        kycReviews: () => kyc.listReviews(),
-        // Read through the service so the compliance check that guards the
-        // queue is the service's own, not a second copy of it here.
-        assetReviewQueue: () =>
-          rwa.listAssetsForReview({
-            userId: "system:admin-console",
-            roles: ["compliance"],
-          }),
-        tokenizations: () => rwaRepository.listTokenizations(),
-        disputes: () => disputeRepository.listAllDisputes(),
-        settlements: () => settlementRepository.listAllSettlements(),
-        treasuryMovements: () => treasury.listAll({ limit: 200 }),
-        recentAudit: (limit) => audit.listRecent(limit),
-        eventSpineHealth: async () => ({
-          published: metrics.domainEventsTotal.snapshot(),
-          handlers: metrics.domainEventHandlersTotal.snapshot(),
-        }),
-      },
-      { kyc, rwa, disputes, treasury },
-      bearerVerifier,
-      idempotencyStore,
-    ),
-  );
+  // ── No /api/admin here, deliberately ─────────────────────────────────────
+  //
+  // The operations console is a separate application (`admin/`), deployed
+  // privately on its own host and reading Postgres directly. Mounting an admin
+  // router on the public API would put the platform's widest data grant —
+  // every user's position, every queue — on the same hostname anyone can
+  // reach, which is exactly the surface the split exists to remove.
+  //
+  // `AdminService` is still constructed above because `BusinessMetricsJob`
+  // uses it to alert on the default and dispute rates. That job publishes
+  // metrics and pages a human; it exposes no route.
 
   // ── Error boundary ──────────────────────────────────────────────────────
   app.use(notFoundHandler);
