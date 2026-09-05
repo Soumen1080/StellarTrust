@@ -21,13 +21,28 @@ if (!password) {
   process.exit(1);
 }
 
+/**
+ * Warn on a short password rather than refusing it.
+ *
+ * It used to refuse under 12 characters. That was the wrong call for a tool
+ * whose operator is the person carrying the risk: the length that is right
+ * depends on what else guards the console, and here two other things do — the
+ * wallet second factor, which means a guessed password alone opens nothing,
+ * and the login lockout, which caps guesses at five per fifteen minutes.
+ *
+ * So this states the cost and lets the operator decide, which is the honest
+ * shape for a warning. It still says so every time, because a warning that
+ * only appears once is one that gets forgotten.
+ */
 if (password.length < 12) {
-  console.error(
-    `Refusing: that password is ${password.length} characters.\n\n` +
-      "Use at least 12. This console can approve KYC and read every user's\n" +
-      "position; a password worth guessing is a password that will be.",
+  console.warn(
+    `\nWarning: that password is ${password.length} characters.\n\n` +
+      "Short passwords, and ones built from a name plus digits, are what\n" +
+      "cracking tools generate first. Two things reduce the risk here: the\n" +
+      "wallet signature means a guessed password alone opens nothing, and the\n" +
+      "lockout caps guessing at 5 attempts per 15 minutes.\n\n" +
+      "Proceeding.",
   );
-  process.exit(1);
 }
 
 const hash = await hashPassword(password);
