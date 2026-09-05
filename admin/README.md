@@ -26,6 +26,29 @@ which needs the signing key — and putting that key here would mean two systems
 able to move funds instead of one. This console can *stop* a payout; only the
 backend can send one.
 
+## Two factors, both required
+
+Signing in takes two steps, and a session exists only after both:
+
+1. **Password** — the server checks it and returns a random, single-use,
+   five-minute challenge. **No session is created.**
+2. **Wallet signature** — the operator signs that challenge with the key in
+   `ADMIN_WALLET`. Only now does a session exist.
+
+The ordering is the security property. Whoever holds a leaked password gets a
+nonce to sign and nothing else: a password can be phished, reused, read from a
+hosting dashboard, or found in a backup, and none of that yields a private key.
+Only the *public* key lives on this host, so a compromise of this server still
+cannot sign on the operator's behalf.
+
+Failures at either step count toward the same lockout, so an attacker who has
+the password does not get unlimited attempts at the second factor.
+
+Freighter is used when present; otherwise the page falls back to pasting a
+signature. That is not a weaker path — the same signature is checked the same
+way — and it means an operator without the extension can still sign from a
+wallet they trust rather than being locked out of their own console.
+
 ## Setup
 
 ```bash
@@ -39,7 +62,8 @@ cp .env.example .env   # fill in DATABASE_URL, the hash, SESSION_SECRET, …
 npm run dev
 ```
 
-`ADMIN_REVIEWER_USER_ID` must be a real `users.id`. The database refuses a KYC
+`ADMIN_WALLET` is the Stellar address that must sign in alongside the
+password. `ADMIN_REVIEWER_USER_ID` must be a real `users.id`. The database refuses a KYC
 or asset decision that does not name who made it (migrations 0018 and 0022),
 and this console signs in with a password rather than a wallet, so it has no
 user identity of its own.
@@ -69,7 +93,10 @@ worse than a clear failure at deploy time.
 npm test
 ```
 
-24 tests, all about one question: can anything reach the console without the
-password? They run against the real password verification rather than a stub —
-a stubbed password check is a test that would still pass with authentication
-removed entirely.
+31 tests, all about one question: can anything reach the console without both
+factors? They run against the real password hashing and real Ed25519 signature
+verification rather than stubs — a stubbed check is a test that would still
+pass with authentication removed entirely.
+
+The load-bearing case is "correct password, wrong wallet": that is exactly what
+an attacker holding a leaked password has, and it is refused.

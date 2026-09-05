@@ -19,6 +19,7 @@
     "hash-password": "tsx src/scripts/hash-password.ts"
   },
   "dependencies": {
+    "@stellar/stellar-sdk": "^16.0.1",
     "dotenv": "17.4.2",
     "express": "5.2.1",
     "express-rate-limit": "8.6.0",

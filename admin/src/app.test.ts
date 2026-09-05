@@ -13,7 +13,17 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
+import { Keypair } from "@stellar/stellar-sdk";
 import { hashPassword } from "./lib/password.js";
+
+/**
+ * A real keypair, so the wallet factor is exercised end to end: the test
+ * signs with the secret and the server verifies against the public key. A
+ * stubbed signature check would pass with the second factor removed.
+ */
+const ADMIN_KEYPAIR = Keypair.random();
+/** A different wallet — what an attacker holding the password would have. */
+const OTHER_KEYPAIR = Keypair.random();
 
 const PASSWORD = "a-sufficiently-long-test-password";
 
@@ -47,6 +57,7 @@ beforeAll(async () => {
   process.env.ADMIN_PASSWORD_HASH = await hashPassword(PASSWORD);
   process.env.SESSION_SECRET = "test-session-secret-at-least-32-chars-long";
   process.env.ADMIN_REVIEWER_USER_ID = "11111111-2222-4333-8444-555555555555";
+  process.env.ADMIN_WALLET = ADMIN_KEYPAIR.publicKey();
   process.env.LOGIN_MAX_ATTEMPTS = "3";
 
   const appModule = await import("./app.js");
@@ -59,14 +70,26 @@ beforeEach(() => {
   resetAttempts();
 });
 
-/** Sign in and return the session cookie. */
-async function signIn(): Promise<string> {
-  const res = await request(app)
-    .post("/login")
-    .type("form")
-    .send({ password: PASSWORD });
-  const cookie = res.headers["set-cookie"]?.[0];
-  if (!cookie) throw new Error("sign-in did not set a session cookie");
+/**
+ * Complete both factors and return the session cookie.
+ *
+ * Password first, then a signature over the challenge it returns — the same
+ * two calls a browser makes.
+ */
+async function signIn(keypair = ADMIN_KEYPAIR): Promise<string> {
+  const step1 = await request(app).post("/login").send({ password: PASSWORD });
+  if (step1.status !== 200) {
+    throw new Error(`password step failed: ${step1.status}`);
+  }
+  const signature = keypair
+    .sign(Buffer.from(step1.body.message as string, "utf8"))
+    .toString("base64");
+
+  const step2 = await request(app)
+    .post("/login/verify")
+    .send({ challengeId: step1.body.challengeId, signature });
+  const cookie = step2.headers["set-cookie"]?.[0];
+  if (!cookie) throw new Error("wallet step did not set a session cookie");
   return cookie.split(";")[0] as string;
 }
 
@@ -116,37 +139,117 @@ describe("nothing reaches the console without a password", () => {
   });
 });
 
-describe("signing in", () => {
-  it("accepts the correct password and issues a session", async () => {
+describe("a password alone opens nothing", () => {
+  it("returns a challenge, not a session, for the correct password", async () => {
+    // The whole point of the second factor. Whoever holds a leaked password
+    // gets a nonce to sign and nothing else.
     const res = await request(app)
       .post("/login")
-      .type("form")
       .send({ password: PASSWORD })
-      .expect(302);
+      .expect(200);
+
+    expect(res.headers["set-cookie"]).toBeUndefined();
+    expect(res.body).toHaveProperty("challengeId");
+    expect(res.body.message).toContain("nonce:");
+  });
+
+  it("refuses a signature from a different wallet", async () => {
+    // An attacker with the password but not the key. This is the case the
+    // second factor exists for.
+    const step1 = await request(app).post("/login").send({ password: PASSWORD });
+    const signature = OTHER_KEYPAIR.sign(
+      Buffer.from(step1.body.message as string, "utf8"),
+    ).toString("base64");
+
+    const res = await request(app)
+      .post("/login/verify")
+      .send({ challengeId: step1.body.challengeId, signature })
+      .expect(401);
+
+    expect(res.headers["set-cookie"]).toBeUndefined();
+    expect(res.body.error.message).toMatch(/not from the authorised wallet/i);
+  });
+
+  it("refuses a signature over a different message", async () => {
+    // Guards against replaying a signature the operator made elsewhere.
+    const step1 = await request(app).post("/login").send({ password: PASSWORD });
+    const signature = ADMIN_KEYPAIR.sign(
+      Buffer.from("some other message", "utf8"),
+    ).toString("base64");
+
+    await request(app)
+      .post("/login/verify")
+      .send({ challengeId: step1.body.challengeId, signature })
+      .expect(401);
+  });
+
+  it("refuses a challenge that was already used", async () => {
+    // Single-use: a captured signature proves control at one moment for one
+    // challenge, and that challenge is spent.
+    const step1 = await request(app).post("/login").send({ password: PASSWORD });
+    const signature = ADMIN_KEYPAIR.sign(
+      Buffer.from(step1.body.message as string, "utf8"),
+    ).toString("base64");
+    const body = { challengeId: step1.body.challengeId, signature };
+
+    await request(app).post("/login/verify").send(body).expect(200);
+    await request(app).post("/login/verify").send(body).expect(401);
+  });
+
+  it("refuses an invented challenge id", async () => {
+    const signature = ADMIN_KEYPAIR.sign(
+      Buffer.from("anything", "utf8"),
+    ).toString("base64");
+    await request(app)
+      .post("/login/verify")
+      .send({ challengeId: "not-a-real-challenge", signature })
+      .expect(401);
+  });
+
+  it("refuses a malformed proof", async () => {
+    await request(app).post("/login/verify").send({}).expect(400);
+  });
+
+  it("issues a fresh nonce per attempt", async () => {
+    // A reused nonce would make one captured signature valid forever.
+    const a = await request(app).post("/login").send({ password: PASSWORD });
+    const b = await request(app).post("/login").send({ password: PASSWORD });
+    expect(a.body.message).not.toBe(b.body.message);
+  });
+});
+
+describe("signing in with both factors", () => {
+  it("issues a session only after the wallet signature", async () => {
+    const step1 = await request(app).post("/login").send({ password: PASSWORD });
+    const signature = ADMIN_KEYPAIR.sign(
+      Buffer.from(step1.body.message as string, "utf8"),
+    ).toString("base64");
+
+    const res = await request(app)
+      .post("/login/verify")
+      .send({ challengeId: step1.body.challengeId, signature })
+      .expect(200);
 
     const cookie = res.headers["set-cookie"]?.[0] ?? "";
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("SameSite=Strict");
   });
 
-  it("refuses the wrong password", async () => {
+  it("refuses the wrong password before any challenge is issued", async () => {
     const res = await request(app)
       .post("/login")
-      .type("form")
       .send({ password: "not-the-password" })
       .expect(401);
+    expect(res.body).not.toHaveProperty("challengeId");
     expect(res.headers["set-cookie"]).toBeUndefined();
   });
 
-  it("refuses a missing password with the same message as a wrong one", async () => {
+  it("refuses a missing password the same way as a wrong one", async () => {
     // Distinguishing them tells an attacker which half of their guess landed.
-    const wrong = await request(app)
-      .post("/login")
-      .type("form")
-      .send({ password: "nope" });
-    const missing = await request(app).post("/login").type("form").send({});
+    const wrong = await request(app).post("/login").send({ password: "nope" });
+    const missing = await request(app).post("/login").send({});
     expect(missing.status).toBe(wrong.status);
-    expect(missing.text).toContain("Incorrect password");
+    expect(missing.body.error.message).toBe(wrong.body.error.message);
   });
 
   it("opens the console once signed in", async () => {
@@ -179,44 +282,35 @@ describe("guessing the password is throttled", () => {
     // A password with no rate limit is a password that will eventually be
     // guessed. Configured to 3 for this suite.
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await request(app).post("/login").type("form").send({ password: "wrong" });
+      await request(app).post("/login").send({ password: "wrong" });
     }
     const res = await request(app)
       .post("/login")
-      .type("form")
       .send({ password: "wrong" })
       .expect(429);
-    expect(res.text).toMatch(/too many attempts/i);
+    expect(res.body.error.message).toMatch(/too many attempts/i);
   });
 
   it("refuses even the correct password while locked out", async () => {
     // Otherwise the lockout is decorative: an attacker who guesses correctly
     // on the attempt after the limit still gets in.
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await request(app).post("/login").type("form").send({ password: "wrong" });
+      await request(app).post("/login").send({ password: "wrong" });
     }
     await request(app)
       .post("/login")
-      .type("form")
       .send({ password: PASSWORD })
       .expect(429);
   });
 
   it("clears the counter after a successful sign-in", async () => {
-    await request(app).post("/login").type("form").send({ password: "wrong" });
-    await request(app)
-      .post("/login")
-      .type("form")
-      .send({ password: PASSWORD })
-      .expect(302);
-    // The earlier failure must not count toward a later lockout.
-    await request(app).post("/login").type("form").send({ password: "wrong" });
-    await request(app).post("/login").type("form").send({ password: "wrong" });
-    await request(app)
-      .post("/login")
-      .type("form")
-      .send({ password: PASSWORD })
-      .expect(302);
+    await request(app).post("/login").send({ password: "wrong" });
+    // A completed sign-in clears the counter. The password step alone does
+    // not, because on its own it has proved nothing.
+    await signIn();
+    await request(app).post("/login").send({ password: "wrong" });
+    await request(app).post("/login").send({ password: "wrong" });
+    await signIn();
   });
 });
 

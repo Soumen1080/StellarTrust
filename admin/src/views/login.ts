@@ -1,14 +1,19 @@
 /**
- * The sign-in page.
+ * The sign-in page — two factors, in two steps.
  *
- * Server-rendered plain HTML rather than a React app. The console is one
- * operator on one screen; a build pipeline, a bundler and a hydration step
- * would be three more things to deploy and keep current for no gain the
- * operator would notice.
+ *   1. Password  → the server returns a random challenge, and no session
+ *   2. Signature → the operator signs that challenge with the authorised
+ *                  wallet, and only then does a session exist
  *
- * Deliberately says nothing about what this is. A page reading "StellarTrust
- * Admin — production" tells anyone who stumbles onto it exactly what they have
- * found and what it is worth attacking.
+ * Deliberately says nothing about what this system is. A page reading
+ * "StellarTrust Admin — production" tells anyone who stumbles onto it exactly
+ * what they have found and what it is worth attacking.
+ *
+ * Signing happens in Freighter when it is available, and falls back to a paste
+ * box otherwise. The fallback is not a weaker path: the same signature is
+ * checked the same way, and it means an operator on a machine without the
+ * extension can still sign from a wallet they trust rather than being locked
+ * out of their own console.
  */
 export function loginPage(error: string | null): string {
   return `<!doctype html>
@@ -23,46 +28,198 @@ export function loginPage(error: string | null): string {
   * { box-sizing: border-box; }
   body {
     margin: 0; min-height: 100dvh; display: grid; place-items: center;
-    background: #0b0e11; color: #eaecef;
+    background: #0b0e11; color: #eaecef; padding: 16px;
     font: 15px/1.5 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
-  form {
-    width: min(360px, calc(100vw - 32px));
+  .box {
+    width: min(420px, 100%);
     background: #1e2329; border: 1px solid #2b3139; border-radius: 12px;
     padding: 32px;
   }
   h1 { margin: 0 0 4px; font-size: 18px; }
   p.sub { margin: 0 0 24px; font-size: 13px; color: #707a8a; }
   label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 8px; }
-  input {
+  input, textarea {
     width: 100%; padding: 10px 12px; border-radius: 6px;
     border: 1px solid #2b3139; background: #0b0e11; color: #eaecef;
     font: inherit;
   }
-  input:focus { outline: 2px solid #fcd535; outline-offset: 1px; }
+  textarea { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; resize: vertical; }
+  input:focus, textarea:focus { outline: 2px solid #fcd535; outline-offset: 1px; }
   button {
     width: 100%; margin-top: 20px; padding: 11px; border: 0; border-radius: 6px;
     background: #fcd535; color: #181a20; font: inherit; font-weight: 600;
     cursor: pointer;
   }
-  button:hover { background: #f0b90b; }
-  .error {
+  button:hover:not([disabled]) { background: #f0b90b; }
+  button[disabled] { opacity: .5; cursor: not-allowed; }
+  .msg {
     margin: 0 0 16px; padding: 10px 12px; border-radius: 6px; font-size: 13px;
-    background: rgba(246,70,93,.1); border: 1px solid rgba(246,70,93,.3);
-    color: #f6465d;
+  }
+  .msg.err { background: rgba(246,70,93,.1); border: 1px solid rgba(246,70,93,.3); color: #f6465d; }
+  .msg.info { background: rgba(59,130,246,.1); border: 1px solid rgba(59,130,246,.3); color: #93c5fd; }
+  .step { display: none; }
+  .step.on { display: block; }
+  .steps { display: flex; gap: 6px; margin-bottom: 20px; }
+  .dot { flex: 1; height: 3px; border-radius: 2px; background: #2b3139; }
+  .dot.on { background: #fcd535; }
+  code {
+    display: block; margin-top: 8px; padding: 8px; border-radius: 6px;
+    background: #0b0e11; border: 1px solid #2b3139;
+    font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 11px;
+    word-break: break-all; color: #929aa5;
+  }
+  .link {
+    display: block; width: 100%; margin-top: 10px; padding: 0; border: 0;
+    background: none; color: #707a8a; font: inherit; font-size: 13px;
+    text-decoration: underline; cursor: pointer;
   }
 </style>
 </head>
 <body>
-<form method="post" action="/login">
+<div class="box">
   <h1>Sign in</h1>
-  <p class="sub">Restricted access.</p>
-  ${error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : ""}
-  <label for="password">Password</label>
-  <input id="password" name="password" type="password" autocomplete="current-password"
-         autofocus required>
-  <button type="submit">Continue</button>
-</form>
+  <p class="sub">Restricted access. Two factors required.</p>
+
+  <div class="steps"><div class="dot on" id="d1"></div><div class="dot" id="d2"></div></div>
+  <div id="msg">${error ? `<p class="msg err" role="alert">${escapeHtml(error)}</p>` : ""}</div>
+
+  <!-- Step 1 -->
+  <div class="step on" id="step1">
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" autofocus>
+    <button id="next" type="button">Continue</button>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="step" id="step2">
+    <p class="msg info">Sign this with the authorised wallet to continue.</p>
+    <label for="challenge">Message to sign</label>
+    <textarea id="challenge" rows="3" readonly></textarea>
+    <button id="freighter" type="button">Sign with Freighter</button>
+    <button class="link" id="manual" type="button">Sign another way</button>
+    <div id="pasteWrap" style="display:none;margin-top:16px">
+      <label for="signature">Signature (base64)</label>
+      <textarea id="signature" rows="3" placeholder="Paste the signature"></textarea>
+      <button id="submitSig" type="button">Verify signature</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var challengeId = null;
+
+  function show(text, kind) {
+    var host = document.getElementById("msg");
+    host.textContent = "";
+    if (!text) return;
+    var p = document.createElement("p");
+    p.className = "msg " + (kind || "err");
+    p.setAttribute("role", "alert");
+    // textContent, not innerHTML: server messages are trusted here, but the
+    // next person to render a user-supplied string should not have to notice
+    // that the escaping was missing.
+    p.textContent = text;
+    host.appendChild(p);
+  }
+
+  function step(n) {
+    document.getElementById("step1").className = "step" + (n === 1 ? " on" : "");
+    document.getElementById("step2").className = "step" + (n === 2 ? " on" : "");
+    document.getElementById("d2").className = "dot" + (n === 2 ? " on" : "");
+  }
+
+  function post(path, body) {
+    return fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (res) {
+      return res.json().then(function (data) {
+        if (!res.ok) throw new Error((data.error && data.error.message) || "Failed");
+        return data;
+      });
+    });
+  }
+
+  // ── Step 1: password ──────────────────────────────────────────────────────
+  var next = document.getElementById("next");
+  function submitPassword() {
+    var password = document.getElementById("password").value;
+    if (!password) { show("Enter the password."); return; }
+    next.disabled = true;
+    show(null);
+    post("/login", { password: password })
+      .then(function (data) {
+        challengeId = data.challengeId;
+        document.getElementById("challenge").value = data.message;
+        step(2);
+        show("Password accepted. Now prove the wallet.", "info");
+      })
+      .catch(function (err) { show(err.message); })
+      .then(function () { next.disabled = false; });
+  }
+  next.addEventListener("click", submitPassword);
+  document.getElementById("password").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") submitPassword();
+  });
+
+  // ── Step 2: wallet signature ──────────────────────────────────────────────
+  function verify(signature) {
+    return post("/login/verify", { challengeId: challengeId, signature: signature })
+      .then(function () { window.location.href = "/"; });
+  }
+
+  document.getElementById("freighter").addEventListener("click", function () {
+    var btn = this;
+    var api = window.freighterApi;
+    if (!api || typeof api.signMessage !== "function") {
+      show("Freighter was not detected. Use \\u201cSign another way\\u201d instead.");
+      document.getElementById("pasteWrap").style.display = "block";
+      return;
+    }
+    btn.disabled = true;
+    show(null);
+    var message = document.getElementById("challenge").value;
+    Promise.resolve(api.signMessage(message))
+      .then(function (result) {
+        // Freighter has returned different shapes across versions; accept the
+        // ones seen rather than assuming one and failing opaquely.
+        var sig = result && (result.signedMessage || result.signature || result);
+        if (sig && sig.data) sig = sig.data;
+        if (typeof sig !== "string") {
+          // A Uint8Array or Buffer-like arrives from some builds.
+          sig = btoa(String.fromCharCode.apply(null, new Uint8Array(sig)));
+        }
+        return verify(sig);
+      })
+      .catch(function (err) {
+        show(err.message || "Signing was cancelled.");
+        btn.disabled = false;
+      });
+  });
+
+  document.getElementById("manual").addEventListener("click", function () {
+    document.getElementById("pasteWrap").style.display = "block";
+    document.getElementById("signature").focus();
+  });
+
+  document.getElementById("submitSig").addEventListener("click", function () {
+    var btn = this;
+    var sig = document.getElementById("signature").value.trim();
+    if (!sig) { show("Paste the signature first."); return; }
+    btn.disabled = true;
+    show(null);
+    verify(sig).catch(function (err) {
+      show(err.message);
+      btn.disabled = false;
+    });
+  });
+})();
+</script>
 </body>
 </html>`;
 }

@@ -53,6 +53,22 @@ const envSchema = z
       .min(20, "Must be a password hash, not a plaintext password"),
 
     /**
+     * The Stellar wallet that must sign in alongside the password.
+     *
+     * **Both factors are required.** The password proves something the
+     * operator knows; a signature from this key proves something they hold.
+     * A leaked password alone opens nothing, which is the point — a password
+     * can be phished, reused, read from a hosting dashboard, or found in a
+     * backup, and none of those yield a private key.
+     *
+     * Only the public key lives here. This host never sees the secret, and
+     * cannot sign on the operator's behalf even if it is compromised.
+     */
+    ADMIN_WALLET: z
+      .string()
+      .regex(/^G[A-Z2-7]{55}$/, "Must be a Stellar Ed25519 public key"),
+
+    /**
      * Signs session cookies. Rotating it logs everyone out, which is the
      * intended response to a suspected compromise.
      *

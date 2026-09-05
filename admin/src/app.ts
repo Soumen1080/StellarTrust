@@ -28,6 +28,7 @@ import {
   sessionCookieHeader,
   verifySession,
 } from "./lib/session.js";
+import { issueChallenge, verifyWalletProof } from "./lib/wallet.js";
 import { createApiRouter } from "./routes/api.js";
 import { loginPage } from "./views/login.js";
 import { consolePage } from "./views/console.js";
@@ -122,18 +123,26 @@ export function createApp(): Express {
     res.type("html").send(loginPage(null));
   });
 
+  /**
+   * Step one of two: the password.
+   *
+   * A correct password does **not** create a session. It only unlocks a wallet
+   * challenge, which must then be signed by the configured key. That ordering
+   * is the whole security property: whoever holds a leaked password gets a
+   * nonce to sign and nothing else.
+   *
+   * Returns JSON rather than redirecting, because the wallet step happens in
+   * the browser and the page needs to stay put to drive it.
+   */
   app.post("/login", async (req, res) => {
     const key = req.ip ?? "unknown";
     const lockedFor = isLockedOut(key);
     if (lockedFor > 0) {
-      res
-        .status(429)
-        .type("html")
-        .send(
-          loginPage(
-            `Too many attempts. Try again in ${Math.ceil(lockedFor / 60)} minute(s).`,
-          ),
-        );
+      res.status(429).json({
+        error: {
+          message: `Too many attempts. Try again in ${Math.ceil(lockedFor / 60)} minute(s).`,
+        },
+      });
       return;
     }
 
@@ -146,14 +155,61 @@ export function createApp(): Express {
       recordFailure(key);
       // One message for a wrong password and for a missing one. Distinguishing
       // them tells an attacker which half of their guess was right.
-      res.status(401).type("html").send(loginPage("Incorrect password."));
+      res.status(401).json({ error: { message: "Incorrect password." } });
       return;
     }
 
+    // Still no session. The password has bought exactly one thing: a challenge.
+    const challenge = issueChallenge();
+    res.json({
+      challengeId: challenge.challengeId,
+      message: challenge.message,
+      wallet: config.ADMIN_WALLET,
+    });
+  });
+
+  /**
+   * Step two of two: proof of the wallet.
+   *
+   * The signature is checked against the *configured* public key, never one
+   * the request names — a request supplying its own key would be proving
+   * control of a key it chose, which proves nothing.
+   *
+   * A failure here counts toward the same lockout as a wrong password. An
+   * attacker who has the password must not get unlimited attempts at the
+   * second factor.
+   */
+  app.post("/login/verify", (req, res) => {
+    const key = req.ip ?? "unknown";
+    if (isLockedOut(key) > 0) {
+      res.status(429).json({
+        error: { message: "Too many attempts. Try again later." },
+      });
+      return;
+    }
+
+    const body = (req.body ?? {}) as {
+      challengeId?: unknown;
+      signature?: unknown;
+    };
+    if (typeof body.challengeId !== "string" || typeof body.signature !== "string") {
+      recordFailure(key);
+      res.status(400).json({ error: { message: "Malformed wallet proof." } });
+      return;
+    }
+
+    const proof = verifyWalletProof(body.challengeId, body.signature);
+    if (!proof.ok) {
+      recordFailure(key);
+      res.status(401).json({ error: { message: proof.reason } });
+      return;
+    }
+
+    // Both factors are now satisfied. Only here does a session exist.
     clearFailures(key);
     const { cookie, expiresAt } = createSession();
     res.setHeader("set-cookie", sessionCookieHeader(cookie, expiresAt));
-    res.redirect("/");
+    res.json({ ok: true });
   });
 
   app.post("/logout", (_req, res) => {
