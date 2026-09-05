@@ -21,7 +21,8 @@
     "lint": "eslint .",
     "clean": "rimraf dist",
     "chain:verify-xlm": "tsx src/scripts/verify-xlm-transfer.ts",
-    "db:readiness": "tsx src/scripts/db-readiness.ts"
+    "db:readiness": "tsx src/scripts/db-readiness.ts",
+    "db:migrate": "tsx src/scripts/db-migrate.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "16.0.1",
