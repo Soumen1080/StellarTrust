@@ -159,6 +159,22 @@ export function createApp(): Express {
       return;
     }
 
+    // ── Development shortcut ────────────────────────────────────────────────
+    //
+    // Signing a fresh challenge on every restart is genuinely obstructive
+    // while building, and an obstructive control is one that gets disabled
+    // permanently rather than temporarily. `ADMIN_DEV_SKIP_WALLET` makes the
+    // shortcut explicit and narrow; the config schema refuses to boot if it is
+    // set outside development, so it cannot reach a deployment by being
+    // forgotten in a dashboard.
+    if (config.ADMIN_DEV_SKIP_WALLET) {
+      clearFailures(key);
+      const { cookie, expiresAt } = createSession();
+      res.setHeader("set-cookie", sessionCookieHeader(cookie, expiresAt));
+      res.json({ ok: true, walletSkipped: true });
+      return;
+    }
+
     // Still no session. The password has bought exactly one thing: a challenge.
     const challenge = issueChallenge();
     res.json({

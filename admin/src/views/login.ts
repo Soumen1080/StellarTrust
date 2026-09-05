@@ -171,6 +171,14 @@ export function loginPage(error: string | null): string {
     show(null);
     post("/login", { password: password })
       .then(function (data) {
+        // In development the server may skip the wallet step entirely and
+        // return a session outright (ADMIN_DEV_SKIP_WALLET). It refuses to
+        // boot with that set outside development, so this branch cannot be
+        // reached by a deployed console.
+        if (data.walletSkipped) {
+          window.location.href = "/";
+          return;
+        }
         challengeId = data.challengeId;
         document.getElementById("challenge").value = data.message;
         // hidePassword is a hoisted declaration below, so it is defined by

@@ -14,11 +14,17 @@
 import { createRequire } from "node:module";
 import { z } from "zod";
 
-try {
-  const require = createRequire(import.meta.url);
-  (require("dotenv") as { config: () => void }).config();
-} catch {
-  // dotenv is optional; a hosting platform supplies env directly.
+// Skipped under test, where the suite sets `process.env` itself. Loading the
+// developer's own `.env` there would mean tests asserting on whatever happens
+// to be on that machine — a suite that passes locally and fails in CI, or
+// worse, one that passes in both for different reasons.
+if (process.env.NODE_ENV !== "test" && !process.env.VITEST) {
+  try {
+    const require = createRequire(import.meta.url);
+    (require("dotenv") as { config: () => void }).config();
+  } catch {
+    // dotenv is optional; a hosting platform supplies env directly.
+  }
 }
 
 const envSchema = z
@@ -125,22 +131,48 @@ const envSchema = z
      */
     LOGIN_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(100).default(5),
     LOGIN_LOCKOUT_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
+
+    /**
+     * **Development only.** Skip the wallet signature and sign in on the
+     * password alone.
+     *
+     * Signing a fresh challenge on every restart is genuinely obstructive
+     * while building, and an obstructive security control is one that gets
+     * disabled permanently rather than temporarily. This makes the shortcut
+     * explicit, narrow, and impossible to ship: `superRefine` below refuses to
+     * boot if it is set outside development, so it cannot reach a deployment
+     * by being forgotten in a dashboard.
+     *
+     * The password is still required, and every other guard — rate limit,
+     * lockout, IP allowlist, session signing — is untouched.
+     */
+    ADMIN_DEV_SKIP_WALLET: z
+      .string()
+      .default("false")
+      .transform((value) => value === "true" || value === "1"),
   })
   .superRefine((env, ctx) => {
-    // A production console reachable from any address, with no allowlist, is
-    // one password away from being someone else's. Warn loudly rather than
-    // refuse: an operator behind a VPN or a platform-level firewall has
-    // already solved this a different way, and refusing would be wrong for
-    // them.
-    if (
-      (env.NODE_ENV === "production" || env.NODE_ENV === "staging") &&
-      env.ADMIN_IP_ALLOWLIST.length === 0
-    ) {
-      // Not an issue — a note the boot log surfaces. Adding it to `ctx` would
-      // stop the deploy, and that is a heavier hand than this warrants.
-      void ctx;
+    // Refuse to boot rather than silently ignore. A deployment that starts
+    // with this set and quietly enforces two factors anyway is one where the
+    // operator believes something false about their own security posture —
+    // and a deployment that starts with it *honoured* is one factor down.
+    // Neither is acceptable, so the answer is not to start.
+    if (env.ADMIN_DEV_SKIP_WALLET && env.NODE_ENV !== "development") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["ADMIN_DEV_SKIP_WALLET"],
+        message:
+          `cannot be enabled when NODE_ENV=${env.NODE_ENV}. It exists so the ` +
+          "wallet step can be skipped while building locally, and it would " +
+          "remove a factor from a real deployment. Unset it.",
+      });
     }
   });
+
+// A production console with no IP allowlist is warned about at boot rather
+// than refused — an operator behind a VPN or a platform firewall has already
+// solved it another way. That warning lives in `index.ts`, where it can be
+// printed; a schema refinement can only fail, not advise.
 
 const parsed = envSchema.safeParse(process.env);
 
