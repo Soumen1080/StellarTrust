@@ -33,14 +33,16 @@
 |---|---|
 | `contracts` — `cargo test` | ✅ **27 pass** (escrow 9, rwa_token 18) — last measured 2026-09-03 |
 | `backend` — `vitest run` | ✅ **557 pass**, 42 files, 0 failures |
+| `admin` — `vitest run` | ✅ **39 pass** (new standalone console) |
 | `backend` — `tsc --noEmit`, `eslint .` | ✅ clean |
 | `frontend` — `vitest run` | ✅ **44 pass**, 3 files (was zero) |
 | `frontend` — `tsc --noEmit`, `eslint .`, `next build` | ✅ clean (1 pre-existing warning in `EscrowDashboard.tsx`) |
 | `ai` — pytest | ⚠️ CI-only (native wheels blocked on this machine), 6 tests |
 | Database invariant tests (psql) | ⚠️ CI-only, 3 smoke tests |
+| Live database schema | ✅ **migrations 0016–0022 applied 2026-09-05**, 18/18 objects present |
 | Live testnet XLM transfer (`chain:verify-xlm`) | ✅ **6/6 checks**, run 2026-09-04 |
 
-**Total across suites: 636 tests.**
+**Total across suites: 675 tests** (557 backend + 44 frontend + 39 admin + 27 contracts + 6 ai + 2 psql).
 
 Live testnet proof (2026-09-04) — real XLM moved between two funded accounts,
 balances asserted to the stroop, and the platform's own decimal conversion
@@ -97,12 +99,21 @@ checked against what the chain reported:
   polish; neither blocks anything. §1.1's last box (a fully atomic purchase
   across ledger + holding + chain) needs a cross-module transaction boundary
   that does not exist yet, and is deferred with §2.1's for the same reason.
-- **Blocked on you (operational):** apply migrations `0020`–`0022` to the
-  deployed database; set `REDIS_URL` before running more than one API instance
-  (the app warns at boot if it is unset); set `TREASURY_GATEWAY=horizon` so
-  deposits verify against real payments rather than the deterministic double.
-  Then run a real testnet order end-to-end with `ESCROW_GATEWAY=soroban-rpc`,
-  and onboard 10+ real wallet users. See `SUBMISSION_TODO.md`.
+- **Database: current as of 2026-09-05.** Migrations `0016`–`0022` were applied
+  to the live Supabase instance (PostgreSQL 17.6) via `npm run db:migrate
+  -- --apply`. All seven succeeded; `npm run db:readiness` reports 18/18
+  objects present. Verified afterwards rather than assumed: all 93 existing
+  rows intact, every ledger transaction still balances, 0016 backfilled the
+  three live tokenizations at a 100% advance with zero yield (economically
+  identical to the old model), 0018 backfilled all three assets as
+  `unverified` rather than grandfathering them, and 0022 seeded both
+  verification policies at the values previously compiled in.
+- **Blocked on you (operational):** set `REDIS_URL` before running more than
+  one API instance (the app warns at boot if it is unset); set
+  `TREASURY_GATEWAY=horizon` so deposits verify against real payments rather
+  than the deterministic double. Then run a real testnet order end-to-end with
+  `ESCROW_GATEWAY=soroban-rpc`, and onboard 10+ real wallet users. See
+  `SUBMISSION_TODO.md`.
 
 ---
 
@@ -398,6 +409,8 @@ issuer's to arm. The RWA reconciliation job reports each divergence.
 
 | Date | Change |
 |---|---|
+| 2026-09-05 | Applied migrations `0016`–`0022` to the live database; added `db:readiness` and `db:migrate`. |
+| 2026-09-05 | Admin console split into its own privately deployed app (`admin/`), with password + wallet two-factor. |
 | 2026-09-04 | Frontend component tests (44, was zero) for the purchase, escrow-transition, and dispute flows; SQL invariant tests. Both run in CI (plane.md §4.6, §4.3). |
 | 2026-09-04 | Business metrics and threshold alerting (plane.md §4.4). |
 | 2026-09-04 | Operations console: metrics, queues, audit trail, and the verification routing policy (plane.md §4.7; migration `0022`). |
