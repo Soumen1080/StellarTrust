@@ -166,6 +166,42 @@ const envSchema = z.object({
   ),
   AUTH_DEMO_NAME: z.string().trim().min(1).default("sam"),
 
+  /**
+   * Wallets granted the `compliance` role — the operations console at
+   * `/admin`, the KYC and asset review queues, and withdrawal approval.
+   *
+   * Comma-separated Stellar addresses. **This is the only thing that grants
+   * admin access.** It used to be a side effect of `AUTH_DEMO_WALLET`, which
+   * conflated two unrelated ideas: "seed a demo identity for local
+   * development" and "this person may approve withdrawals". Separating them
+   * means a demo account can exist without being an administrator, and an
+   * administrator can be named without a demo account existing.
+   *
+   * A wallet listed here still has to prove control of the key through SEP-10
+   * before it gets anything — the list decides *what a proven wallet may do*,
+   * never *who is signed in*.
+   *
+   * Empty means no administrators, which is the correct default: an
+   * unconfigured deployment should have a console nobody can open, not one
+   * everybody can.
+   */
+  ADMIN_WALLETS: z
+    .string()
+    .default("")
+    .transform((value) =>
+      value
+        .split(",")
+        .map((wallet) => wallet.trim())
+        .filter(Boolean),
+    )
+    .pipe(
+      z.array(
+        z
+          .string()
+          .regex(/^G[A-Z2-7]{55}$/, "Must be a Stellar Ed25519 public key"),
+      ),
+    ),
+
   // SEP-10 wallet authentication (Phase 1).
   SEP10_HOME_DOMAIN: z.string().min(1).default("localhost"),
   SEP10_WEB_AUTH_DOMAIN: z

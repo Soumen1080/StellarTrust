@@ -347,11 +347,36 @@ export function createApp(): Express {
   const authRepository: AuthRepository = usePersistentStore
     ? new PgAuthRepository(getPool())
     : new InMemoryAuthRepository();
+  // ── Who may open the operations console ──────────────────────────────────
+  //
+  // `ADMIN_WALLETS` is the *only* thing that grants the `compliance` role, and
+  // a wallet on it still has to prove control of its key through SEP-10 before
+  // it gets anything — the list decides what a proven wallet may do, never who
+  // is signed in.
+  //
+  // This used to be derived from `AUTH_DEMO_WALLET`, which conflated "seed a
+  // demo identity locally" with "may approve withdrawals". An empty list means
+  // no administrators, which is the right default: an unconfigured deployment
+  // should have a console nobody can open, not one anybody can.
+  const adminWallets = new Set(config.ADMIN_WALLETS);
+  if (adminWallets.size === 0) {
+    logger.warn(
+      "auth: ADMIN_WALLETS is empty — the operations console at /admin is " +
+        "unreachable. Set it to the Stellar address that should administer " +
+        "this deployment.",
+    );
+  } else {
+    logger.info(
+      { adminWalletCount: adminWallets.size },
+      "auth: operations console restricted to the configured admin wallets",
+    );
+  }
+
   const sep10 = new Sep10Service(
     authRepository,
     identities,
     createSigner(),
-    new Set(demoAccount ? [demoAccount.stellarPublicKey] : []),
+    adminWallets,
   );
   const externalVerifier = getBearerVerifier();
 
@@ -375,7 +400,15 @@ export function createApp(): Express {
       return {
         userId: user.id,
         walletId: wallet.id,
-        roles: ["user", "compliance"],
+        // The bypass grants whatever the demo wallet would have earned by
+        // signing in properly — no more. It used to hand out `compliance`
+        // unconditionally, which meant anyone who knew `AUTH_DEV_BEARER` was
+        // an administrator without ever holding a key. That defeats the point
+        // of restricting the console to named wallets, and it is exactly the
+        // kind of local-only shortcut that reaches a deployment by accident.
+        roles: adminWallets.has(demoWallet)
+          ? ["user", "compliance"]
+          : ["user"],
       };
     });
   }
