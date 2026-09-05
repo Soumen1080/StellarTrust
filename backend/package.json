@@ -20,7 +20,8 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "clean": "rimraf dist",
-    "chain:verify-xlm": "tsx src/scripts/verify-xlm-transfer.ts"
+    "chain:verify-xlm": "tsx src/scripts/verify-xlm-transfer.ts",
+    "db:readiness": "tsx src/scripts/db-readiness.ts"
   },
   "dependencies": {
     "@stellar/stellar-sdk": "16.0.1",
