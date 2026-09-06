@@ -13,7 +13,14 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
-import { Keypair } from "@stellar/stellar-sdk";
+import {
+  Account,
+  BASE_FEE,
+  Keypair,
+  Networks,
+  Operation,
+  TransactionBuilder,
+} from "@stellar/stellar-sdk";
 import { hashPassword } from "./lib/password.js";
 
 /**
@@ -71,6 +78,22 @@ beforeEach(() => {
 });
 
 /**
+ * Sign a challenge transaction the way a wallet does: parse the envelope,
+ * add a signature, hand back the new envelope.
+ */
+function signChallenge(
+  step1Body: { transactionXdr: string; networkPassphrase: string },
+  keypair = ADMIN_KEYPAIR,
+): string {
+  const tx = TransactionBuilder.fromXDR(
+    step1Body.transactionXdr,
+    step1Body.networkPassphrase,
+  );
+  tx.sign(keypair);
+  return tx.toXDR();
+}
+
+/**
  * Complete both factors and return the session cookie.
  *
  * Password first, then a signature over the challenge it returns — the same
@@ -81,13 +104,11 @@ async function signIn(keypair = ADMIN_KEYPAIR): Promise<string> {
   if (step1.status !== 200) {
     throw new Error(`password step failed: ${step1.status}`);
   }
-  const signature = keypair
-    .sign(Buffer.from(step1.body.message as string, "utf8"))
-    .toString("base64");
+  const signedTransactionXdr = signChallenge(step1.body, keypair);
 
   const step2 = await request(app)
     .post("/login/verify")
-    .send({ challengeId: step1.body.challengeId, signature });
+    .send({ challengeId: step1.body.challengeId, signedTransactionXdr });
   const cookie = step2.headers["set-cookie"]?.[0];
   if (!cookie) throw new Error("wallet step did not set a session cookie");
   return cookie.split(";")[0] as string;
@@ -168,13 +189,11 @@ describe("a password alone opens nothing", () => {
     // An attacker with the password but not the key. This is the case the
     // second factor exists for.
     const step1 = await request(app).post("/login").send({ password: PASSWORD });
-    const signature = OTHER_KEYPAIR.sign(
-      Buffer.from(step1.body.message as string, "utf8"),
-    ).toString("base64");
+    const signedTransactionXdr = signChallenge(step1.body, OTHER_KEYPAIR);
 
     const res = await request(app)
       .post("/login/verify")
-      .send({ challengeId: step1.body.challengeId, signature })
+      .send({ challengeId: step1.body.challengeId, signedTransactionXdr })
       .expect(401);
 
     expect(res.headers["set-cookie"]).toBeUndefined();
@@ -182,15 +201,19 @@ describe("a password alone opens nothing", () => {
   });
 
   it("refuses a signature over a different message", async () => {
-    // Guards against replaying a signature the operator made elsewhere.
-    const step1 = await request(app).post("/login").send({ password: PASSWORD });
-    const signature = ADMIN_KEYPAIR.sign(
-      Buffer.from("some other message", "utf8"),
-    ).toString("base64");
+    // Guards against replaying a signature the operator made elsewhere: the
+    // server rebuilds the expected transaction from its stored nonce, so a
+    // signature over any other envelope cannot match.
+    const [step1, other] = await Promise.all([
+      request(app).post("/login").send({ password: PASSWORD }),
+      request(app).post("/login").send({ password: PASSWORD }),
+    ]);
+    // Correctly signed — but over the *other* challenge's transaction.
+    const signedTransactionXdr = signChallenge(other.body);
 
     await request(app)
       .post("/login/verify")
-      .send({ challengeId: step1.body.challengeId, signature })
+      .send({ challengeId: step1.body.challengeId, signedTransactionXdr })
       .expect(401);
   });
 
@@ -198,23 +221,56 @@ describe("a password alone opens nothing", () => {
     // Single-use: a captured signature proves control at one moment for one
     // challenge, and that challenge is spent.
     const step1 = await request(app).post("/login").send({ password: PASSWORD });
-    const signature = ADMIN_KEYPAIR.sign(
-      Buffer.from(step1.body.message as string, "utf8"),
-    ).toString("base64");
-    const body = { challengeId: step1.body.challengeId, signature };
+    const body = {
+      challengeId: step1.body.challengeId,
+      signedTransactionXdr: signChallenge(step1.body),
+    };
 
     await request(app).post("/login/verify").send(body).expect(200);
     await request(app).post("/login/verify").send(body).expect(401);
   });
 
   it("refuses an invented challenge id", async () => {
-    const signature = ADMIN_KEYPAIR.sign(
-      Buffer.from("anything", "utf8"),
-    ).toString("base64");
+    const step1 = await request(app).post("/login").send({ password: PASSWORD });
     await request(app)
       .post("/login/verify")
-      .send({ challengeId: "not-a-real-challenge", signature })
+      .send({
+        challengeId: "not-a-real-challenge",
+        signedTransactionXdr: signChallenge(step1.body),
+      })
       .expect(401);
+  });
+
+  it("refuses a signature over a transaction the client authored", async () => {
+    // The attack the transaction flow has to answer that a signed message did
+    // not: a client that returns a *valid* signature over an envelope of its
+    // own choosing. The server rebuilds the expected transaction from the
+    // nonce it stored and compares hashes, so only the challenge it issued
+    // can match — whoever signed it.
+    const step1 = await request(app).post("/login").send({ password: PASSWORD });
+    const forged = new TransactionBuilder(
+      new Account(ADMIN_KEYPAIR.publicKey(), "-1"),
+      {
+        fee: BASE_FEE,
+        networkPassphrase: Networks.TESTNET,
+        timebounds: { minTime: 0, maxTime: 0 },
+      },
+    )
+      .addOperation(
+        Operation.manageData({ name: "attacker chosen", value: "anything" }),
+      )
+      .build();
+    forged.sign(ADMIN_KEYPAIR);
+
+    const res = await request(app)
+      .post("/login/verify")
+      .send({
+        challengeId: step1.body.challengeId,
+        signedTransactionXdr: forged.toXDR(),
+      })
+      .expect(401);
+
+    expect(res.headers["set-cookie"]).toBeUndefined();
   });
 
   it("refuses a malformed proof", async () => {
@@ -232,13 +288,11 @@ describe("a password alone opens nothing", () => {
 describe("signing in with both factors", () => {
   it("issues a session only after the wallet signature", async () => {
     const step1 = await request(app).post("/login").send({ password: PASSWORD });
-    const signature = ADMIN_KEYPAIR.sign(
-      Buffer.from(step1.body.message as string, "utf8"),
-    ).toString("base64");
+    const signedTransactionXdr = signChallenge(step1.body);
 
     const res = await request(app)
       .post("/login/verify")
-      .send({ challengeId: step1.body.challengeId, signature })
+      .send({ challengeId: step1.body.challengeId, signedTransactionXdr })
       .expect(200);
 
     const cookie = res.headers["set-cookie"]?.[0] ?? "";

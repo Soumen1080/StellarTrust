@@ -47,3 +47,6 @@ coverage/
 
 .vercel
 .env*
+
+# Generated admin wallet modal bundle (npm run build:client)
+admin/src/client/*.bundle.js

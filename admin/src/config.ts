@@ -75,6 +75,16 @@ const envSchema = z
       .regex(/^G[A-Z2-7]{55}$/, "Must be a Stellar Ed25519 public key"),
 
     /**
+     * Which network the sign-in challenge is built for.
+     *
+     * A transaction is signed against a specific network passphrase, so this
+     * has to match the network the operator's wallet is set to or the
+     * signature will not verify. Defaults to testnet, like the rest of the
+     * platform.
+     */
+    STELLAR_NETWORK: z.enum(["testnet", "public"]).default("testnet"),
+
+    /**
      * Signs session cookies. Rotating it logs everyone out, which is the
      * intended response to a suspected compromise.
      *

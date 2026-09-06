@@ -15,7 +15,15 @@
  * extension can still sign from a wallet they trust rather than being locked
  * out of their own console.
  */
-export function loginPage(error: string | null): string {
+export function loginPage(
+  error: string | null,
+  /**
+   * The wallet that may sign in, shown so the operator knows which account to
+   * pick before they open their wallet — not a secret, and already knowable to
+   * anyone who reaches this page by trying to sign in.
+   */
+  expectedWallet = "",
+): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -87,6 +95,23 @@ export function loginPage(error: string | null): string {
   }
   .reveal button:hover:not([disabled]) { background: #3a4149; color: #eaecef; }
   .reveal button:focus-visible { outline: 2px solid #fcd535; outline-offset: 1px; }
+  /* The wallet picker. One row per wallet found in the browser, so the
+     operator chooses the same way they would on the main site rather than
+     being assumed to have one specific extension. */
+  .wallets { display: grid; gap: 8px; margin-top: 16px; }
+  .wallet {
+    display: flex; align-items: center; gap: 10px; width: 100%; margin: 0;
+    padding: 12px; border: 1px solid #2b3139; border-radius: 8px;
+    background: #0b0e11; color: #eaecef; font: inherit; font-weight: 500;
+    text-align: left; cursor: pointer;
+  }
+  .wallet:hover:not([disabled]) { background: #2b3139; border-color: #3a4149; }
+  .wallet .tick { margin-left: auto; font-size: 12px; color: #0ecb81; }
+  .none {
+    margin: 16px 0 0; padding: 12px; border-radius: 8px;
+    background: rgba(240,185,11,.08); border: 1px solid rgba(240,185,11,.25);
+    font-size: 13px; color: #f0b90b;
+  }
 </style>
 </head>
 <body>
@@ -110,19 +135,24 @@ export function loginPage(error: string | null): string {
 
   <!-- Step 2 -->
   <div class="step" id="step2">
-    <p class="msg info">Sign this with the authorised wallet to continue.</p>
-    <label for="challenge">Message to sign</label>
-    <textarea id="challenge" rows="3" readonly></textarea>
-    <button id="freighter" type="button">Sign with Freighter</button>
+    <p class="msg info">Connect the authorised wallet to continue.</p>
+    <p class="sub" style="margin:0 0 4px">Only this wallet can sign in:</p>
+    <code id="expectedWallet">${escapeHtml(expectedWallet)}</code>
+    <button id="connect" type="button">Connect Wallet</button>
+    <details style="margin-top:16px">
+      <summary style="cursor:pointer;font-size:13px;color:#707a8a">Message being signed</summary>
+      <textarea id="challenge" rows="3" readonly style="margin-top:8px"></textarea>
+    </details>
     <button class="link" id="manual" type="button">Sign another way</button>
     <div id="pasteWrap" style="display:none;margin-top:16px">
-      <label for="signature">Signature (base64)</label>
-      <textarea id="signature" rows="3" placeholder="Paste the signature"></textarea>
+      <label for="signature">Signed transaction (XDR)</label>
+      <textarea id="signature" rows="3" placeholder="Paste the signed transaction envelope"></textarea>
       <button id="submitSig" type="button">Verify signature</button>
     </div>
   </div>
 </div>
 
+<script src="/assets/wallet-kit.js"></script>
 <script>
 (function () {
   "use strict";
@@ -180,12 +210,14 @@ export function loginPage(error: string | null): string {
           return;
         }
         challengeId = data.challengeId;
+        challengeXdr = data.transactionXdr;
+        challengeNetwork = data.networkPassphrase;
         document.getElementById("challenge").value = data.message;
         // hidePassword is a hoisted declaration below, so it is defined by
         // the time this callback runs.
         hidePassword();
         step(2);
-        show("Password accepted. Now prove the wallet.", "info");
+        show("Password accepted. Now connect the authorised wallet.", "info");
       })
       .catch(function (err) { show(err.message); })
       .then(function () { next.disabled = false; });
@@ -232,38 +264,55 @@ export function loginPage(error: string | null): string {
   }
 
   // ── Step 2: wallet signature ──────────────────────────────────────────────
-  function verify(signature) {
-    return post("/login/verify", { challengeId: challengeId, signature: signature })
-      .then(function () { window.location.href = "/"; });
+  function verify(signedTransactionXdr) {
+    return post("/login/verify", {
+      challengeId: challengeId,
+      signedTransactionXdr: signedTransactionXdr
+    }).then(function () { window.location.href = "/"; });
   }
 
-  document.getElementById("freighter").addEventListener("click", function () {
-    var btn = this;
-    var api = window.freighterApi;
-    if (!api || typeof api.signMessage !== "function") {
-      show("Freighter was not detected. Use \\u201cSign another way\\u201d instead.");
+  // ── Step 2: connect a wallet ──────────────────────────────────────────────
+  //
+  // The same Stellar Wallets Kit modal the main site uses, bundled and served
+  // from this origin. Every wallet it lists can sign a transaction, which is
+  // why the challenge is a transaction rather than a plain message: signMessage
+  // support is uneven, and hardware wallets generally lack it entirely.
+  var challengeXdr = null;
+  var challengeNetwork = null;
+
+  function signWithWallet(button) {
+    if (!window.adminWallet) {
+      show("The wallet module did not load. Use “Sign another way” below.");
       document.getElementById("pasteWrap").style.display = "block";
       return;
     }
-    btn.disabled = true;
+    button.disabled = true;
     show(null);
-    var message = document.getElementById("challenge").value;
-    Promise.resolve(api.signMessage(message))
+
+    window.adminWallet
+      .connectAndSign(challengeXdr, challengeNetwork)
       .then(function (result) {
-        // Freighter has returned different shapes across versions; accept the
-        // ones seen rather than assuming one and failing opaquely.
-        var sig = result && (result.signedMessage || result.signature || result);
-        if (sig && sig.data) sig = sig.data;
-        if (typeof sig !== "string") {
-          // A Uint8Array or Buffer-like arrives from some builds.
-          sig = btoa(String.fromCharCode.apply(null, new Uint8Array(sig)));
+        // Checked here only so a mistake is legible. The server verifies the
+        // signature against the configured key regardless, so this cannot
+        // grant access — it turns "not the authorised wallet" into something
+        // the operator can act on.
+        if (EXPECTED && result.address && result.address !== EXPECTED) {
+          throw new Error(
+            "That is a different wallet. Reconnect using the authorised " +
+            "account and try again."
+          );
         }
-        return verify(sig);
+        return verify(result.signedTransactionXdr);
       })
       .catch(function (err) {
         show(err.message || "Signing was cancelled.");
-        btn.disabled = false;
+        button.disabled = false;
       });
+  }
+
+  var EXPECTED = document.getElementById("expectedWallet").textContent.trim();
+  document.getElementById("connect").addEventListener("click", function () {
+    signWithWallet(this);
   });
 
   document.getElementById("manual").addEventListener("click", function () {
@@ -274,7 +323,7 @@ export function loginPage(error: string | null): string {
   document.getElementById("submitSig").addEventListener("click", function () {
     var btn = this;
     var sig = document.getElementById("signature").value.trim();
-    if (!sig) { show("Paste the signature first."); return; }
+    if (!sig) { show("Paste the signed transaction first."); return; }
     btn.disabled = true;
     show(null);
     verify(sig).catch(function (err) {

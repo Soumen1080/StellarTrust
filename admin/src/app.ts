@@ -12,6 +12,9 @@
  *   3. Session        — every route except /login and /health
  *   4. Handler
  */
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express, { type Express, type RequestHandler } from "express";
 import { rateLimit } from "express-rate-limit";
 import helmetImport from "helmet";
@@ -45,6 +48,24 @@ function resolveHelmet(imported: unknown): HelmetFactory {
 }
 
 const helmet = resolveHelmet(helmetImport);
+
+/**
+ * The wallet modal bundle on disk.
+ *
+ * Resolved from this module's own location so it works the same under `tsx`
+ * (running from src/) and under `node dist/` — the bundle is written into
+ * src/client/ and the compiled tree sits one level deeper, so both resolve to
+ * the same file rather than each needing its own copy.
+ */
+const walletKitBundlePath = (() => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.join(here, "client", "wallet-kit.bundle.js"),
+    path.join(here, "..", "src", "client", "wallet-kit.bundle.js"),
+    path.join(here, "..", "..", "src", "client", "wallet-kit.bundle.js"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
+})();
 
 export function createApp(): Express {
   const app = express();
@@ -111,6 +132,28 @@ export function createApp(): Express {
     }),
   );
 
+  // ── The wallet modal's bundle ─────────────────────────────────────────────
+  //
+  // Served from this origin, not a CDN: the CSP above allows scripts only from
+  // 'self', because a console that can approve KYC should not be executing
+  // third-party code fetched at sign-in time. Built by `npm run build:client`.
+  //
+  // Sits above the session guard because the login page needs it before any
+  // session exists. It is a public static asset — the same code the operator
+  // would get from npm — so serving it unauthenticated discloses nothing.
+  app.get("/assets/wallet-kit.js", (_req, res) => {
+    res.type("application/javascript");
+    res.setHeader("cache-control", "public, max-age=3600");
+    res.sendFile(walletKitBundlePath, (err) => {
+      if (!err) return;
+      // A missing bundle means `npm run build:client` has not run. Say so here
+      // rather than letting the page fail with an opaque script error.
+      if (!res.headersSent) res.status(500).type("text/plain").send(
+        "Wallet bundle missing. Run: npm run build:client",
+      );
+    });
+  });
+
   // ── Sign in ───────────────────────────────────────────────────────────────
 
   app.get("/login", (req, res) => {
@@ -120,7 +163,7 @@ export function createApp(): Express {
       res.redirect("/");
       return;
     }
-    res.type("html").send(loginPage(null));
+    res.type("html").send(loginPage(null, config.ADMIN_WALLET));
   });
 
   /**
@@ -179,6 +222,8 @@ export function createApp(): Express {
     const challenge = issueChallenge();
     res.json({
       challengeId: challenge.challengeId,
+      transactionXdr: challenge.transactionXdr,
+      networkPassphrase: challenge.networkPassphrase,
       message: challenge.message,
       wallet: config.ADMIN_WALLET,
     });
@@ -206,15 +251,18 @@ export function createApp(): Express {
 
     const body = (req.body ?? {}) as {
       challengeId?: unknown;
-      signature?: unknown;
+      signedTransactionXdr?: unknown;
     };
-    if (typeof body.challengeId !== "string" || typeof body.signature !== "string") {
+    if (
+      typeof body.challengeId !== "string" ||
+      typeof body.signedTransactionXdr !== "string"
+    ) {
       recordFailure(key);
       res.status(400).json({ error: { message: "Malformed wallet proof." } });
       return;
     }
 
-    const proof = verifyWalletProof(body.challengeId, body.signature);
+    const proof = verifyWalletProof(body.challengeId, body.signedTransactionXdr);
     if (!proof.ok) {
       recordFailure(key);
       res.status(401).json({ error: { message: proof.reason } });
