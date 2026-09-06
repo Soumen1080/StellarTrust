@@ -2,7 +2,7 @@
   "name": "@stellartrust/admin",
   "version": "0.0.0",
   "private": true,
-  "description": "StellarTrust operations console \u2014 a separately deployed, privately hosted admin application. Reads Postgres directly; never exposed on the public API.",
+  "description": "StellarTrust operations console — a separately deployed, privately hosted admin application. Reads Postgres directly; never exposed on the public API.",
   "type": "module",
   "main": "dist/index.js",
   "engines": {
@@ -36,6 +36,7 @@
     "@types/supertest": "6.0.2",
     "esbuild": "^0.28.2",
     "eslint": "9.13.0",
+    "jsdom": "^30.0.1",
     "supertest": "7.2.2",
     "tsx": "4.23.1",
     "typescript": "5.5.4",

@@ -72,6 +72,7 @@ export function createApiRouter(): Router {
       return {
         metrics: computeMetrics(tokenizations, orders, disputes),
         tokenizations,
+        orders,
         disputes,
       };
     }),

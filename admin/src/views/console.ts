@@ -60,6 +60,17 @@ export function consolePage(): string {
   /* The id under a username: present for correlation, quiet enough that the
      name is what the eye lands on first. */
   .muted-id { color: #707a8a; font-size: 11px; margin-top: 2px; }
+  /* Filtering happens over the rows already on screen, so the box sits above
+     every tab rather than inside one panel. */
+  .searchbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .searchbar input {
+    flex: 1; padding: 9px 12px; border-radius: 6px;
+    border: 1px solid #2b3139; background: #0b0e11; color: #eaecef;
+    font: inherit; font-size: 13px;
+  }
+  .searchbar input:focus { outline: 2px solid #fcd535; outline-offset: 1px; }
+  .count { font-size: 12px; color: #707a8a; white-space: nowrap; }
+  tr.hidden-row { display: none; }
   .muted { color: #707a8a; }
   .empty { padding: 24px; text-align: center; color: #707a8a; }
   input, select {
@@ -89,6 +100,11 @@ export function consolePage(): string {
 </header>
 <main>
   <div id="banner"></div>
+  <div class="searchbar">
+    <input id="search" type="search" autocomplete="off" spellcheck="false"
+           placeholder="Filter by username, id, status…" aria-label="Filter rows">
+    <span id="searchCount" class="count"></span>
+  </div>
   <div id="view"><p class="empty">Loading…</p></div>
 </main>
 <script>
@@ -125,6 +141,59 @@ export function consolePage(): string {
     wrap.appendChild(text("div", username ? "@" + username : "—", "mono"));
     wrap.appendChild(text("div", shortId(userId), "mono muted-id"));
     return wrap;
+  }
+
+  // ── Filtering ─────────────────────────────────────────────────────────────
+  //
+  // Applied to the rows already rendered rather than re-queried from the
+  // server. The console loads a whole tab at once (a few hundred rows at
+  // most), so the data to search is already here — and matching in the browser
+  // means no query per keystroke against the platform's database.
+  //
+  // Matches the row's visible text, so "@sam123", a partial id, a status or a
+  // currency all narrow the same way and the operator does not have to know
+  // which column holds what.
+  var filterTerm = "";
+
+  function applyFilter() {
+    var term = filterTerm.trim().toLowerCase();
+    var bodies = document.querySelectorAll("#view tbody");
+    var shown = 0;
+    var total = 0;
+
+    bodies.forEach(function (tbody) {
+      tbody.querySelectorAll("tr").forEach(function (tr) {
+        total++;
+        // textContent of the row covers every cell, including the username and
+        // the id beneath it.
+        var hit = !term || tr.textContent.toLowerCase().indexOf(term) !== -1;
+        tr.classList.toggle("hidden-row", !hit);
+        if (hit) shown++;
+      });
+    });
+
+    // Say when a filter is hiding things. A table that looks empty because of
+    // a stale search term, with nothing saying so, reads as missing data — on
+    // this console that is the kind of thing an operator escalates.
+    var count = document.getElementById("searchCount");
+    if (!term) count.textContent = "";
+    else count.textContent = shown + " of " + total + " row(s)";
+
+    // A panel whose rows are all filtered out should say so rather than show
+    // a header over nothing.
+    document.querySelectorAll("#view section.panel").forEach(function (panel) {
+      var rows = panel.querySelectorAll("tbody tr");
+      if (!rows.length) return;
+      var anyVisible = Array.prototype.some.call(rows, function (tr) {
+        return !tr.classList.contains("hidden-row");
+      });
+      var note = panel.querySelector(".no-match");
+      if (!anyVisible && !note) {
+        panel.appendChild(text("p", "No rows match this filter.", "empty no-match"));
+      } else if (anyVisible && note) {
+        note.parentNode.removeChild(note);
+      }
+    });
   }
 
   function banner(message, kind) {
@@ -219,6 +288,24 @@ export function consolePage(): string {
       grid.appendChild(card);
     });
     view.appendChild(grid);
+
+    // Orders carry two people, so this is the table where a username is most
+    // useful: it is the one screen that says who a payment was actually
+    // between rather than which uuid paid which uuid.
+    view.appendChild(panel("Orders", table(
+      ["Order", "Buyer", "Seller", "Amount", "Status", "When"],
+      (data.orders || []).map(function (o) {
+        return [
+          text("span", shortId(o.id), "mono"),
+          userCell(o.buyer_username, o.buyer_id),
+          userCell(o.seller_username, o.seller_id),
+          text("span", o.amount + " " + o.currency, "mono"),
+          o.status,
+          text("span", String(o.created_at).slice(0, 10), "mono")
+        ];
+      }),
+      "No orders yet."
+    )));
 
     view.appendChild(panel("Tokenizations", table(
       ["Position", "Status", "Face value", "Sold", "Maturity"],
@@ -499,8 +586,18 @@ export function consolePage(): string {
     policy: renderPolicy, audit: renderAudit
   };
 
+  // Policy is a set of form fields, not a list of records — a filter that hid
+  // half of an editable form would be a trap rather than a convenience.
+  var FILTERABLE = { overview: true, queues: true, audit: true, policy: false };
+
+  function syncSearchVisibility() {
+    var bar = document.querySelector(".searchbar");
+    bar.style.display = FILTERABLE[active] ? "flex" : "none";
+  }
+
   function load(force) {
-    if (!force && cache[active]) { RENDER[active](cache[active]); return; }
+    syncSearchVisibility();
+    if (!force && cache[active]) { RENDER[active](cache[active]); applyFilter(); return; }
     document.getElementById("view").textContent = "";
     document.getElementById("view").appendChild(text("p", "Loading…", "empty"));
     api(ENDPOINT[active])
@@ -508,12 +605,28 @@ export function consolePage(): string {
         if (!data) return;
         cache[active] = data;
         RENDER[active](data);
+        // Re-applied after every render: a filter the operator typed should
+        // still hold when the tab reloads after a decision.
+        applyFilter();
       })
       .catch(function (err) {
         banner(err.message);
         document.getElementById("view").textContent = "";
       });
   }
+
+  var search = document.getElementById("search");
+  search.addEventListener("input", function () {
+    filterTerm = this.value;
+    applyFilter();
+  });
+  // Escape clears, which is what a search box is expected to do.
+  search.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || !this.value) return;
+    this.value = "";
+    filterTerm = "";
+    applyFilter();
+  });
 
   var nav = document.getElementById("tabs");
   TABS.forEach(function (t) {

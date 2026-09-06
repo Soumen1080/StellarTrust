@@ -90,14 +90,26 @@ export interface OrderRow {
   status: string;
   amount: string;
   currency: string;
+  buyer_id: string;
+  buyer_username: string;
+  seller_id: string;
+  seller_username: string;
   created_at: string;
 }
 
 export async function listOrders(limit = 500): Promise<OrderRow[]> {
+  // Both parties are joined by name. An order is between two people, and an
+  // operator looking at a disputed one needs to know which two — previously
+  // this selected neither id, so the console could show the money moving
+  // without ever showing who it moved between.
   const { rows } = await getPool().query<OrderRow>(
-    `select id, status::text, amount, currency, created_at
-     from orders
-     order by created_at desc
+    `select o.id, o.status::text, o.amount, o.currency, o.created_at,
+            o.buyer_id,  b.username as buyer_username,
+            o.seller_id, s.username as seller_username
+     from orders o
+     join users b on b.id = o.buyer_id
+     join users s on s.id = o.seller_id
+     order by o.created_at desc
      limit $1`,
     [Math.min(limit, 1000)],
   );
