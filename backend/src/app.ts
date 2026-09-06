@@ -194,7 +194,11 @@ export function createApp(): Express {
         "access-control-allow-headers",
         "authorization,content-type,idempotency-key,x-request-id,x-dev-approval-password",
       );
-      res.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+      // PATCH is here for the profile update at PATCH /api/auth/me. A method
+      // missing from this list is refused by the browser at preflight, which
+      // the client can only report as an unreachable API — so a new verb on
+      // any route has to be added here too.
+      res.setHeader("access-control-allow-methods", "GET,POST,PATCH,OPTIONS");
       res.setHeader("vary", "Origin");
     } else if (origin && !rejectedOrigins.has(origin)) {
       rejectedOrigins.add(origin);
