@@ -16,12 +16,15 @@ import {
   type BusinessProfile,
   type IdentityProfileResponse,
   type KycApplicationResponse,
+  type PublicUserRef,
   type UserProfile,
   type WalletRef,
 } from "@stellartrust/shared";
-import type {
-  DevelopmentDemoAccount,
-  IdentityRepository,
+import { ConflictError } from "../../lib/errors.js";
+import {
+  generateUsername,
+  type DevelopmentDemoAccount,
+  type IdentityRepository,
 } from "./identity.repository.js";
 
 function toIso(value: Date | string): string {
@@ -33,10 +36,29 @@ function pendingEmail(stellarPublicKey: string): string {
   return `wallet-${stellarPublicKey.slice(0, 12)}@pending.stellartrust.local`;
 }
 
+/**
+ * Every column {@link PgIdentityRepository.mapUser} reads, as one fragment.
+ *
+ * Written once and interpolated into each query rather than repeated: these
+ * clauses are the sole source of the user shape, and a column missing from just
+ * one of them produces a `UserProfile` that is silently incomplete on one code
+ * path only — the kind of bug that shows up as a blank username long after the
+ * query that caused it. Contains no user input.
+ */
+const USER_COLUMNS =
+  "id, email, display_name, username, username_set_at, avatar_url, " +
+  "kyc_status, created_at, latest_verification";
+
+/** Postgres unique-violation SQLSTATE. */
+const PG_UNIQUE_VIOLATION = "23505";
+
 interface UserRow {
   id: string;
   email: string;
   display_name: string | null;
+  username: string;
+  username_set_at: Date | string | null;
+  avatar_url: string | null;
   kyc_status: KycStatus;
   created_at: Date | string;
   latest_verification: KycApplicationResponse | null;
@@ -74,6 +96,11 @@ export class PgIdentityRepository implements IdentityRepository {
       id: row.id,
       email: row.email,
       ...(row.display_name ? { displayName: row.display_name } : {}),
+      username: row.username,
+      ...(row.username_set_at
+        ? { usernameSetAt: toIso(row.username_set_at) }
+        : {}),
+      ...(row.avatar_url ? { avatarUrl: row.avatar_url } : {}),
       kycStatus: row.kyc_status,
       createdAt: toIso(row.created_at),
     };
@@ -103,12 +130,16 @@ export class PgIdentityRepository implements IdentityRepository {
     try {
       await client.query("begin");
       const userInsert = await client.query<UserRow>(
-        `insert into users (email, display_name, kyc_status, verified_at)
-         values ($1, $2, $3, $4)
-         returning id, email, display_name, kyc_status, created_at, latest_verification`,
+        `insert into users (email, display_name, username, kyc_status, verified_at)
+         values ($1, $2, $3, $4, $5)
+         returning ${USER_COLUMNS}`,
         [
           pendingEmail(stellarPublicKey),
           demo?.displayName ?? null,
+          // Generated, not chosen: the account needs a handle from the moment it
+          // exists so nothing has to render a missing one. `username_set_at`
+          // stays null, leaving the user their one claim.
+          generateUsername(stellarPublicKey),
           demo ? KycStatus.Verified : KycStatus.Pending,
           demo ? new Date().toISOString() : null,
         ],
@@ -171,7 +202,8 @@ export class PgIdentityRepository implements IdentityRepository {
     const { rows } = await this.pool.query(
       `select
          w.id as wallet_id, w.user_id, w.stellar_public_key, w.custody_type,
-         u.id as user_id2, u.email, u.display_name, u.kyc_status,
+         u.id as user_id2, u.email, u.display_name, u.username,
+         u.username_set_at, u.avatar_url, u.kyc_status,
          u.created_at, u.latest_verification
        from wallets w
        join users u on u.id = w.user_id
@@ -185,6 +217,9 @@ export class PgIdentityRepository implements IdentityRepository {
         id: row.user_id,
         email: row.email,
         display_name: row.display_name,
+        username: row.username,
+        username_set_at: row.username_set_at,
+        avatar_url: row.avatar_url,
         kyc_status: row.kyc_status,
         created_at: row.created_at,
         latest_verification: row.latest_verification,
@@ -208,7 +243,7 @@ export class PgIdentityRepository implements IdentityRepository {
       `update users
        set email = $2, kyc_status = $3, updated_at = now()
        where id = $1
-       returning id, email, display_name, kyc_status, created_at, latest_verification`,
+       returning ${USER_COLUMNS}`,
       [userId, input.email, input.kycStatus],
     );
     const row = rows[0];
@@ -224,7 +259,7 @@ export class PgIdentityRepository implements IdentityRepository {
       `update users
        set kyc_status = $2, updated_at = now()
        where id = $1
-       returning id, email, display_name, kyc_status, created_at, latest_verification`,
+       returning ${USER_COLUMNS}`,
       [userId, status],
     );
     const row = rows[0];
@@ -279,6 +314,77 @@ export class PgIdentityRepository implements IdentityRepository {
     };
   }
 
+  async setUsername(userId: string, username: string): Promise<UserProfile> {
+    let rows: UserRow[];
+    try {
+      // `username_set_at is null` in the WHERE clause is what enforces the
+      // one-claim rule, and it does so atomically: two concurrent requests
+      // cannot both pass it, because the second sees the first's write. A
+      // read-then-write check here would have a race between the two.
+      ({ rows } = await this.pool.query<UserRow>(
+        `update users
+         set username = $2, username_set_at = now(), updated_at = now()
+         where id = $1 and username_set_at is null
+         returning ${USER_COLUMNS}`,
+        [userId, username],
+      ));
+    } catch (err) {
+      if ((err as { code?: string }).code === PG_UNIQUE_VIOLATION) {
+        throw new ConflictError("That username is already taken");
+      }
+      throw err;
+    }
+
+    const row = rows[0];
+    if (row) return this.mapUser(row);
+
+    // No row updated: either the user does not exist, or they have already
+    // claimed a handle. Distinguish the two so the caller can report the real
+    // reason rather than a generic failure.
+    const existing = await this.pool.query<{ username_set_at: Date | null }>(
+      `select username_set_at from users where id = $1`,
+      [userId],
+    );
+    if (!existing.rows[0]) throw new Error(`Identity ${userId} was not found`);
+    throw new ConflictError(
+      "Your username has already been set and cannot be changed",
+    );
+  }
+
+  async setAvatarUrl(
+    userId: string,
+    avatarUrl: string | null,
+  ): Promise<UserProfile> {
+    const { rows } = await this.pool.query<UserRow>(
+      `update users
+       set avatar_url = $2, updated_at = now()
+       where id = $1
+       returning ${USER_COLUMNS}`,
+      [userId, avatarUrl],
+    );
+    const row = rows[0];
+    if (!row) throw new Error(`Identity ${userId} was not found`);
+    return this.mapUser(row);
+  }
+
+  async findPublicRef(userId: string): Promise<PublicUserRef | undefined> {
+    // Selects only the three public columns rather than reusing USER_COLUMNS:
+    // this result crosses an account boundary, so the query itself should not
+    // read the email or KYC state it must not disclose.
+    const { rows } = await this.pool.query<{
+      id: string;
+      username: string;
+      avatar_url: string | null;
+    }>(`select id, username, avatar_url from users where id = $1`, [userId]);
+    const row = rows[0];
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      username: row.username,
+      ...(row.avatar_url ? { avatarUrl: row.avatar_url } : {}),
+    };
+  }
+
   async setLatestVerification(
     userId: string,
     verification: KycApplicationResponse,
@@ -296,8 +402,7 @@ export class PgIdentityRepository implements IdentityRepository {
     userId: string,
   ): Promise<IdentityProfileResponse | undefined> {
     const userResult = await this.pool.query<UserRow>(
-      `select id, email, display_name, kyc_status, created_at, latest_verification
-       from users where id = $1`,
+      `select ${USER_COLUMNS} from users where id = $1`,
       [userId],
     );
     const userRow = userResult.rows[0];

@@ -110,6 +110,7 @@ export async function listDisputes(limit = 500): Promise<DisputeRow[]> {
 export interface TreasuryRow {
   id: string;
   user_id: string;
+  username: string;
   direction: string;
   status: string;
   amount: string;
@@ -122,10 +123,12 @@ export interface TreasuryRow {
 
 export async function listTreasuryMovements(limit = 200): Promise<TreasuryRow[]> {
   const { rows } = await getPool().query<TreasuryRow>(
-    `select id, user_id, direction::text, status::text, amount, currency,
-            stellar_tx_hash, counterparty_address, failure_reason, created_at
-     from treasury_movements
-     order by created_at desc
+    `select m.id, m.user_id, u.username, m.direction::text, m.status::text,
+            m.amount, m.currency, m.stellar_tx_hash, m.counterparty_address,
+            m.failure_reason, m.created_at
+     from treasury_movements m
+     join users u on u.id = m.user_id
+     order by m.created_at desc
      limit $1`,
     [Math.min(limit, 1000)],
   );
@@ -159,6 +162,7 @@ export async function listAudit(limit = 100): Promise<AuditRow[]> {
 export interface KycReviewRow {
   id: string;
   user_id: string;
+  username: string;
   status: string;
   risk_score: number | null;
   confidence: number | null;
@@ -167,13 +171,14 @@ export interface KycReviewRow {
 
 export async function listKycReviews(limit = 200): Promise<KycReviewRow[]> {
   const { rows } = await getPool().query<KycReviewRow>(
-    `select id, user_id, status::text,
-            (advisory->>'riskScore')::numeric as risk_score,
-            (advisory->>'confidence')::numeric as confidence,
-            created_at
-     from kyc_reviews
-     where status = 'queued'
-     order by created_at asc
+    `select r.id, r.user_id, u.username, r.status::text,
+            (r.advisory->>'riskScore')::numeric as risk_score,
+            (r.advisory->>'confidence')::numeric as confidence,
+            r.created_at
+     from kyc_reviews r
+     join users u on u.id = r.user_id
+     where r.status = 'queued'
+     order by r.created_at asc
      limit $1`,
     [Math.min(limit, 1000)],
   );

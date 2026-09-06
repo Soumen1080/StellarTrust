@@ -149,6 +149,18 @@ const CHECKS: Check[] = [
     sql: `select 1 from information_schema.tables
           where table_name = 'verification_policies'`,
   },
+  {
+    need: "Usernames and profile pictures — the profile page and the admin queues",
+    migration: "0023",
+    sql: `select 1 from information_schema.columns
+          where table_name = 'users' and column_name = 'username'`,
+  },
+  {
+    need: "A username cannot be claimed twice",
+    migration: "0023",
+    sql: `select 1 from pg_indexes
+          where indexname = 'users_username_lower_idx'`,
+  },
 ];
 
 function fail(message: string): never {

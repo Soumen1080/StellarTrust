@@ -163,6 +163,20 @@ export const api = {
     }),
   getIdentity: (accessToken: string) =>
     request<IdentityProfileResponse>("/api/auth/me", { accessToken }),
+  /** Claims the caller's permanent username. 409 if taken or already set. */
+  updateProfile: (accessToken: string, input: { username: string }) =>
+    request<IdentityProfileResponse>("/api/auth/me", {
+      method: "PATCH",
+      accessToken,
+      body: JSON.stringify(input),
+    }),
+  /** Uploads a profile picture as a base64 data URL; returns the updated profile. */
+  uploadAvatar: (accessToken: string, dataUrl: string) =>
+    request<IdentityProfileResponse>("/api/auth/me/avatar", {
+      method: "POST",
+      accessToken,
+      body: JSON.stringify({ dataUrl }),
+    }),
   /** The connected wallet's real, live Horizon balances (XLM + any bound token). */
   getWalletBalances: (accessToken: string) =>
     request<WalletBalancesResponse>("/api/wallet/balances", { accessToken }),

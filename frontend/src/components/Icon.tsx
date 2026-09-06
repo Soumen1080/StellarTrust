@@ -14,6 +14,7 @@ export type IconName =
   | "shield"
   | "star"
   | "sparkles"
+  | "user"
   | "user-check"
   | "wallet"
   | "x";
@@ -32,6 +33,7 @@ const paths: Record<IconName, React.ReactNode> = {
   shield: <><path d="M12 3 5 6v5c0 4.6 2.9 8.2 7 10 4.1-1.8 7-5.4 7-10V6z"/><path d="m9 12 2 2 4-4"/></>,
   star: <path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.7l5.9-.8z"/>,
   sparkles: <><path d="m12 3 1.4 3.6L17 8l-3.6 1.4L12 13l-1.4-3.6L7 8l3.6-1.4z"/><path d="m18.5 14 .8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8zM5 14l.8 2.2L8 17l-2.2.8L5 20l-.8-2.2L2 17l2.2-.8z"/></>,
+  user: <><circle cx="12" cy="8" r="3.5"/><path d="M5 20c.6-4.3 3-6.5 7-6.5s6.4 2.2 7 6.5"/></>,
   "user-check": <><circle cx="9" cy="8" r="3"/><path d="M3 20c.5-4 2.5-6 6-6 1.4 0 2.6.3 3.5.9M15 18l2 2 4-5"/></>,
   wallet: <><path d="M4 6h14a2 2 0 0 1 2 2v10H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h12"/><path d="M15 11h5v4h-5a2 2 0 0 1 0-4z"/></>,
   x: <path d="m6 6 12 12M18 6 6 18"/>,

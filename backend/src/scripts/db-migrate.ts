@@ -53,6 +53,8 @@ const APPLIED_PROBE: Record<string, string> = {
            where table_name = 'ledger_account_balances'`,
   "0021": `select 1 from information_schema.tables where table_name = 'treasury_movements'`,
   "0022": `select 1 from information_schema.tables where table_name = 'verification_policies'`,
+  "0023": `select 1 from information_schema.columns
+           where table_name = 'users' and column_name = 'username'`,
 };
 
 /** Files this runner manages, oldest first. Order is load-bearing. */
@@ -64,6 +66,7 @@ const MIGRATIONS = [
   "0020_user_ledger_accounts_and_money_invariants.sql",
   "0021_treasury_movements.sql",
   "0022_kyc_reputation_persistence_and_verification_policy.sql",
+  "0023_user_usernames_and_avatars.sql",
 ];
 
 function prefixOf(filename: string): string {

@@ -603,6 +603,7 @@ export function createApp(): Express {
     rwa,
     reputationService,
     eventBus,
+    identities,
   );
   const reconciliation = new ReconciliationJob(
     paymentRepository,

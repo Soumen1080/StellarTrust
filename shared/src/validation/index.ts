@@ -164,6 +164,77 @@ export const sep10VerifyRequestSchema = z.object({
   signedTransactionXdr: z.string().min(32).max(100_000),
 });
 
+/**
+ * Handles a user could plausibly claim in order to be mistaken for the
+ * platform, its staff, or an automated account. Impersonation matters more here
+ * than on a typical social product: the username is shown next to money
+ * movements, so "@support" asking a counterparty to release funds is a
+ * ready-made social-engineering tool.
+ */
+const RESERVED_USERNAMES = new Set([
+  "admin",
+  "administrator",
+  "compliance",
+  "escrow",
+  "help",
+  "moderator",
+  "official",
+  "root",
+  "security",
+  "staff",
+  "stellar",
+  "stellartrust",
+  "support",
+  "system",
+  "treasury",
+]);
+
+/**
+ * A public handle: lower-case, 3–20 of [a-z0-9_].
+ *
+ * Mirrors the `users_username_format` check constraint in migration 0023 — if
+ * this ever diverges, the database is the authority and the mismatch surfaces
+ * as a 500 instead of a validation error. Case is folded rather than rejected
+ * so that typing "Soumen" claims "soumen" instead of failing.
+ */
+export const usernameSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(
+    /^[a-z0-9_]{3,20}$/,
+    "username must be 3–20 characters, using only letters, numbers, and underscores",
+  )
+  .refine(
+    (value) => !RESERVED_USERNAMES.has(value),
+    "that username is reserved",
+  );
+
+export const updateProfileInputSchema = z.object({
+  username: usernameSchema,
+});
+
+/** Image formats accepted for an avatar, checked against the file's own bytes. */
+export const AVATAR_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+
+/**
+ * Upper bound on a decoded avatar, in bytes.
+ *
+ * Enforced against the base64 payload before decoding as well, so an oversized
+ * upload is refused without ever being materialised in memory.
+ */
+export const AVATAR_MAX_BYTES = 2 * 1024 * 1024;
+
+export const avatarUploadInputSchema = z.object({
+  /** A `data:` URL. Its declared type is a hint; the bytes are authoritative. */
+  dataUrl: z
+    .string()
+    .startsWith("data:image/", "avatar must be an image data URL")
+    // Generous: bounds the string itself so a huge body is rejected before the
+    // base64 is decoded. The real limit is AVATAR_MAX_BYTES on the decoded size.
+    .max(Math.ceil(AVATAR_MAX_BYTES * 1.4)),
+});
+
 const imageReferenceSchema = z
   .string()
   .min(1)

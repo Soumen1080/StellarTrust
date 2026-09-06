@@ -3,8 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { Avatar } from "@/components/Avatar";
 import { Icon } from "@/components/Icon";
 import { useIdentity } from "@/components/IdentityProvider";
+import { ProfileMenu } from "@/components/ProfileMenu";
 
 const baseLinks = [
   { href: "/", label: "Overview" },
@@ -16,7 +18,7 @@ const baseLinks = [
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const { isVerified } = useIdentity();
+  const { isVerified, profile } = useIdentity();
   const accountLink = isVerified
     ? { href: "/dashboard", label: "Dashboard" }
     : { href: "/kyc", label: "Verification" };
@@ -76,10 +78,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
           {/* Waits for lg: between md and lg the nav links already fill the
               bar, and adding this cluster overran it. Unverified users still
-              reach verification through the mobile drawer's CTA below. */}
+              reach verification through the mobile drawer's CTA below.
+
+              Signed in, the avatar menu stands where an "Open dashboard" CTA
+              used to: Dashboard is already a nav link two elements to the
+              left, so that button was a second route to a page the header
+              offered anyway. Signed out there is no profile to show, and the
+              verification CTA remains — at this breakpoint it is the only
+              path to KYC. */}
           <div className="hidden items-center gap-sm lg:flex">
             <span className={`rounded-pill border px-sm py-xs font-mono text-[11px] uppercase tracking-wider ${light ? "border-hairline-light text-muted" : "border-hairline-dark text-muted-strong"}`}><span className="mr-xs inline-block h-1.5 w-1.5 rounded-full bg-status-verified" />Testnet</span>
-            <Link href={accountLink.href} className="btn-primary">{isVerified ? "Open dashboard" : "Start verification"} <Icon name="arrow-right" className="h-4 w-4" /></Link>
+            {profile ? <ProfileMenu light={light} /> : <Link href={accountLink.href} className="btn-primary">Start verification <Icon name="arrow-right" className="h-4 w-4" /></Link>}
           </div>
 
           <button ref={menuButtonRef} type="button" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-controls="mobile-navigation" aria-label={open ? "Close navigation" : "Open navigation"} className={`grid h-10 w-10 place-items-center rounded-md border md:hidden ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
@@ -97,9 +106,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="grid gap-xs">
             {links.map((link, index) => <Link ref={index === 0 ? firstMobileLinkRef : undefined} key={link.href} href={link.href} aria-current={pathname === link.href ? "page" : undefined} className={`block rounded-md px-md py-md text-lg font-semibold ${pathname === link.href ? "bg-primary text-ink" : light ? "text-ink" : "text-body"}`}>{link.label}</Link>)}
           </div>
+          {/* The drawer gets a direct link rather than the dropdown: it is
+              already a full-screen menu, so nesting a second one inside it
+              would be a menu within a menu. */}
           <div className={`mt-auto border-t pt-lg ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
             <p className={`mb-md text-sm ${light ? "text-muted" : "text-muted-strong"}`}>Secure escrow and identity verification on Stellar testnet.</p>
-            <Link href={accountLink.href} className="btn-primary w-full justify-center">{isVerified ? "Open dashboard" : "Start verification"} <Icon name="arrow-right" className="h-4 w-4" /></Link>
+            {profile ? (
+              <Link href="/profile" className={`flex min-h-11 items-center gap-sm rounded-md border p-sm ${light ? "border-hairline-light" : "border-hairline-dark"}`}>
+                <Avatar username={profile.user.username} avatarUrl={profile.user.avatarUrl} />
+                <span className="min-w-0 flex-1">
+                  <span className="data-label block">Your profile</span>
+                  <span className={`block truncate font-mono text-sm font-semibold ${light ? "text-ink" : "text-on-dark"}`}>@{profile.user.username}</span>
+                </span>
+                <Icon name="arrow-right" className="h-4 w-4 shrink-0 text-muted-strong" />
+              </Link>
+            ) : (
+              <Link href={accountLink.href} className="btn-primary w-full justify-center">Start verification <Icon name="arrow-right" className="h-4 w-4" /></Link>
+            )}
           </div>
         </nav>
       ) : null}

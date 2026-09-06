@@ -1,6 +1,6 @@
 "use client";
 
-import { CurrencyCode, DISPUTABLE_ORDER_STATUSES, EscrowState, LEDGER_CURRENCY_DECIMALS, OrderStatus, type DisputeDTO, type OrderDetailsResponse } from "@stellartrust/shared";
+import { CurrencyCode, DISPUTABLE_ORDER_STATUSES, EscrowState, LEDGER_CURRENCY_DECIMALS, OrderStatus, type DisputeDTO, type OrderDetailsResponse, type PublicUserRef } from "@stellartrust/shared";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
@@ -124,7 +124,7 @@ export function EscrowDashboard() {
           })()}
           {active ? <p role="status" className="mt-md flex items-center gap-xs rounded-md bg-primary/10 p-sm text-sm text-primary"><span className="h-2 w-2 animate-pulse rounded-full bg-primary" />{PHASE_LABEL[active.phase]}{active.phase === "signing" ? " Approve the transaction in your wallet extension." : null}</p> : null}
           {details.blockedByReconciliation ? <p role="alert" className="mt-md flex gap-xs rounded-md bg-status-disputed/10 p-sm text-sm text-status-disputed"><Icon name="shield" className="h-4 w-4 shrink-0" />Operations are blocked until the ledger-to-chain mismatch is resolved.</p> : null}</div>
-          {expanded ? <div id={`order-details-${details.order.id}`} className="border-t border-hairline-dark bg-canvas-dark/40 p-md sm:p-lg"><p className="eyebrow">Settlement progress</p><div className="mt-md grid gap-xs sm:grid-cols-3 lg:grid-cols-6">{timeline.map((step, index) => { const complete = branchState ? true : index <= currentIndex; const terminal = step === branchState; return <div key={step} className="flex items-center gap-xs sm:block"><span className={`grid h-7 w-7 place-items-center rounded-full text-xs ${terminal ? "bg-status-disputed/10 text-status-disputed" : complete ? "bg-status-verified/10 text-status-verified" : "border border-hairline-dark text-muted"}`}>{complete ? (terminal ? "!" : <Icon name="check" className="h-3.5 w-3.5" />) : index + 1}</span><p className={`mt-xs text-xs capitalize ${terminal ? "text-status-disputed" : complete ? "text-body" : "text-muted"}`}>{step}</p></div>; })}</div><dl className="mt-lg grid gap-md border-t border-hairline-dark pt-md sm:grid-cols-2"><div><dt className="text-xs text-muted">Buyer ID</dt><dd className="mt-xs break-all font-mono text-xs text-body">{details.order.buyerId}</dd></div><div><dt className="text-xs text-muted">Seller ID</dt><dd className="mt-xs break-all font-mono text-xs text-body">{details.order.sellerId}</dd></div><div className="sm:col-span-2"><dt className="text-xs text-muted">Custody contract</dt><dd className="mt-xs break-all font-mono text-xs text-body">{details.escrow?.contractId ?? "Created when you lock funds"}</dd></div></dl></div> : null}</article>;
+          {expanded ? <div id={`order-details-${details.order.id}`} className="border-t border-hairline-dark bg-canvas-dark/40 p-md sm:p-lg"><p className="eyebrow">Settlement progress</p><div className="mt-md grid gap-xs sm:grid-cols-3 lg:grid-cols-6">{timeline.map((step, index) => { const complete = branchState ? true : index <= currentIndex; const terminal = step === branchState; return <div key={step} className="flex items-center gap-xs sm:block"><span className={`grid h-7 w-7 place-items-center rounded-full text-xs ${terminal ? "bg-status-disputed/10 text-status-disputed" : complete ? "bg-status-verified/10 text-status-verified" : "border border-hairline-dark text-muted"}`}>{complete ? (terminal ? "!" : <Icon name="check" className="h-3.5 w-3.5" />) : index + 1}</span><p className={`mt-xs text-xs capitalize ${terminal ? "text-status-disputed" : complete ? "text-body" : "text-muted"}`}>{step}</p></div>; })}</div><dl className="mt-lg grid gap-md border-t border-hairline-dark pt-md sm:grid-cols-2"><div><dt className="text-xs text-muted">Buyer</dt><dd className="mt-xs"><PartyRef party={details.buyer} userId={details.order.buyerId} /></dd></div><div><dt className="text-xs text-muted">Seller</dt><dd className="mt-xs"><PartyRef party={details.seller} userId={details.order.sellerId} /></dd></div><div className="sm:col-span-2"><dt className="text-xs text-muted">Custody contract</dt><dd className="mt-xs break-all font-mono text-xs text-body">{details.escrow?.contractId ?? "Created when you lock funds"}</dd></div></dl></div> : null}</article>;
         })}</div>}
       </section>
 
@@ -172,6 +172,23 @@ function OrderIdRow({ orderId, dispute }: { orderId: string; dispute: DisputeDTO
 function Metric({ label, value, detail, icon, attention = false }: { label: string; value: string; detail: string; icon: "wallet" | "lock" | "clock"; attention?: boolean }) { return <div className="panel-dark flex items-center justify-between gap-md p-lg"><div className="min-w-0"><p className="text-xs font-medium text-muted">{label}</p><p className={`mt-xs break-words font-mono text-xl font-semibold sm:text-2xl ${attention ? "text-primary" : "text-on-dark"}`}>{value}</p><p className="mt-xs text-xs text-muted">{detail}</p></div><span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-surface-elevated-dark text-muted-strong"><Icon name={icon}/></span></div>; }
 function Detail({ label, value, alert = false }: { label: string; value: string; alert?: boolean }) { return <div><dt className="data-label">{label}</dt><dd className={`mt-xs text-xs font-medium ${alert ? "text-status-disputed" : "text-body"}`}>{value}</dd></div>; }
 function shortId(value: string) { return value.length > 22 ? `${value.slice(0, 10)}…${value.slice(-8)}` : value; }
+
+/**
+ * A party to the order: their handle, with the id kept underneath.
+ *
+ * The id stays because it is what the create-order form and support
+ * conversations take; the handle is what makes the row readable. `party` is
+ * absent on a response assembled without the directory lookup, so the id alone
+ * remains a complete answer.
+ */
+function PartyRef({ party, userId }: { party?: PublicUserRef; userId: string }) {
+  return (
+    <>
+      {party ? <span className="block font-mono text-sm font-semibold text-on-dark">@{party.username}</span> : null}
+      <span className="mt-xxs block break-all font-mono text-xs text-muted">{userId}</span>
+    </>
+  );
+}
 
 /** Custody in the user's terms, including the deploy-before-lock gap. */
 function escrowLabel(details: OrderDetailsResponse): string {

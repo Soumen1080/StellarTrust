@@ -48,8 +48,31 @@ export interface UserProfile {
   id: string;
   email: string;
   displayName?: string;
+  /**
+   * Unique, lower-case handle. Required: every account is created with a
+   * generated one (migration 0023), so no caller has to render a fallback.
+   */
+  username: string;
+  /** Set once the user has claimed their own handle; after that it is fixed. */
+  usernameSetAt?: string;
+  /** Public URL of the profile picture. Absent renders as initials. */
+  avatarUrl?: string;
   kycStatus: KycStatus;
   createdAt: string;
+}
+
+/**
+ * A user as another user is allowed to see them.
+ *
+ * Deliberately not `UserProfile`: this crosses an account boundary, so it
+ * carries only what a counterparty needs to recognise who they are dealing
+ * with. Never add `email`, KYC state, or anything else private to this shape —
+ * it is returned to someone who is not the subject.
+ */
+export interface PublicUserRef {
+  id: string;
+  username: string;
+  avatarUrl?: string;
 }
 
 export interface BusinessProfile {
@@ -155,6 +178,17 @@ export interface OrderDetailsResponse {
   escrow: EscrowDTO | null;
   transitions: PaymentTransitionDTO[];
   blockedByReconciliation: boolean;
+  /**
+   * The two parties, named.
+   *
+   * Attached here rather than on {@link OrderDTO} because this is the read path
+   * the UI renders; the DTO is built in many places that have no user lookup.
+   * Optional so a response assembled without the lookup stays valid — the UI
+   * falls back to the raw id. Disclosing a handle across the account boundary
+   * is sound precisely because both parties are on this order already.
+   */
+  buyer?: PublicUserRef;
+  seller?: PublicUserRef;
 }
 
 // ── Wallet-signed escrow transitions ─────────────────────────────────────────

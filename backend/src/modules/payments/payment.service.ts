@@ -13,6 +13,7 @@ import {
   type EscrowDTO,
   type LedgerTransactionInput,
   type OrderDetailsResponse,
+  type PublicUserRef,
   type OrderDTO,
   type OrderMutationResponse,
   type PaymentCapabilitiesResponse,
@@ -110,6 +111,18 @@ export interface ReputationRecorder {
 }
 
 /**
+ * Public handles for order parties, as a narrow port.
+ *
+ * Structurally satisfied by `IdentityRepository`. Declared here so payments
+ * depends on the one lookup it needs rather than on the whole identity
+ * repository — and so the shape it can read is, by construction, only the
+ * public one.
+ */
+export interface PublicUserDirectory {
+  findPublicRef(userId: string): Promise<PublicUserRef | undefined>;
+}
+
+/**
  * The publish side of the event spine, as a narrow port.
  *
  * Structurally satisfied by `EventBus`. Declared here so payments depends on
@@ -133,6 +146,12 @@ export class PaymentService {
      * calling into RWA directly, and payments stops knowing that RWA exists.
      */
     private readonly events?: EventPublisher,
+    /**
+     * Resolves the public handle of each order party. Optional like the
+     * dependencies above: without it, order details still return, carrying the
+     * raw ids they always did.
+     */
+    private readonly identities?: PublicUserDirectory,
   ) {}
 
   async createOrder(
@@ -580,12 +599,21 @@ export class PaymentService {
     if (order.buyerId !== userId && order.sellerId !== userId) {
       throw new ForbiddenError("Only an order party may view this order");
     }
+    // Safe to disclose: the guard above has already established that the
+    // caller is one of these two parties.
+    const [buyer, seller] = await Promise.all([
+      this.identities?.findPublicRef(order.buyerId),
+      this.identities?.findPublicRef(order.sellerId),
+    ]);
+
     return {
       order,
       escrow: (await this.repository.findEscrow(orderId)) ?? null,
       transitions: await this.repository.listTransitions(orderId),
       blockedByReconciliation:
         await this.repository.hasUnresolvedMismatch(orderId),
+      ...(buyer ? { buyer } : {}),
+      ...(seller ? { seller } : {}),
     };
   }
 

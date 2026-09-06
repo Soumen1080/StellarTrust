@@ -57,6 +57,9 @@ export function consolePage(): string {
        vertical-align: top; }
   tr:last-child td { border-bottom: 0; }
   .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
+  /* The id under a username: present for correlation, quiet enough that the
+     name is what the eye lands on first. */
+  .muted-id { color: #707a8a; font-size: 11px; margin-top: 2px; }
   .muted { color: #707a8a; }
   .empty { padding: 24px; text-align: center; color: #707a8a; }
   input, select {
@@ -110,6 +113,18 @@ export function consolePage(): string {
     el.textContent = value === null || value === undefined ? "—" : String(value);
     if (className) el.className = className;
     return el;
+  }
+
+  // A person, named. The username is what an operator can actually recognise
+  // and search for; the id stays underneath it because that is what every
+  // other tool and query in the system takes. Both go through text(), so a
+  // handle containing markup renders as literal characters — usernames are
+  // user-chosen, and this console approves KYC.
+  function userCell(username, userId) {
+    var wrap = document.createElement("div");
+    wrap.appendChild(text("div", username ? "@" + username : "—", "mono"));
+    wrap.appendChild(text("div", shortId(userId), "mono muted-id"));
+    return wrap;
   }
 
   function banner(message, kind) {
@@ -276,7 +291,7 @@ export function consolePage(): string {
       ["Applicant", "Risk", "Confidence", "Waiting since", "Decision"],
       data.kyc.map(function (r) {
         return [
-          text("span", shortId(r.user_id), "mono"),
+          userCell(r.username, r.user_id),
           r.risk_score === null ? "—" : Math.round(r.risk_score * 100) + "%",
           r.confidence === null ? "—" : Math.round(r.confidence * 100) + "%",
           text("span", String(r.created_at).slice(0, 10), "mono"),
@@ -336,7 +351,7 @@ export function consolePage(): string {
       ["User", "Amount", "Destination", "Action"],
       held.map(function (m) {
         return [
-          text("span", shortId(m.user_id), "mono"),
+          userCell(m.username, m.user_id),
           text("span", m.amount + " " + m.currency, "mono"),
           text("span", shortId(m.counterparty_address), "mono"),
           decisionCell(m.id, [
@@ -364,7 +379,7 @@ export function consolePage(): string {
       data.treasury.map(function (m) {
         return [
           m.direction,
-          text("span", shortId(m.user_id), "mono"),
+          userCell(m.username, m.user_id),
           text("span", m.amount + " " + m.currency, "mono"),
           m.status,
           text("span", String(m.created_at).slice(0, 10), "mono")

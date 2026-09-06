@@ -11,9 +11,24 @@ import {
   type BusinessProfile,
   type IdentityProfileResponse,
   type KycApplicationResponse,
+  type PublicUserRef,
   type UserProfile,
   type WalletRef,
 } from "@stellartrust/shared";
+import { ConflictError } from "../../lib/errors.js";
+
+/**
+ * The handle an account is born with.
+ *
+ * Derived from the Stellar public key rather than random so that it is stable:
+ * the same wallet yields the same handle, which keeps fixtures and local
+ * databases reproducible. Lower-cased and prefixed to satisfy the
+ * `users_username_format` constraint — a bare key fragment could start with a
+ * digit and base32 keys are upper-case.
+ */
+export function generateUsername(stellarPublicKey: string): string {
+  return `user_${stellarPublicKey.slice(1, 13).toLowerCase()}`;
+}
 
 export interface IdentityRepository {
   upsertWalletIdentity(stellarPublicKey: string): Promise<{
@@ -31,6 +46,17 @@ export interface IdentityRepository {
     userId: string,
     input: { email: string; legalName: string; kycStatus: KycStatus },
   ): Promise<UserProfile>;
+  /**
+   * Claims the user's one permanent handle.
+   *
+   * Throws {@link ConflictError} if the handle is taken or if this user has
+   * already claimed one — the username is displayed against settled
+   * transactions, so it is writable exactly once.
+   */
+  setUsername(userId: string, username: string): Promise<UserProfile>;
+  setAvatarUrl(userId: string, avatarUrl: string | null): Promise<UserProfile>;
+  /** The subset of a user that may be shown to a transaction counterparty. */
+  findPublicRef(userId: string): Promise<PublicUserRef | undefined>;
   setUserKycStatus(userId: string, status: KycStatus): Promise<UserProfile>;
   upsertBusiness(
     userId: string,
@@ -104,6 +130,9 @@ export class InMemoryIdentityRepository implements IdentityRepository {
       // Replaced by the KYC onboarding email; not externally delivered.
       email: `wallet-${stellarPublicKey.slice(0, 12)}@pending.stellartrust.local`,
       ...(displayName ? { displayName } : {}),
+      // No `usernameSetAt`: this is the generated handle, so the user's one
+      // claim is still available.
+      username: generateUsername(stellarPublicKey),
       kycStatus,
       createdAt: now,
     };
@@ -134,6 +163,48 @@ export class InMemoryIdentityRepository implements IdentityRepository {
       kycStatus: input.kycStatus,
     };
     return record.user;
+  }
+
+  async setUsername(userId: string, username: string): Promise<UserProfile> {
+    const record = this.requireRecord(userId);
+    if (record.user.usernameSetAt) {
+      throw new ConflictError(
+        "Your username has already been set and cannot be changed",
+      );
+    }
+    // Mirrors the case-insensitive unique index from migration 0023: handles
+    // are stored folded, so a plain comparison is the same check.
+    for (const [otherId, other] of this.records) {
+      if (otherId !== userId && other.user.username === username) {
+        throw new ConflictError("That username is already taken");
+      }
+    }
+    record.user = {
+      ...record.user,
+      username,
+      usernameSetAt: new Date().toISOString(),
+    };
+    return record.user;
+  }
+
+  async setAvatarUrl(
+    userId: string,
+    avatarUrl: string | null,
+  ): Promise<UserProfile> {
+    const record = this.requireRecord(userId);
+    const { avatarUrl: _previous, ...rest } = record.user;
+    record.user = { ...rest, ...(avatarUrl ? { avatarUrl } : {}) };
+    return record.user;
+  }
+
+  async findPublicRef(userId: string): Promise<PublicUserRef | undefined> {
+    const user = this.records.get(userId)?.user;
+    if (!user) return undefined;
+    return {
+      id: user.id,
+      username: user.username,
+      ...(user.avatarUrl ? { avatarUrl: user.avatarUrl } : {}),
+    };
   }
 
   async setUserKycStatus(
