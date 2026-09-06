@@ -30,7 +30,23 @@ export function getPool(): pg.Pool {
     // would take connections the platform needs to serve actual users.
     max: 4,
     connectionTimeoutMillis: 10_000,
+    // Recycle before the provider does. Supabase's pooler closes idle client
+    // connections on its own schedule; retiring them here first means the
+    // console reconnects on its own terms rather than discovering a dead
+    // socket mid-query.
+    idleTimeoutMillis: 30_000,
   });
+
+  // Required, not optional hygiene: `error` is a special event on an
+  // EventEmitter — with no listener, Node does not log it, it throws, and an
+  // unhandled throw here takes the whole console down. An idle connection
+  // being dropped by the provider is routine and must not do that. The pool
+  // discards the dead client and opens a new one on the next query, so the
+  // right response is to record it and carry on.
+  pool.on("error", (err) => {
+    console.error("admin: idle database connection dropped", err.message);
+  });
+
   return pool;
 }
 
