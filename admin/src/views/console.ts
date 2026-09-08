@@ -196,6 +196,16 @@ export function consolePage(): string {
     });
   }
 
+  // The audit actor, which is not always a person: the log also records
+  // 'system:reputation', 'admin-console' and similar. A handle is shown when
+  // one exists, and the raw actor string otherwise — writing "@system" for a
+  // background job would invent a user who does not exist, in the one table
+  // whose whole value is being an accurate record of who did what.
+  function actorCell(actor, username, userId) {
+    if (!username) return text("span", actor, "mono");
+    return userCell(username, userId);
+  }
+
   function banner(message, kind) {
     var host = document.getElementById("banner");
     host.textContent = "";
@@ -308,10 +318,11 @@ export function consolePage(): string {
     )));
 
     view.appendChild(panel("Tokenizations", table(
-      ["Position", "Status", "Face value", "Sold", "Maturity"],
+      ["Position", "Issuer", "Status", "Face value", "Sold", "Maturity"],
       data.tokenizations.map(function (t) {
         return [
           text("span", shortId(t.id), "mono"),
+          userCell(t.issuer_username, t.issuer_user_id),
           t.status,
           text("span", t.face_value_amount + " " + t.face_value_currency, "mono"),
           text("span", t.units_sold + " / " + t.total_units, "mono"),
@@ -322,11 +333,13 @@ export function consolePage(): string {
     )));
 
     view.appendChild(panel("Disputes", table(
-      ["Dispute", "Order", "Status", "Opened"],
+      ["Dispute", "Order", "Buyer", "Seller", "Status", "Opened"],
       data.disputes.map(function (d) {
         return [
           text("span", shortId(d.id), "mono"),
           text("span", shortId(d.order_id), "mono"),
+          userCell(d.buyer_username, d.buyer_id),
+          userCell(d.seller_username, d.seller_id),
           d.status,
           text("span", String(d.created_at).slice(0, 10), "mono")
         ];
@@ -568,7 +581,7 @@ export function consolePage(): string {
       data.events.map(function (e) {
         return [
           text("span", String(e.created_at).replace("T", " ").slice(0, 16), "mono"),
-          text("span", e.actor, "mono"),
+          actorCell(e.actor, e.actor_username, e.actor_id),
           text("span", e.action, "mono"),
           text("span", e.entity + " " + shortId(e.entity_id), "mono muted")
         ];

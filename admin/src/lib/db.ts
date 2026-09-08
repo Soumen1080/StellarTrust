@@ -61,6 +61,8 @@ export async function closePool(): Promise<void> {
 
 export interface TokenizationRow {
   id: string;
+  issuer_user_id: string;
+  issuer_username: string;
   status: string;
   face_value_amount: string;
   face_value_currency: string;
@@ -74,11 +76,13 @@ export interface TokenizationRow {
 
 export async function listTokenizations(limit = 500): Promise<TokenizationRow[]> {
   const { rows } = await getPool().query<TokenizationRow>(
-    `select id, status::text, face_value_amount, face_value_currency,
-            total_units, units_sold, price_per_unit_amount,
-            maturity_date, collected_at, created_at
-     from tokenizations
-     order by created_at desc
+    `select t.id, t.issuer_user_id, u.username as issuer_username,
+            t.status::text, t.face_value_amount, t.face_value_currency,
+            t.total_units, t.units_sold, t.price_per_unit_amount,
+            t.maturity_date, t.collected_at, t.created_at
+     from tokenizations t
+     join users u on u.id = t.issuer_user_id
+     order by t.created_at desc
      limit $1`,
     [Math.min(limit, 1000)],
   );
@@ -120,15 +124,27 @@ export interface DisputeRow {
   id: string;
   status: string;
   order_id: string;
+  buyer_id: string | null;
+  buyer_username: string | null;
+  seller_id: string | null;
+  seller_username: string | null;
   created_at: string;
 }
 
 export async function listDisputes(limit = 500): Promise<DisputeRow[]> {
+  // The parties live inside the stored document rather than in columns, so
+  // they are cast out of the jsonb and joined by hand. Left joins: a dispute
+  // is worth showing even if a party id in the document no longer resolves,
+  // and an inner join would silently drop exactly the rows worth looking at.
   const { rows } = await getPool().query<DisputeRow>(
-    `select id, (data->>'status') as status,
-            (data->>'orderId') as order_id, created_at
-     from dispute_records
-     order by created_at desc
+    `select d.id, (d.data->>'status') as status,
+            (d.data->>'orderId') as order_id, d.created_at,
+            (d.data->>'buyerId') as buyer_id,   b.username as buyer_username,
+            (d.data->>'sellerId') as seller_id, s.username as seller_username
+     from dispute_records d
+     left join users b on b.id = (d.data->>'buyerId')::uuid
+     left join users s on s.id = (d.data->>'sellerId')::uuid
+     order by d.created_at desc
      limit $1`,
     [Math.min(limit, 1000)],
   );
@@ -166,6 +182,14 @@ export async function listTreasuryMovements(limit = 200): Promise<TreasuryRow[]>
 export interface AuditRow {
   id: string;
   actor: string;
+  /**
+   * The actor's handle and id, when the actor is a person.
+   *
+   * Null for the system and admin-console actors, which are not users and have
+   * no handle — `actor` remains the honest label for those.
+   */
+  actor_username: string | null;
+  actor_id: string | null;
   action: string;
   entity: string;
   entity_id: string | null;
@@ -177,10 +201,21 @@ export async function listAudit(limit = 100): Promise<AuditRow[]> {
   // and audit metadata is the field most likely to accumulate something
   // sensitive over time. Not rendering it means a future careless `append`
   // cannot leak through this screen.
+  // `actor` is a prefixed string, not a foreign key: 'user:<uuid>' for a
+  // person, but also 'system:reputation', 'admin-console' and similar for the
+  // things that act without being one.
+  //
+  // The join matches on text, never casting to uuid. A `::uuid` cast guarded
+  // by `actor like 'user:%'` is not safe here: Postgres does not promise to
+  // evaluate join conditions in written order, and it duly attempted the cast
+  // on 'system:kyc-auto-approve' and aborted the whole query. Comparing
+  // `u.id::text` cannot raise on any actor value, whatever shape it has.
   const { rows } = await getPool().query<AuditRow>(
-    `select id, actor, action, entity, entity_id, created_at
-     from audit_log
-     order by created_at desc
+    `select a.id, a.actor, a.action, a.entity, a.entity_id, a.created_at,
+            u.username as actor_username, u.id as actor_id
+     from audit_log a
+     left join users u on a.actor = 'user:' || u.id::text
+     order by a.created_at desc
      limit $1`,
     [Math.min(limit, 1000)],
   );
