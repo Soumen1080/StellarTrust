@@ -235,6 +235,38 @@ export const avatarUploadInputSchema = z.object({
     .max(Math.ceil(AVATAR_MAX_BYTES * 1.4)),
 });
 
+/**
+ * Identity captures are larger than avatars: a document photograph has to stay
+ * legible enough for OCR after the client has already downscaled it.
+ */
+export const KYC_CAPTURE_MAX_BYTES = 8 * 1024 * 1024;
+
+/** What a capture is of. Determines how the reference is used downstream. */
+export const KycCaptureKind = {
+  DocumentFront: "document-front",
+  DocumentBack: "document-back",
+  Selfie: "selfie",
+  Liveness: "liveness",
+} as const;
+export type KycCaptureKind =
+  (typeof KycCaptureKind)[keyof typeof KycCaptureKind];
+
+export const kycCaptureUploadInputSchema = z.object({
+  kind: z.enum([
+    KycCaptureKind.DocumentFront,
+    KycCaptureKind.DocumentBack,
+    KycCaptureKind.Selfie,
+    KycCaptureKind.Liveness,
+  ]),
+  /** A `data:` URL. Its declared type is a hint; the bytes are authoritative. */
+  dataUrl: z
+    .string()
+    .startsWith("data:image/", "capture must be an image data URL")
+    // Bounds the string so an oversized body is rejected before the base64 is
+    // decoded. The real limit is KYC_CAPTURE_MAX_BYTES on the decoded size.
+    .max(Math.ceil(KYC_CAPTURE_MAX_BYTES * 1.4)),
+});
+
 const imageReferenceSchema = z
   .string()
   .min(1)

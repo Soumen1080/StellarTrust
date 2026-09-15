@@ -1,0 +1,23 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    // Metro bundles ESM and resolves the `import()` calls used to defer the
+    // Stellar SDK and WalletConnect. Expo's base config leaves `module`
+    // unset, which defaults to CommonJS and rejects those imports.
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "jsx": "react-jsx",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "*.ts", "index.js", "jest.setup.js"],
+  "exclude": ["node_modules"]
+}

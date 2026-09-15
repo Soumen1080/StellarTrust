@@ -498,6 +498,12 @@ export interface KycRiskAdvisory {
   signals: string[];
 }
 
+/** Response to a single identity-capture upload. */
+export interface KycCaptureUploadResponse {
+  /** Opaque `storage://` reference. Grants no read access by itself. */
+  reference: string;
+}
+
 export interface KycApplicationResponse {
   verificationId: string;
   providerReference: string;

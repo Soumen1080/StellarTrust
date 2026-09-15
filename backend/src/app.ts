@@ -34,6 +34,8 @@ import {
 } from "./modules/auth/auth.repository.js";
 import { PgAuthRepository } from "./modules/auth/pg-auth.repository.js";
 import { createAuthRouter } from "./modules/auth/auth.routes.js";
+import { createNotificationsRouter } from "./modules/notifications/notifications.routes.js";
+import { PushService } from "./modules/notifications/push.service.js";
 import {
   composeBearerVerifiers,
   Sep10Service,
@@ -781,6 +783,15 @@ export function createApp(): Express {
   );
   // Public wall: GET is unauthenticated by design, POST is not.
   app.use("/api/feedback", createFeedbackRouter(feedback, bearerVerifier));
+
+  // Mobile push registration. Without a database the service is a no-op rather
+  // than an error: a local run has nowhere to keep tokens, and that must not
+  // stop the app from signing in.
+  const push = new PushService(usePersistentStore ? getPool() : undefined);
+  app.use(
+    "/api/notifications",
+    createNotificationsRouter(push, bearerVerifier),
+  );
 
   // ── Admin / operations console ────────────────────────────────────────────
   //

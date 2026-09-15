@@ -221,7 +221,35 @@ const envSchema = z.object({
     .max(86_400)
     .default(3600),
 
-  KYC_PROVIDER: z.enum(["sandbox"]).default("sandbox"),
+  /**
+   * Which identity-verification adapter to use.
+   *
+   * `sandbox` is deterministic and offline — fixtures drive every branch, for
+   * local work and tests. `sumsub` performs real verification against a
+   * regulated vendor and requires the SUMSUB_* credentials below. Production
+   * deployments must not run `sandbox`; `assertProductionSafety` enforces it.
+   */
+  KYC_PROVIDER: z.enum(["sandbox", "sumsub"]).default("sandbox"),
+  /** Document upload and review round trips are slower than a JSON call. */
+  KYC_PROVIDER_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(120_000)
+    .default(30_000),
+  SUMSUB_BASE_URL: z.string().url().default("https://api.sumsub.com"),
+  SUMSUB_APP_TOKEN: z.string().min(1).optional(),
+  SUMSUB_SECRET_KEY: z.string().min(1).optional(),
+  /** The verification flow configured in the Sumsub dashboard. */
+  SUMSUB_LEVEL_NAME: z.string().min(1).default("basic-kyc-level"),
+  /** Shared secret Sumsub signs its status webhooks with. */
+  SUMSUB_WEBHOOK_SECRET: z.string().min(1).optional(),
+  /**
+   * Expo push access token. Optional: pushes work without one, but an
+   * authenticated sender gets Expo's higher rate limits and delivery receipts.
+   */
+  EXPO_ACCESS_TOKEN: z.string().min(1).optional(),
+
   KYC_AI_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(3000),
   KYC_APPROVE_MAX_RISK: z.coerce.number().min(0).max(1).default(0.35),
   KYC_REJECT_MIN_RISK: z.coerce.number().min(0).max(1).default(0.7),
@@ -540,6 +568,46 @@ const envSchema = z.object({
         message:
           "At least one currency → token contract binding is required when " +
           "ESCROW_GATEWAY=soroban-rpc",
+      });
+    }
+    // A verification provider with no credentials would boot and then fail at
+    // the first application, after the user has photographed their passport.
+    if (
+      env.KYC_PROVIDER === "sumsub" &&
+      (!env.SUMSUB_APP_TOKEN || !env.SUMSUB_SECRET_KEY)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["SUMSUB_APP_TOKEN"],
+        message:
+          "SUMSUB_APP_TOKEN and SUMSUB_SECRET_KEY are required when " +
+          "KYC_PROVIDER=sumsub",
+      });
+    }
+    // The sandbox provider decides identity from fixture strings in the
+    // request. Outside development that is not a verification at all — it is
+    // an open door to a verified badge, and every money surface is gated on
+    // that badge. Refuse to boot rather than appear to be verifying people.
+    const deployed = env.NODE_ENV === "staging" || env.NODE_ENV === "production";
+    if (deployed && env.KYC_PROVIDER === "sandbox") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["KYC_PROVIDER"],
+        message:
+          "KYC_PROVIDER=sandbox is refused in staging/production: it decides " +
+          "identity from fixture values in the request rather than verifying " +
+          "anyone. Set KYC_PROVIDER=sumsub and supply its credentials.",
+      });
+    }
+    // Same reasoning for the development auto-approval shortcut, which skips
+    // the provider and the AI entirely.
+    if (deployed && env.KYC_AUTO_APPROVE) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["KYC_AUTO_APPROVE"],
+        message:
+          "KYC_AUTO_APPROVE is refused outside development: it verifies every " +
+          "applicant without checking anything.",
       });
     }
   });

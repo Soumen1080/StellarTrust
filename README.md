@@ -468,8 +468,14 @@ StellarTrust runs as separated runtimes that talk through typed contracts. Finan
 ```mermaid
 flowchart TB
     subgraph Client["🖥️ Frontend — Next.js 15"]
-        A[Buyer / Seller / Admin UI]
+        A[Buyer / Seller UI]
         B[Stellar Wallets Kit]
+    end
+
+    subgraph Mobile["📱 App — React Native + Expo"]
+        N[iOS / Android]
+        O[Secure-enclave wallet · WalletConnect]
+        P[Document + liveness capture]
     end
 
     subgraph Backend["⚙️ Backend — Express + TypeScript"]
@@ -498,6 +504,9 @@ flowchart TB
 
     A --> C
     B --> C
+    N --> C
+    O --> C
+    P --> C
     C --> D
     C --> E
     C --> F
@@ -625,6 +634,7 @@ Base URL: `https://stellartrust.onrender.com`
 | `POST /api/auth/*` | SEP-10 wallet challenge + session issuance |
 | `GET /api/wallet/*` | On-chain balances and trustlines |
 | `POST /api/kyc/*` | KYC submission and status |
+| `POST /api/kyc/captures` | Identity document / liveness upload → opaque `storage://` reference (private bucket) |
 | `GET /api/ledger/*` | Double-entry ledger reads and postings |
 | `GET /api/payments/orders` | Escrow orders — create, fund, transition |
 | `GET /api/payments/orders/:orderId` | Single order with chain state |
@@ -633,6 +643,7 @@ Base URL: `https://stellartrust.onrender.com`
 | `GET /api/rwa/assets` · `/tokenizations` · `/portfolio` | RWA tokenization and holdings |
 | `GET /api/reputation/me` · `/:userId` | Advisory counterparty scores |
 | `GET /api/feedback` · `/me` · `POST /api/feedback` | Public product feedback wall (contact fields stored, never returned) |
+| `POST` · `DELETE /api/notifications/devices` | Mobile push token registration |
 
 **Cross-cutting:** Helmet security headers, strict CORS origin validation, rate limiting, request IDs, structured Pino logging, Zod validation on every boundary, and idempotency keys on all money-mutating routes.
 

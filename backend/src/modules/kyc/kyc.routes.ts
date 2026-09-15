@@ -1,6 +1,6 @@
 /** Authenticated KYC/KYB application and compliance-review routes. */
 import { createHash, timingSafeEqual } from "node:crypto";
-import {
+import express, {
   Router,
   type NextFunction,
   type Request,
@@ -9,6 +9,7 @@ import {
 import {
   HumanKycDecision,
   kycApplicationInputSchema,
+  kycCaptureUploadInputSchema,
   kycReviewDecisionInputSchema,
 } from "@stellartrust/shared";
 import { config } from "../../config/index.js";
@@ -28,6 +29,7 @@ import {
   InMemoryIdempotencyStore,
   type IdempotencyStore,
 } from "../../middleware/idempotency.js";
+import { storeCapture } from "./document-storage.service.js";
 import type { KycService } from "./kyc.service.js";
 
 function requireDevApprovalPassword(
@@ -92,6 +94,57 @@ export function createKycRouter(
         const userId = (req as AuthedRequest).auth?.userId;
         if (!userId) throw new ValidationError("Authenticated user is missing");
         res.status(201).json(await service.submit(userId, parsed.data));
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  /**
+   * Uploads one identity capture and returns its opaque `storage://` reference.
+   *
+   * Split from `/applications` on purpose. A verification carries up to three
+   * images, and sending them in the application body would mean a single
+   * multi-megabyte request that a phone on a weak connection retries from
+   * zero. Uploading each capture separately lets a failed one be retried
+   * alone, and lets the client show real per-image progress.
+   *
+   * The response is a reference, not a URL: it grants no read access. The
+   * bytes live in a private bucket and are reachable only through a
+   * server-minted signed URL.
+   */
+  router.post(
+    "/captures",
+    // The app-wide parser caps bodies at 1mb; an 8 MB document photograph is
+    // ~10.7 MB base64-encoded. Raised for this route alone so a valid upload
+    // is not rejected as a bare 413 before `decodeCapture` can explain why.
+    // Every other endpoint keeps the small-JSON ceiling.
+    express.json({ limit: "12mb" }),
+    requireAuth(bearerVerifier),
+    async (req, res, next) => {
+      try {
+        const userId = (req as AuthedRequest).auth?.userId;
+        if (!userId) throw new ValidationError("Authenticated user is missing");
+
+        const parsed = kycCaptureUploadInputSchema.safeParse(req.body);
+        if (!parsed.success) {
+          throw new ValidationError(
+            "Invalid capture upload",
+            parsed.error.issues.map((issue) => ({
+              path: issue.path.join("."),
+              message: issue.message,
+            })),
+          );
+        }
+
+        // storeCapture verifies the bytes are a real image before they are
+        // stored; the data URL's declared type is not trusted.
+        const reference = await storeCapture(
+          userId,
+          parsed.data.kind,
+          parsed.data.dataUrl,
+        );
+        res.status(201).json({ reference });
       } catch (err) {
         next(err);
       }
