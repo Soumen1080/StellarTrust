@@ -24,7 +24,6 @@ import {
 } from "@react-navigation/native";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { useFonts } from "expo-font";
-import * as Notifications from "expo-notifications";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
 import { useCallback, useEffect, useMemo } from "react";
@@ -34,7 +33,10 @@ import { AuthProvider, useAuth } from "./auth/AuthProvider";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { AuthNavigator } from "./navigation/AuthNavigator";
 import { RootNavigator } from "./navigation/RootNavigator";
-import { targetFromNotification } from "./lib/notifications";
+import {
+  subscribeToNotificationTaps,
+  type NotificationTarget,
+} from "./lib/notifications";
 import { createQueryClient, useAppStateRefetch } from "./lib/query";
 import type { RootStackParamList } from "./navigation/types";
 import { color, font } from "./theme";
@@ -134,20 +136,19 @@ function Gate({ fontsSettled }: { fontsSettled: boolean }) {
 /**
  * Routes a tapped notification to the screen it refers to.
  *
- * Handles both entry points: a tap while the app is running, and a tap that
- * launched it from cold, where the notification is waiting in the initial
- * response rather than arriving as an event.
+ * The listener lives in `lib/notifications`, which loads `expo-notifications`
+ * lazily — the module throws at import time in Expo Go, so a static import
+ * here would crash the app at startup rather than simply disabling push.
  *
- * Only runs while signed in — a deep link into an order screen without a
+ * Only runs while signed in: a deep link into an order screen without a
  * session would render an authenticated screen with no token.
  */
 function useNotificationRouting(signedIn: boolean): void {
   useEffect(() => {
     if (!signedIn) return;
 
-    function go(data: Record<string, unknown> | undefined): void {
-      const target = targetFromNotification(data);
-      if (!target || !navigationRef.isReady()) return;
+    return subscribeToNotificationTaps((target: NotificationTarget) => {
+      if (!navigationRef.isReady()) return;
       // Switched rather than cast: each branch narrows the union to one
       // route, so its params are checked against that route's own type.
       switch (target.screen) {
@@ -165,18 +166,6 @@ function useNotificationRouting(signedIn: boolean): void {
           });
           return;
       }
-    }
-
-    // A cold start: the tap happened before this listener existed.
-    void Notifications.getLastNotificationResponseAsync().then((response) => {
-      go(response?.notification.request.content.data);
     });
-
-    const subscription =
-      Notifications.addNotificationResponseReceivedListener((response) => {
-        go(response.notification.request.content.data);
-      });
-
-    return () => subscription.remove();
   }, [signedIn]);
 }

@@ -27,10 +27,14 @@ The backend must be running (`npm run dev --prefix ../backend`). On a physical
 device, `EXPO_PUBLIC_API_BASE_URL` must be your machine's LAN address, not
 `localhost` — the phone resolves `localhost` to itself.
 
-`npm run start:go` uses Expo Go instead of a dev client. It will run most of the
-app, but not the camera-based verification or the secure keystore, both of which
-need native modules Expo Go does not carry. Use `npm run android` / `npm run ios`
-to build a dev client for that work.
+`npm run start:go` uses Expo Go, which is enough to browse most of the app.
+**Push notifications will not work there** — Expo Go dropped remote push in
+SDK 53, so the app detects it and disables them rather than crashing
+([`lib/notifications.ts`](src/lib/notifications.ts) explains how). Expect other
+native paths — camera capture in particular — to be limited or unavailable too.
+
+A dev client is the supported way to run this app: `npm run android` or
+`npm run ios`. Use Expo Go only for quick UI work.
 
 ## How it is laid out
 

@@ -61,3 +61,82 @@ describe("targetFromNotification", () => {
     expect(targetFromNotification({})).toBeNull();
   });
 });
+
+/**
+ * Expo Go guard.
+ *
+ * `expo-notifications` throws at *import* time in Expo Go (SDK 53 removed
+ * remote push there), so a static import crashes the whole app at startup with
+ * a red screen. These pin the two properties that prevent that: the module is
+ * never imported eagerly, and every entry point degrades to a no-op rather
+ * than throwing.
+ */
+describe("running under Expo Go", () => {
+  it("does not import expo-notifications at module load", () => {
+    // The real module is not mocked here on purpose: if `notifications.ts`
+    // imported it statically, requiring this test file would already have
+    // pulled it in. Reaching this line at all is the assertion.
+    jest.isolateModules(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require("./notifications");
+      expect(typeof mod.registerForPush).toBe("function");
+      expect(typeof mod.subscribeToNotificationTaps).toBe("function");
+    });
+  });
+
+  it("reports push as unsupported and returns no token", async () => {
+    jest.resetModules();
+    jest.doMock("expo-constants", () => ({
+      __esModule: true,
+      default: {
+        // What Expo Go reports; a development build reports null here.
+        appOwnership: "expo",
+        // `lib/config.ts` reads these at import and throws without them, so
+        // the mock has to carry them or the test would fail for the wrong
+        // reason.
+        expoConfig: {
+          extra: {
+            apiBaseUrl: "https://api.test.stellartrust.local",
+            stellarNetwork: "testnet",
+          },
+        },
+      },
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("./notifications");
+    expect(mod.pushSupported).toBe(false);
+    expect(mod.pushUnavailableReason).toMatch(/development build/i);
+    await expect(mod.registerForPush("token")).resolves.toBeNull();
+
+    jest.dontMock("expo-constants");
+    jest.resetModules();
+  });
+
+  it("returns an unsubscribe function that is safe to call", () => {
+    jest.resetModules();
+    jest.doMock("expo-constants", () => ({
+      __esModule: true,
+      default: {
+        appOwnership: "expo",
+        expoConfig: {
+          extra: {
+            apiBaseUrl: "https://api.test.stellartrust.local",
+            stellarNetwork: "testnet",
+          },
+        },
+      },
+    }));
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const mod = require("./notifications");
+    const unsubscribe = mod.subscribeToNotificationTaps(() => {
+      throw new Error("must not fire when push is unavailable");
+    });
+    expect(typeof unsubscribe).toBe("function");
+    expect(() => unsubscribe()).not.toThrow();
+
+    jest.dontMock("expo-constants");
+    jest.resetModules();
+  });
+});
