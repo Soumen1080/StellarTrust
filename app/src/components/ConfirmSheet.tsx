@@ -107,7 +107,7 @@ export function ConfirmSheet({
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "#000000a6" },
-  backdropTouch: { ...StyleSheet.absoluteFillObject },
+  backdropTouch: { ...StyleSheet.absoluteFill },
   sheet: {
     gap: space.sm,
     paddingHorizontal: space.md,

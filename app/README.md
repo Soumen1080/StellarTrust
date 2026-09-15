@@ -6,7 +6,8 @@ The React Native client for StellarTrust. Same platform, same database, same
 contracts of record as the web app in [`frontend/`](../frontend) — this is not a
 parallel implementation.
 
-- **Stack**: Expo SDK 52, React Native 0.76, TypeScript (strict), React Query.
+- **Stack**: Expo SDK 57, React Native 0.86, React 19, TypeScript 6 (strict),
+  React Query. New Architecture only — SDK 57 dropped the old bridge.
 - **Design**: the tokens in [`docs/DESIGN.md`](../docs/DESIGN.md), transcribed
   to [`src/theme/tokens.ts`](src/theme/tokens.ts). Signal Yellow `#fcd535` on a
   near-black canvas, Inter for UI, IBM Plex Mono for money, rates and IDs.

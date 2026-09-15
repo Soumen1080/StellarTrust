@@ -18,8 +18,8 @@
  *    carries no EXIF, so the GPS coordinates of the user's home do not travel
  *    with their passport photograph.
  */
-import * as FileSystem from "expo-file-system";
-import * as ImageManipulator from "expo-image-manipulator";
+import { File } from "expo-file-system";
+import { ImageManipulator, SaveFormat } from "expo-image-manipulator";
 import type { KycCaptureKind } from "@stellartrust/shared";
 import { apiRequest } from "../../api/http";
 
@@ -74,20 +74,25 @@ export async function prepareCapture(
     );
   }
 
-  // Only ever downscale: enlarging a small capture invents detail that
-  // document authentication would then be reading as real.
-  const actions: ImageManipulator.Action[] =
-    longEdge > TARGET_LONG_EDGE
-      ? [
-          source.width >= source.height
-            ? { resize: { width: TARGET_LONG_EDGE } }
-            : { resize: { height: TARGET_LONG_EDGE } },
-        ]
-      : [];
+  // The object-oriented API; `manipulateAsync` was deprecated in SDK 52 and
+  // is on its way out.
+  const context = ImageManipulator.manipulate(sourceUri);
 
-  const result = await ImageManipulator.manipulateAsync(sourceUri, actions, {
+  // Only ever downscale: enlarging a small capture invents detail that
+  // document authentication would then be reading as real. Constraining the
+  // long edge alone preserves the aspect ratio.
+  if (longEdge > TARGET_LONG_EDGE) {
+    context.resize(
+      source.width >= source.height
+        ? { width: TARGET_LONG_EDGE }
+        : { height: TARGET_LONG_EDGE },
+    );
+  }
+
+  const rendered = await context.renderAsync();
+  const result = await rendered.saveAsync({
     compress: JPEG_QUALITY,
-    format: ImageManipulator.SaveFormat.JPEG,
+    format: SaveFormat.JPEG,
     base64: true,
   });
 
@@ -95,8 +100,10 @@ export async function prepareCapture(
     throw new CaptureQualityError("Could not process that photo. Try again.");
   }
 
-  const info = await FileSystem.getInfoAsync(result.uri, { size: true });
-  const bytes = info.exists && "size" in info ? info.size : 0;
+  // The `File` API replaced `getInfoAsync` in SDK 54; `size` is a property
+  // rather than an opt-in flag on a request.
+  const file = new File(result.uri);
+  const bytes = file.exists ? (file.size ?? 0) : 0;
 
   return {
     uri: result.uri,

@@ -96,7 +96,9 @@ export default function App() {
         <SafeAreaProvider>
           <QueryClientProvider client={queryClient}>
             <AuthProvider>
-              <StatusBar style="light" backgroundColor={color.canvasDark} />
+              {/* Android is edge-to-edge in SDK 57, so the bar draws over the
+                  app canvas; `backgroundColor` was removed accordingly. */}
+              <StatusBar style="light" />
               <Gate fontsSettled={fontsSettled} />
             </AuthProvider>
           </QueryClientProvider>

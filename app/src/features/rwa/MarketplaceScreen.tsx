@@ -107,7 +107,6 @@ export function MarketplaceScreen({
         <FlashList
           data={open}
           keyExtractor={(entry) => entry.tokenization.id}
-          estimatedItemSize={150}
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl

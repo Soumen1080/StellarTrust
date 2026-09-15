@@ -3,6 +3,8 @@ module.exports = function babelConfig(api) {
   return {
     presets: ["babel-preset-expo"],
     plugins: [
+      // Resolves the `@/…` alias declared in tsconfig. Metro does not read
+      // tsconfig paths, so the same mapping has to exist here.
       [
         "module-resolver",
         {
@@ -11,9 +13,6 @@ module.exports = function babelConfig(api) {
           extensions: [".ts", ".tsx", ".js", ".jsx", ".json"],
         },
       ],
-      // Must stay last: Reanimated's worklet transform rewrites functions the
-      // other plugins have already visited.
-      "react-native-reanimated/plugin",
     ],
   };
 };

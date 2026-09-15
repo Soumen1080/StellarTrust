@@ -3,7 +3,8 @@
  *
  * A FlashList rather than a ScrollView: this list grows without bound for an
  * active trader, and recycling rows is the difference between a scroll that
- * stays at 60fps and one that stutters after fifty items.
+ * stays at 60fps and one that stutters after fifty items. v2 measures rows
+ * itself, so no size estimate is supplied.
  */
 import { OrderStatus } from "@stellartrust/shared";
 import { FlashList } from "@shopify/flash-list";
@@ -115,7 +116,6 @@ export function EscrowListScreen({
         <FlashList
           data={visible}
           keyExtractor={(entry) => entry.order.id}
-          estimatedItemSize={92}
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl

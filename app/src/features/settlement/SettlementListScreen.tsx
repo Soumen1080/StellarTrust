@@ -103,7 +103,6 @@ export function SettlementListScreen({
         <FlashList
           data={items}
           keyExtractor={(entry) => entry.settlement.id}
-          estimatedItemSize={96}
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl

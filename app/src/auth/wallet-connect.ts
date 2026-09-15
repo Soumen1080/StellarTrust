@@ -9,6 +9,11 @@
  * available" when `EXPO_PUBLIC_WALLETCONNECT_PROJECT_ID` is unset, so a build
  * without a WalletConnect project still ships and simply offers only the
  * on-device wallet.
+ *
+ * `@react-native-async-storage/async-storage` is a required dependency of this
+ * file even though nothing here imports it: WalletConnect's keyvaluestorage
+ * requires it directly on React Native to persist sessions across restarts.
+ * Removing it as "unused" passes a source grep and then fails the bundle.
  */
 import { appConfig, walletConnectEnabled } from "../lib/config";
 

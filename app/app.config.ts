@@ -22,11 +22,6 @@ const config: ExpoConfig = {
   backgroundColor: "#0b0e11",
   primaryColor: "#fcd535",
   icon: "./assets/icon.png",
-  splash: {
-    image: "./assets/splash.png",
-    resizeMode: "contain",
-    backgroundColor: "#0b0e11",
-  },
   assetBundlePatterns: ["**/*"],
   ios: {
     supportsTablet: true,
@@ -59,6 +54,18 @@ const config: ExpoConfig = {
     "expo-secure-store",
     "expo-local-authentication",
     "expo-updates",
+    // The top-level `splash` key was removed in SDK 54; the splash screen is
+    // configured through this plugin instead. `imageWidth` is what keeps the
+    // mark from being blown up to the full screen width.
+    [
+      "expo-splash-screen",
+      {
+        image: "./assets/splash.png",
+        backgroundColor: "#0b0e11",
+        imageWidth: 180,
+        resizeMode: "contain",
+      },
+    ],
     [
       "expo-camera",
       {

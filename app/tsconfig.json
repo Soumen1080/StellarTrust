@@ -13,11 +13,31 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "jsx": "react-jsx",
-    "baseUrl": ".",
+    // No `baseUrl`: it is deprecated in TypeScript 6 and removed in 7. Without
+    // it, `paths` resolves relative to this file, which is what was meant all
+    // along. The matching alias for Metro lives in babel.config.js.
     "paths": {
-      "@/*": ["src/*"]
-    }
+      "@/*": ["./src/*"]
+    },
+    // Only these two are loaded globally. Without the restriction, TypeScript
+    // pulls in every @types/* package under node_modules — including the
+    // @types/node that arrives transitively through @expo/cli and @types/jest.
+    // Node 26's iterator declarations contradict the `esnext` lib Expo pins,
+    // which surfaces in the editor as errors inside node_modules/@types/node
+    // that no file in this project can fix. React Native is not Node: the app
+    // has no business seeing `fs` or `stream` typings at all.
+    "types": ["jest", "react"]
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "*.ts", "index.js", "jest.setup.js"],
-  "exclude": ["node_modules"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    // The config files at the root are TypeScript too, and typechecking them
+    // is how a typo in app.config.ts gets caught before a build does it.
+    "app.config.ts",
+    "index.js",
+    "jest.setup.js",
+    "babel.config.js",
+    "metro.config.js"
+  ],
+  "exclude": ["node_modules", "dist", ".expo"]
 }

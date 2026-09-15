@@ -67,7 +67,6 @@ export function DisputeListScreen({
         <FlashList
           data={items}
           keyExtractor={(item) => item.id}
-          estimatedItemSize={104}
           contentContainerStyle={styles.listContent}
           refreshControl={
             <RefreshControl
